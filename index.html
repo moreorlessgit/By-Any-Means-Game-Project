@@ -116,6 +116,30 @@
     .unit-pill.dispatched{border-color:var(--gold);color:var(--gold);}
     .unit-pill.returning{border-color:var(--muted);color:var(--muted);}
     .unit-pill.oos{border-color:var(--accent);color:var(--accent);text-decoration:line-through;}
+    .unit-pill.transporting{border-color:#f97316;color:#f97316;}
+    .unit-pill.offloading{border-color:#a855f7;color:#a855f7;}
+
+    /* ── STABILIZATION BARS (Transport tab) ── */
+    .stab-bar-track{height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin:4px 0 2px;}
+    .stab-bar-fill{height:100%;border-radius:3px;transition:width .8s linear;}
+
+    /* ── TRANSPORT TAB ROWS ── */
+    .transport-row{
+      background:var(--bg);border:1px solid var(--border);border-radius:2px;
+      padding:10px 12px;margin-bottom:8px;
+    }
+    .transport-row select{font-size:.78rem;padding:4px 6px;margin:2px 0;}
+    .transport-compat-ok{color:var(--green);font-size:.68rem;margin-left:4px;}
+    .transport-compat-bad{color:var(--accent);font-size:.68rem;margin-left:4px;}
+
+    /* ── CASHFLOW MODAL ── */
+    .cf-tx-row{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:5px 0;border-bottom:1px solid var(--border);font-size:.78rem;
+    }
+    .cf-tx-amount{font-family:var(--mono);font-weight:700;min-width:70px;text-align:right;}
+    .cf-tx-label{color:var(--text);flex:1;padding:0 8px;}
+    .cf-tx-time{font-size:.62rem;color:var(--muted);font-family:var(--mono);min-width:60px;}
 
     /* tag pills */
     .tag-pill{
@@ -494,8 +518,8 @@
       <button class="speed-btn" id="spd-60" onclick="setGameSpeed(60)" title="60×">60×</button>
     </div>
     <div style="width:1px;height:28px;background:var(--border);margin:0 4px;"></div>
-    <div>
-      <div class="money-lbl">Budget</div>
+    <div style="cursor:pointer;" onclick="openCashflowModal()" title="Click to view cashflow">
+      <div class="money-lbl">Budget ↗</div>
       <div id="money-display">$0</div>
     </div>
     <button class="btn-sm" id="btn-settings" onclick="openSettings()" title="Settings" style="padding:5px 10px;">⚙ Settings</button>
@@ -517,6 +541,27 @@
       </button>
       <button class="tool-btn" id="btn-police" onclick="setPlacing('police')">
         🟣 Police Station <span class="cost" id="cost-police"></span>
+      </button>
+      <button class="tool-btn" id="btn-helipad_building" onclick="setPlacing('helipad_building')">
+        🚁 Helipad <span class="cost" id="cost-helipad_building"></span>
+      </button>
+      <button class="tool-btn" id="btn-airport_building" onclick="setPlacing('airport_building')">
+        ✈️ Airport / Airfield <span class="cost" id="cost-airport_building"></span>
+      </button>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title">Build — Facilities</div>
+      <button class="tool-btn esn-btn" onclick="setPlacing('hospital')">
+        🏥 Hospital <span class="cost" id="cost-hospital"></span>
+      </button>
+      <button class="tool-btn esn-btn" onclick="setPlacing('county_jail')">
+        🔒 County Jail <span class="cost" id="cost-county_jail"></span>
+      </button>
+      <button class="tool-btn esn-btn" onclick="setPlacing('state_correctional')">
+        ⛓️ State Correctional <span class="cost" id="cost-state_correctional"></span>
+      </button>
+      <button class="tool-btn esn-btn" onclick="openFacilitiesModal()">
+        📋 Facilities List
       </button>
     </div>
     <div class="sb-section">
@@ -876,6 +921,56 @@
   </div>
 </div>
 
+<!-- FACILITY PLACEMENT MODAL (hospital / jail name entry after map click) -->
+<div id="facility-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:380px;padding:20px;">
+    <h2 id="fm-title" class="gold" style="font-size:1rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px;">New Facility</h2>
+    <label class="field-label">Facility Name</label>
+    <input type="text" id="fm-name" placeholder="e.g. Susquehanna County Hospital"
+           onkeydown="if(event.key==='Enter') confirmFacilityPlacement()"/>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeFacilityModal()">Cancel</button>
+      <button class="btn-primary gold" onclick="confirmFacilityPlacement()">Place Facility</button>
+    </div>
+  </div>
+</div>
+
+<!-- CASHFLOW MODAL (opened by clicking money display) -->
+<div id="cashflow-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:480px;max-height:80vh;">
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <h2 class="gold">💰 Financial Summary</h2>
+      <button class="btn-sm danger" onclick="closeCashflowModal()">✕</button>
+    </div>
+    <div class="modal-body" id="cashflow-body"></div>
+  </div>
+</div>
+
+<!-- FACILITIES LIST MODAL -->
+<div id="facilities-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:560px;max-height:85vh;">
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
+      <h2 class="gold">Facilities &amp; Buildings</h2>
+      <button class="btn-sm danger" onclick="closeFacilitiesModal()">✕</button>
+    </div>
+    <div style="padding:8px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="fac-search" placeholder="Search…"
+             style="flex:1;min-width:120px;padding:5px 8px;font-size:.82rem;"
+             oninput="renderFacilitiesModal()"/>
+      <label style="font-size:.72rem;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="fac-show-hospitals" checked onchange="renderFacilitiesModal()"/> Hospitals
+      </label>
+      <label style="font-size:.72rem;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="fac-show-jails" checked onchange="renderFacilitiesModal()"/> Jails
+      </label>
+      <label style="font-size:.72rem;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" id="fac-show-air" checked onchange="renderFacilitiesModal()"/> Air
+      </label>
+    </div>
+    <div class="modal-body" id="facilities-body"></div>
+  </div>
+</div>
+
 <!-- ESN DRAW TOOLBAR (visible only while drawing an ESN polygon) -->
 <div id="esn-draw-toolbar">
   <span id="draw-toolbar-status">Click map to add points</span>
@@ -904,42 +999,49 @@
 <!-- ═══════════════════════════════════════════════════════════════ SCRIPTS ══ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="config.js"></script>
+<script src="stations.js"></script>
 <script src="esn.js"></script>
+<script src="hospitals.js"></script>
+<script src="criminals.js"></script>
+<script src="prisons.js"></script>
 <script>
 // =============================================================================
 // BY ANY MEANS — GAME ENGINE v2  (Phase 2)
 // =============================================================================
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
+// stations[], _activeManageStation, stationLabelsVisible, _deleteStationConfirm,
+// _deleteUnitConfirm, _placingStationType — all moved to stations.js
 let money        = BAM_CONFIG.economy.startingMoney;
-let stations     = [];
 let incidents    = [];
 let callLog      = [];
+let cashflowLog  = [];    // [{ gameSec, amount, label }] — all money in/out events
 let resolvedCount= 0;
 let placingType  = null;
 let pendingLatLng= null;
+let _placingFacilityType = null;  // 'hospital' | 'county_jail' | 'state_correctional'
 let activeDispatchId = null;
 let selectedUnitsForDispatch = new Set();
 let responsePlans = [];  // { id, name, requirements: [['engine'], ...] }
+let _activeTransportRows = [];  // per-row assignments in Transport tab
+let _activeDMTab = 'dispatch';  // 'dispatch' | 'transport' — active tab in dispatch modal
 
 // ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
 let gameSpeed   = 1;            // 0 = paused, 1 = real-time, 60 = 1 game-min per real-sec
 let gameDay     = 1;
 let gameSeconds = 8 * 3600;     // game clock starts at 08:00:00 (expressed in game-seconds)
 let _spawnTimer = null;         // handle for the current spawn setTimeout
-let _activeManageStation = null;  // station id open in manage modal
 let showUnitLabels       = true;   // AVL-style callsign labels on moving unit dots
-let stationLabelsVisible = false;  // persistent station name labels on map markers
 let _overwriteConfirmSlot = null;  // name of save slot pending overwrite confirmation
-let _deleteStationConfirm = null;  // station id pending two-click delete confirm
-let _deleteUnitConfirm    = null;  // unit id pending two-click delete confirm
 let _dispatchModalDirty   = false; // true when modal needs a refresh indicator
 
 // AVL label runtime colors — pulled from config defaults, overridden by settings
 let avlColors = {
-  enroute:   BAM_CONFIG.ui?.avlLabelColors?.enroute   || '#22c55e',
-  on_scene:  BAM_CONFIG.ui?.avlLabelColors?.on_scene  || '#3b82f6',
-  returning: BAM_CONFIG.ui?.avlLabelColors?.returning || '#fbbf24',
+  enroute:      BAM_CONFIG.ui?.avlLabelColors?.enroute      || '#22c55e',
+  on_scene:     BAM_CONFIG.ui?.avlLabelColors?.on_scene     || '#3b82f6',
+  returning:    BAM_CONFIG.ui?.avlLabelColors?.returning    || '#fbbf24',
+  transporting: BAM_CONFIG.ui?.avlLabelColors?.transporting || '#f97316',
+  offloading:   BAM_CONFIG.ui?.avlLabelColors?.offloading   || '#a855f7',
 };
 let avlStyle = {
   borderColor: BAM_CONFIG.ui?.avlLabelStyle?.borderColor || '#000000',
@@ -963,7 +1065,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
 map.on('click', e => {
   if(!placingType) return;
   pendingLatLng = e.latlng;
-  openStationModal(placingType);
+  if(BAM_CONFIG.stationTypeDefs[placingType]){
+    openStationModal(placingType);   // routes to stations.js
+  } else {
+    openFacilityModal(placingType);  // hospital / jail
+  }
 });
 
 // ── MONEY ─────────────────────────────────────────────────────────────────────
@@ -972,18 +1078,13 @@ function updateMoney(delta=0){
   document.getElementById('money-display').textContent = '$' + money.toLocaleString();
 }
 
-// Reads station type color from CSS var (--fire / --ems / --police).
-function getStationColor(type){
-  return getComputedStyle(document.documentElement).getPropertyValue('--'+type).trim();
-}
-
-// Fills the cost spans in the sidebar buttons from config so they stay in sync.
-function initSidebarCosts(){
-  const costs = BAM_CONFIG.economy.stationCost;
-  ['fire','ems','police'].forEach(type => {
-    const el = document.getElementById('cost-'+type);
-    if(el) el.textContent = '$' + (costs[type]/1000) + 'k';
-  });
+// Records a financial transaction to the cashflow log and updates the UI if modal is open.
+function logCashflow(amount, label){
+  cashflowLog.unshift({ gameSec: gameSeconds, amount, label });
+  if(cashflowLog.length > 200) cashflowLog = cashflowLog.slice(0, 200);
+  // Live-update cashflow modal if open
+  const cfModal = document.getElementById('cashflow-modal');
+  if(cfModal?.classList.contains('open')) renderCashflowModal();
 }
 
 // ── SIDEBAR TABS ──────────────────────────────────────────────────────────────
@@ -1001,6 +1102,8 @@ function switchSBTab(tab){
 }
 
 // ── PLACING MODE ──────────────────────────────────────────────────────────────
+// Station types (fire/ems/police/helipad/airport) → opens station naming modal (stations.js).
+// Facility types (hospital/county_jail/state_correctional) → opens facility naming modal.
 function setPlacing(type){
   placingType = type;
   document.querySelectorAll('.tool-btn:not(.esn-btn)').forEach(b => b.classList.remove('active'));
@@ -1008,152 +1111,17 @@ function setPlacing(type){
   document.getElementById(key)?.classList.add('active');
   map.getContainer().style.cursor = type ? 'crosshair' : '';
   if(type){
-    const cost = BAM_CONFIG.economy.stationCost[type];
-    setStatus(`📍 Click map to place ${type} station ($${cost.toLocaleString()})`);
+    const isFacility = !!BAM_CONFIG.facilityPlacementCost?.[type];
+    const cost = isFacility
+      ? BAM_CONFIG.facilityPlacementCost[type]
+      : BAM_CONFIG.economy.stationCost[type];
+    const label = isFacility
+      ? (BAM_CONFIG.facilityTypes?.[type]?.label || BAM_CONFIG.hospitalTypes?.[type]?.label || type)
+      : (BAM_CONFIG.stationTypeDefs[type]?.label || type + ' station');
+    setStatus(`📍 Click map to place ${label} ($${cost?.toLocaleString() || '?'})`);
   } else if(!drawingESN) {
     setStatus('Pan mode. Click incidents to dispatch · Ctrl+S to save');
   }
-}
-
-// ── STATION MODAL ─────────────────────────────────────────────────────────────
-let _placingStationType = null;
-function openStationModal(type){
-  _placingStationType = type;
-  const cost = BAM_CONFIG.economy.stationCost[type];
-  if(money < cost){ setStatus(`⚠️ Not enough funds! Need $${cost.toLocaleString()}`); pendingLatLng=null; return; }
-
-  const typeLabel = {fire:'Fire Station',ems:'EMS Station',police:'Police Station'}[type];
-  document.getElementById('sm-title').textContent = `New ${typeLabel}`;
-  document.getElementById('sm-name').value = '';
-  document.getElementById('sm-unitname').value = '';
-
-  const sel = document.getElementById('sm-unittype');
-  sel.innerHTML = Object.entries(BAM_CONFIG.unitTypes)
-    .filter(([,u])=>u.stationType===type)
-    .map(([k,u])=>`<option value="${k}">${u.label} ($${u.cost.toLocaleString()})</option>`)
-    .join('');
-
-  document.getElementById('station-modal').classList.add('open');
-  setTimeout(() => document.getElementById('sm-name').focus(), 40);
-}
-
-function closeStationModal(){
-  document.getElementById('station-modal').classList.remove('open');
-  pendingLatLng = null;
-}
-
-function confirmStation(){
-  const name        = document.getElementById('sm-name').value.trim();
-  const unitName    = document.getElementById('sm-unitname').value.trim();
-  const unitTypeKey = document.getElementById('sm-unittype').value;
-  if(!name||!unitName) return;
-
-  const stCost   = BAM_CONFIG.economy.stationCost[_placingStationType];
-  const unitCost = BAM_CONFIG.unitTypes[unitTypeKey].cost;
-  const total    = stCost + unitCost;
-  if(money < total){ setStatus(`⚠️ Not enough funds ($${total.toLocaleString()} needed)`); return; }
-
-  const id    = 'st_'+Date.now();
-  const color = getStationColor(_placingStationType);
-  const emojiMap = {fire:'🔴',ems:'🔵',police:'🟣'};
-
-  const icon = L.divIcon({
-    className:'',
-    html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);"></div>`,
-    iconSize:[22,22],iconAnchor:[11,22]
-  });
-
-  const marker = L.marker([pendingLatLng.lat,pendingLatLng.lng],{icon}).addTo(map);
-  marker.bindTooltip(_buildStationTooltip(name, _placingStationType),
-    {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
-  marker.on('click',()=>openManageStation(id));
-
-  const firstUnit = {
-    id:'u_'+Date.now(), name:unitName, typeKey:unitTypeKey,
-    status:'available', inService:true, _animGen:0,
-    incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
-  };
-
-  const station = {
-    id, name, type:_placingStationType,
-    lat:pendingLatLng.lat, lng:pendingLatLng.lng,
-    units:[firstUnit], marker, upgrades:[], inService:true
-  };
-
-  stations.push(station);
-  updateMoney(-total);
-  closeStationModal();
-  renderStationList();
-  renderStats();
-  setStatus(`✅ ${name} placed. Budget: $${money.toLocaleString()}`);
-  setPlacing(null);
-}
-
-// ── STATION LIST ──────────────────────────────────────────────────────────────
-function renderStationList(){
-  const el = document.getElementById('station-scroll');
-  const q  = document.getElementById('station-search')?.value.trim().toLowerCase() || '';
-  const filtered = stations.filter(s => !q || s.name.toLowerCase().includes(q));
-
-  if(!filtered.length){
-    el.innerHTML = stations.length
-      ? '<div class="empty-msg">No stations match search.</div>'
-      : '<div class="empty-msg">No stations yet.<br>Select a type above and click the map.</div>';
-    return;
-  }
-
-  el.innerHTML = filtered.map(s => {
-    const oos = s.inService === false;
-    const pills = s.units.map(u => {
-      const uOOS = u.inService === false;
-      const cls  = uOOS ? 'oos' : u.status;
-      const isRet = u.status==='returning' && u._returnRemSec>0;
-      const pillTxt = isRet ? `${u.name} ↩${formatETA(u._returnRemSec)}` : u.name;
-      const ttip = uOOS ? 'Out of service'
-                 : isRet ? `Returning — ${formatETA(u._returnRemSec)} to ST`
-                 : u.status;
-      return `<span class="unit-pill ${cls}" title="${ttip}"
-               onclick="toggleUnitService('${s.id}','${u.id}');event.stopPropagation();">${pillTxt}</span>`;
-    }).join('');
-
-    return `<div class="scard${oos?' oos':''}">
-      <div class="sn">${s.name}${oos?' <span class="oos-badge">OOS</span>':''}</div>
-      <div class="st">${s.type} station</div>
-      <div class="su">${pills}</div>
-      <div class="scard-actions">
-        <button class="btn-sm" onclick="focusStation('${s.id}')">Focus</button>
-        <button class="btn-sm" onclick="openManageStation('${s.id}')">Manage</button>
-        <button class="btn-sm" onclick="toggleStationService('${s.id}')">${oos?'In Svc':'OOS'}</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function focusStation(id){
-  const s = stations.find(x=>x.id===id);
-  if(s) map.setView([s.lat,s.lng],14);
-}
-
-// ── IN / OUT OF SERVICE ───────────────────────────────────────────────────────
-// Toggles an entire station in/out of service.
-// OOS stations don't spawn calls (Phase 1 fallback mode) and their units are unavailable.
-function toggleStationService(stationId){
-  const s = stations.find(x=>x.id===stationId);
-  if(!s) return;
-  s.inService = s.inService === false ? true : false;
-  s.marker?.setOpacity(s.inService ? 1 : .4);
-  renderStationList();
-  setStatus(`${s.name} — ${s.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
-}
-
-// Toggles a single unit in/out of service (click the unit pill).
-function toggleUnitService(stationId, unitId){
-  const s = stations.find(x=>x.id===stationId);
-  const u = s?.units.find(x=>x.id===unitId);
-  if(!u) return;
-  u.inService = u.inService === false ? true : false;
-  renderStationList();
-  setStatus(`${u.name} — ${u.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
 }
 
 // ── INCIDENT MARKER ICON ──────────────────────────────────────────────────────
@@ -1244,22 +1212,27 @@ async function spawnIncident(manual=false){
   }
 
   // Generate patients — only if transport-capable units exist and EMS covers this area.
-  // (No point spawning patients if no one can transport them.)
   const hasTransport = getAllUnits().some(({unit}) =>
     unit.inService !== false &&
-    BAM_CONFIG.unitTypes[unit.typeKey]?.tags.some(t => ['transport','bls','als'].includes(t))
+    BAM_CONFIG.unitTypes[unit.typeKey]?.tags.some(t => ['transport','bls','als','air_als'].includes(t))
   );
   const hasEMSCoverage = esns.length === 0 ||
     (esnId && esns.find(e => e.id === esnId)?.assignments?.ems?.length > 0);
   const patients = [];
-  if(hasTransport && hasEMSCoverage && Math.random() < mCfg.patientChance){
-    const [mn,mx] = mCfg.patientCount;
-    const n = mn + Math.floor(Math.random()*(mx-mn+1));
-    const injKeys = Object.keys(BAM_CONFIG.injuryTypes);
-    for(let i=0;i<n;i++){
-      const ikey = injKeys[Math.floor(Math.random()*injKeys.length)];
-      patients.push({id:'p_'+Date.now()+'_'+i, injuryKey:ikey, status:'waiting'});
-    }
+  if(hasTransport && hasEMSCoverage && Math.random() < mCfg.patientChance && mCfg.patients?.length){
+    mCfg.patients.forEach(entry => {
+      const injCfg = BAM_CONFIG.injuryTypes[entry.injuryType];
+      if(!injCfg) return;
+      // For non-minor tier patients, suppress spawn if no compatible hospital exists
+      if(injCfg.patientTier !== 'minor'){
+        const compatHosp = findNearestHospital(lat, lng, injCfg.requiredDept || 'emergency');
+        if(!compatHosp) return;
+      }
+      const count = entry.minCount + Math.floor(Math.random() * (entry.maxCount - entry.minCount + 1));
+      for(let i = 0; i < count; i++){
+        patients.push(createPatient(entry.injuryType, null));  // incidentId set below
+      }
+    });
   }
 
   const now = new Date();
@@ -1267,8 +1240,12 @@ async function spawnIncident(manual=false){
                   now.getMinutes().toString().padStart(2,'0')+':'+
                   now.getSeconds().toString().padStart(2,'0');
 
+  const incId = 'inc_'+Date.now();
+  // Assign incidentId to all generated patients now that we have it
+  patients.forEach(p => { p.incidentId = incId; });
+
   const inc = {
-    id:'inc_'+Date.now(),
+    id:incId,
     missionKey, originalMissionKey:missionKey,
     label:mCfg.label, category:mCfg.category,
     lat, lng, esnId,
@@ -1330,6 +1307,7 @@ function openDispatch(incId){
   const inc = incidents.find(x=>x.id===incId);
   if(!inc||inc.status==='resolved') return;
   activeDispatchId = incId;
+  _activeDMTab = 'dispatch';
   selectedUnitsForDispatch = new Set(inc.units);
 
   const mCfg = BAM_CONFIG.missions[inc.missionKey];
@@ -1363,6 +1341,25 @@ function _updateResolutionBar(inc, mCfg, onSceneUnits, staffingRatio, effectiveR
 function renderDispatchBody(inc, mCfg){
   const body = document.getElementById('dm-body');
   let html = '';
+
+  // ── Tab bar (Dispatch / Transport) — shown only when there are patients
+  if(inc.patients.length){
+    const dTab = _activeDMTab==='dispatch';
+    html += `<div style="display:flex;border-bottom:1px solid var(--border);margin:-12px -16px 12px;padding:0;">
+      <div style="flex:1;padding:8px 12px;text-align:center;font-size:.68rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
+        border-bottom:2px solid ${dTab?'var(--accent)':'transparent'};color:${dTab?'var(--accent)':'var(--muted)'};"
+        onclick="switchDMTab('dispatch')">Dispatch</div>
+      <div style="flex:1;padding:8px 12px;text-align:center;font-size:.68rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
+        border-bottom:2px solid ${!dTab?'var(--ems)':'transparent'};color:${!dTab?'var(--ems)':'var(--muted)'};"
+        onclick="switchDMTab('transport')">🚑 Transport</div>
+    </div>`;
+  }
+
+  // ── Transport tab pane
+  if(_activeDMTab === 'transport' && inc.patients.length){
+    body.innerHTML = html + renderTransportTab(inc);
+    return;
+  }
 
   // ── Address / location
   const addrLine = inc.address
@@ -1425,17 +1422,33 @@ function renderDispatchBody(inc, mCfg){
     </div>`;
   });
 
-  // ── Patients
+  // ── Patients (with stabilization bars)
   if(inc.patients.length){
     html += `<div class="section-title">Patients (${inc.patients.length})</div>`;
     inc.patients.forEach(p => {
-      const inj = BAM_CONFIG.injuryTypes[p.injuryKey];
+      const inj = BAM_CONFIG.injuryTypes[p.injuryType];
+      const stabPct = Math.round((p.stabilizeProgress||0)*100);
+      const stabColor = p.stabilizeProgress >= 1 ? 'var(--green)' : 'var(--ems)';
+      const statusTxt = p.status === 'in_transport' ? '🚑 In Transport'
+        : p.status === 'admitted' ? '🏥 Admitted'
+        : p.status === 'discharged' ? '✓ Discharged'
+        : p.status === 'stabilized' ? '<span style="color:var(--green);font-weight:700;">✓ Stabilized</span>'
+        : `Stabilizing ${stabPct}%`;
       html += `<div class="dm-patient-row">
-        <span class="ptype">${inj.label}</span>
-        ${inj.needsALS?'<span class="pals"> · ALS Required</span>':''}
-        · Transport → ${inj.transport}
+        <div style="display:flex;justify-content:space-between;">
+          <span class="ptype">${inj?.label||p.injuryType}</span>
+          ${inj?.needsALS?'<span class="pals">ALS Req.</span>':''}
+        </div>
+        ${(p.status==='stabilizing'||p.status==='stabilized')?`<div class="stab-bar-track"><div class="stab-bar-fill" id="stab-fill-${p.id}" style="width:${stabPct}%;background:${stabColor};"></div></div>`:''}
+        <div style="font-size:.65rem;color:var(--muted);">${statusTxt}</div>
       </div>`;
     });
+    // Transport tab button when patients are present
+    if(inc.patients.some(p => ['stabilizing','stabilized'].includes(p.status))){
+      html += `<button class="btn-sm" style="width:100%;margin-top:4px;" onclick="switchDMTab('transport')">
+        🚑 Open Transport Tab →
+      </button>`;
+    }
   }
 
   // ── Box alarms for this ESN + mission
@@ -1483,6 +1496,7 @@ function renderDispatchBody(inc, mCfg){
     const isAvail     = unit.status==='available' && !uOOS;
     const isReturn    = unit.status==='returning' && !uOOS;
     const isDisp      = unit.status==='dispatched' && !uOOS;
+    const isTransport = unit.status==='transporting'||unit.status==='offloading';
     const avail       = isAvail || isReturn || isDisp;
     const sel         = selectedUnitsForDispatch.has(unit.id);
     const utCfg       = BAM_CONFIG.unitTypes[unit.typeKey];
@@ -1497,11 +1511,13 @@ function renderDispatchBody(inc, mCfg){
     }
     const origLabel = isDisp
       ? (incidents.find(x=>x.id===unit.incidentId)?.label||'call') : '';
-    const etaTxt = uOOS     ? 'OOS'
-      : isDisp              ? `<span style="color:#f59e0b;">✦ ENROUTE<br>${origLabel}</span>`
-      : isReturn            ? `↩ ${unit._returnRemSec>0?formatETA(unit._returnRemSec)+' to ST':'RETURNING'}<br>${Math.ceil(etaToCallMin)}m to SCN`
-      : isAvail             ? Math.ceil(etaMin)+'m ETA'
-      :                       'IN USE';
+    const etaTxt = uOOS        ? 'OOS'
+      : isDisp               ? `<span style="color:#f59e0b;">✦ ENROUTE<br>${origLabel}</span>`
+      : isReturn             ? `↩ ${unit._returnRemSec>0?formatETA(unit._returnRemSec)+' to ST':'RETURNING'}<br>${Math.ceil(etaToCallMin)}m to SCN`
+      : isAvail              ? Math.ceil(etaMin)+'m ETA'
+      : unit.status==='transporting' ? '<span style="color:#f97316;">🚑 TRANSPORTING</span>'
+      : unit.status==='offloading'   ? '<span style="color:#a855f7;">🏥 OFFLOADING</span>'
+      :                                'IN USE';
     html += `<div class="dm-unit-row${cls}${selCls}"${rowStyle}
       onclick="toggleDispatchUnit('${unit.id}','${avail||sel}')"
       id="dur_${unit.id}">
@@ -1626,6 +1642,23 @@ async function routeAndAnimate(unit, station, inc, fromLatLng=null){
   const origin = fromLatLng || { lat:station.lat, lng:station.lng };
   // Remove any stale marker before creating a new one — prevents ghost dots on reroute
   if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+
+  // Straight-line routing for helicopters (bypasses OSRM, uses speedMph from config)
+  if(BAM_CONFIG.unitTypes[unit.typeKey]?.straightLine === true){
+    const coords=[[origin.lat,origin.lng],[inc.lat,inc.lng]];
+    const distKm=haversineKm(origin.lat,origin.lng,inc.lat,inc.lng);
+    const speedMph=BAM_CONFIG.unitTypes[unit.typeKey]?.speedMph||150;
+    const durationSec=(distKm/(speedMph*1.60934))*3600;
+    const dotColor=BAM_CONFIG.unitTypes[unit.typeKey]?.color||'#f59e0b';
+    const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.7,dashArray:'8,4'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    animMarker.bindTooltip(`🚁 ${unit.name} → ${inc.label}`);
+    unit.animMarker=animMarker; unit.routeCoords=coords; unit.routeCumTimes=[0,1];
+    animateUnit(unit,inc,coords,durationSec);
+    return;
+  }
+
   try{
     // annotations=duration gives per-segment travel times for speed-accurate animation
     const url=`https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${inc.lng},${inc.lat}?overview=full&geometries=geojson&annotations=duration`;
@@ -1807,6 +1840,534 @@ function _manualRefreshDispatch(){
   renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
 }
 
+// Switches between Dispatch and Transport tabs in the dispatch modal.
+function switchDMTab(tab){
+  _activeDMTab = tab;
+  const inc = incidents.find(x=>x.id===activeDispatchId);
+  if(!inc) return;
+  renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+// Re-renders only the stabilization bar fills in the Transport tab without resetting dropdowns.
+// Called from tickPatientStabilization on each update tick.
+function _refreshTransportTab(inc){
+  if(_activeDMTab !== 'transport' || activeDispatchId !== inc.id) return;
+  const modal = document.getElementById('dispatch-modal');
+  if(!modal?.classList.contains('open')) return;
+  inc.patients.forEach(pt => {
+    const fill = document.getElementById('stab-fill-'+pt.id);
+    if(!fill) return;
+    const pct = Math.round((pt.stabilizeProgress||0)*100);
+    fill.style.width = pct + '%';
+    if(pt.status === 'stabilized') fill.style.background = 'var(--green)';
+  });
+}
+
+// Renders the Transport tab content for the dispatch modal.
+// Returns an HTML string.
+function renderTransportTab(inc){
+  let html = '';
+  html += `<div class="section-title">Patients On Scene</div>`;
+  if(!inc.patients.length){
+    html += `<div class="empty-msg">No patients on this incident.</div>`;
+  } else {
+    inc.patients.forEach(pt => {
+      const injCfg = BAM_CONFIG.injuryTypes[pt.injuryType];
+      const tier = pt.tier || injCfg?.patientTier || 'minor';
+      const tierColor = {minor:'var(--green)',serious:'var(--gold)',critical:'var(--accent)'}[tier] || 'var(--muted)';
+      const stabPct = Math.round((pt.stabilizeProgress||0)*100);
+      const stabColor = pt.stabilizeProgress >= 1 ? 'var(--green)' : 'var(--ems)';
+      const statusTxt = pt.status === 'in_transport' ? '🚑 In Transport'
+        : pt.status === 'admitted' ? '🏥 Admitted'
+        : pt.status === 'discharged' ? '✓ Discharged'
+        : pt.status === 'stabilized' ? '<span style="color:var(--green);font-weight:700;">✓ Stabilized — Ready</span>'
+        : `Stabilizing ${stabPct}%`;
+      html += `<div class="dm-patient-row">
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+          <span class="ptype">${injCfg?.label||pt.injuryType}</span>
+          <span style="font-size:.65rem;color:${tierColor};font-weight:700;">${tier.toUpperCase()}</span>
+        </div>
+        ${(pt.status==='stabilizing'||pt.status==='stabilized')?`<div class="stab-bar-track"><div class="stab-bar-fill" id="stab-fill-${pt.id}" style="width:${stabPct}%;background:${stabColor};"></div></div>`:''}
+        <div style="font-size:.65rem;color:var(--muted);">${statusTxt}</div>
+      </div>`;
+    });
+  }
+
+  const readyPatients = inc.patients.filter(p => p.status === 'stabilized');
+  if(!readyPatients.length){
+    if(inc.patients.some(p => p.status === 'stabilizing')){
+      html += `<div style="margin-top:8px;font-size:.75rem;color:var(--muted);font-style:italic;">
+        ⏳ Await stabilization before transport can begin.
+      </div>`;
+    }
+    return html;
+  }
+
+  html += `<div class="section-title" style="margin-top:12px;">Transport Assignments</div>`;
+  const transportUnits = getAllUnits().filter(({unit}) => {
+    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
+    return (tags.includes('transport')||tags.includes('bls')||tags.includes('als')||tags.includes('air_als'))
+      && (unit.status==='available'||unit.status==='on_scene')
+      && unit.inService !== false;
+  });
+
+  if(!transportUnits.length){
+    html += `<div class="empty-msg">No transport units available.</div>`;
+    return html;
+  }
+
+  const availHospitals = hospitals.filter(h => h.inService && !h.onDiversion);
+
+  readyPatients.forEach(pt => {
+    const injCfg = BAM_CONFIG.injuryTypes[pt.injuryType];
+    const reqDept = injCfg?.requiredDept || 'emergency';
+    const unitOptHtml = transportUnits.map(({unit,station}) => {
+      const uCfg = BAM_CONFIG.unitTypes[unit.typeKey];
+      const provLevel = uCfg?.providerLevel || '';
+      return `<option value="${unit.id}">${unit.name} (${station.name}) — ${provLevel.toUpperCase()}</option>`;
+    }).join('');
+    const hospOptHtml = availHospitals.map(h => {
+      const compat = h.departments[reqDept] ? '✓' : '⚠';
+      return `<option value="${h.id}">${compat} ${h.name}</option>`;
+    }).join('') || '<option value="">No hospitals placed</option>';
+    html += `<div class="transport-row">
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px;">
+        Patient: <strong style="color:var(--ems)">${injCfg?.label||pt.injuryType}</strong>
+        — <span style="color:var(--muted)">Req. dept: ${BAM_CONFIG.hospitalDepartments?.[reqDept]?.label||reqDept}</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:110px;">
+          <div style="font-size:.6rem;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">UNIT</div>
+          <select id="tr-unit-${pt.id}" style="width:100%;font-size:.78rem;">
+            <option value="">Select unit…</option>${unitOptHtml}
+          </select>
+        </div>
+        <div style="flex:1;min-width:110px;">
+          <div style="font-size:.6rem;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">HOSPITAL</div>
+          <select id="tr-hosp-${pt.id}" style="width:100%;font-size:.78rem;"
+            onchange="_updateTransportCompat('${pt.id}','${reqDept}')">
+            <option value="">Select hospital…</option>${hospOptHtml}
+          </select>
+        </div>
+      </div>
+      <div id="tr-compat-${pt.id}" style="font-size:.68rem;margin:4px 0;min-height:16px;"></div>
+      <button class="btn-primary" style="width:100%;padding:7px;margin-top:4px;"
+        onclick="_beginTransport('${pt.id}','${inc.id}')">▶ Begin Transport</button>
+    </div>`;
+  });
+  return html;
+}
+
+// Updates the compatibility indicator when a hospital is selected in a transport row.
+function _updateTransportCompat(patientId, reqDept){
+  const hospId = document.getElementById('tr-hosp-'+patientId)?.value;
+  const compatEl = document.getElementById('tr-compat-'+patientId);
+  if(!compatEl) return;
+  if(!hospId){ compatEl.textContent = ''; return; }
+  const hosp = hospitals.find(h => h.id === hospId);
+  if(!hosp){ compatEl.textContent = ''; return; }
+  const deptLabel = BAM_CONFIG.hospitalDepartments?.[reqDept]?.label || reqDept;
+  if(hosp.departments[reqDept]){
+    compatEl.innerHTML = `<span class="transport-compat-ok">✓ ${deptLabel} available</span>`;
+  } else {
+    compatEl.innerHTML = `<span class="transport-compat-bad">⚠ ${deptLabel} not installed — will use ED</span>`;
+  }
+}
+
+// Called when the "Begin Transport" button is clicked in the Transport tab.
+function _beginTransport(patientId, incId){
+  const inc = incidents.find(i => i.id === incId);
+  if(!inc) return;
+  const patient = inc.patients.find(p => p.id === patientId);
+  if(!patient || patient.status !== 'stabilized'){ setStatus('⚠️ Patient is not ready for transport.'); return; }
+  const unitId = document.getElementById('tr-unit-'+patientId)?.value;
+  const hospId = document.getElementById('tr-hosp-'+patientId)?.value;
+  if(!unitId){ setStatus('⚠️ Select a transport unit.'); return; }
+  if(!hospId){ setStatus('⚠️ Select a destination hospital.'); return; }
+  const found = getAllUnits().find(({unit}) => unit.id === unitId);
+  const hospital = hospitals.find(h => h.id === hospId);
+  if(!found || !hospital){ setStatus('⚠️ Unit or hospital not found.'); return; }
+  startTransport(found.unit, patient, hospital, inc);
+  renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+// Starts a patient transport — routes the unit from its current location to the hospital.
+// Removes unit from incident, sets patient in_transport, pays transport revenue on arrival.
+function startTransport(unit, patient, hospital, inc){
+  const found = getAllUnits().find(({unit:u}) => u.id === unit.id);
+  if(!found) return;
+  const {station} = found;
+  // Current position: on-scene unit is at incident location; animMarker already removed on arrival
+  const fromLat = inc?.lat ?? station.lat;
+  const fromLng = inc?.lng ?? station.lng;
+  const distKm = haversineKm(fromLat, fromLng, hospital.lat, hospital.lng);
+  unit.transportDistanceMi = distKm * 0.621371;
+  unit.transportPatient = patient.id;
+  unit.transportDestination = { type: 'hospital', id: hospital.id };
+  unit.homeStationId = station.id;
+  patient.status = 'in_transport';
+  patient.transportUnitId = unit.id;
+  unit.status = 'transporting';
+  // Cancel any current animation
+  unit._animGen = (unit._animGen||0)+1;
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  if(unit.returnLine){ unit.returnLine.remove(); unit.returnLine=null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  // Remove unit from incident's assigned list
+  if(inc) inc.units = inc.units.filter(uid => uid !== unit.id);
+  renderStationList();
+  setStatus(`🚑 ${unit.name} transporting patient to ${hospital.name}`);
+  routeToHospital(unit, {lat:fromLat, lng:fromLng}, hospital);
+}
+
+// Routes a unit to a hospital for patient transport (or helicopter straight-line).
+async function routeToHospital(unit, fromPos, hospital){
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  const dotColor = BAM_CONFIG.unitTypes[unit.typeKey]?.color || '#aaaaaa';
+  const isAir = BAM_CONFIG.unitTypes[unit.typeKey]?.straightLine === true;
+  unit._animGen = (unit._animGen||0)+1;
+  const myGen = unit._animGen;
+  try{
+    let coords, durationSec;
+    if(isAir){
+      coords = [[fromPos.lat, fromPos.lng],[hospital.lat, hospital.lng]];
+      const distKm = haversineKm(fromPos.lat, fromPos.lng, hospital.lat, hospital.lng);
+      const speedMph = BAM_CONFIG.unitTypes[unit.typeKey]?.speedMph || 150;
+      durationSec = (distKm / (speedMph * 1.60934)) * 3600;
+      unit.routeCumTimes = [0,1];
+    } else {
+      const url=`https://router.project-osrm.org/route/v1/driving/${fromPos.lng},${fromPos.lat};${hospital.lng},${hospital.lat}?overview=full&geometries=geojson&annotations=duration`;
+      const resp=await fetch(url); const data=await resp.json();
+      if(data.code!=='Ok'||!data.routes.length) throw new Error('No route');
+      coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
+      const rawDuration=data.routes[0].duration;
+      const distKm=data.routes[0].distance/1000;
+      durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
+      const segDurs=data.routes[0].legs[0].annotation?.duration||[];
+      const cumTimes=[0];
+      for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
+      const totalT=cumTimes[cumTimes.length-1];
+      if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
+      else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
+      unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+    }
+    if(unit._animGen!==myGen) return;
+    const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.7,dashArray:'6,4'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → ${hospital.name}`);
+    unit.animMarker=animMarker; unit.routeCoords=coords;
+    _animateWithCallback(unit, coords, durationSec, ()=>onTransportArrived(unit, hospital));
+  } catch(e){
+    if(unit._animGen!==myGen) return;
+    const dist=haversineKm(fromPos.lat,fromPos.lng,hospital.lat,hospital.lng);
+    const coords=[[fromPos.lat,fromPos.lng],[hospital.lat,hospital.lng]];
+    const line=L.polyline(coords,{color:dotColor,weight:2,opacity:.5,dashArray:'4,4'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker([fromPos.lat,fromPos.lng],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:900}).addTo(map);
+    unit.animMarker=animMarker; unit.routeCoords=coords; unit.routeCumTimes=[0,1];
+    _animateWithCallback(unit, coords, (dist/48.28)*3600, ()=>onTransportArrived(unit, hospital));
+  }
+}
+
+// Generic animation that calls a callback on completion instead of onUnitArrived/Returned.
+// Used for hospital transport and prisoner transport.
+function _animateWithCallback(unit, coords, totalGameSec, onDone){
+  if(!coords||coords.length<2||totalGameSec<=0||!isFinite(totalGameSec)){ onDone(); return; }
+  unit._animGen=(unit._animGen||0)+1;
+  const myGen=unit._animGen;
+  const totalGameMs=totalGameSec*1000;
+  let gameElapsedMs=0, lastTs=performance.now();
+  function step(now){
+    if(unit._animGen!==myGen) return;
+    const realDelta=Math.min(now-lastTs,250); lastTs=now;
+    gameElapsedMs+=realDelta*gameSpeed;
+    const progress=Math.min(1,gameElapsedMs/totalGameMs);
+    const pos=(unit.routeCumTimes&&unit.routeCumTimes.length===coords.length)
+      ?interpolatePolylineByTime(coords,unit.routeCumTimes,progress)
+      :interpolatePolyline(coords,progress);
+    if(pos) unit.animMarker?.setLatLng(pos);
+    if(progress<1) requestAnimationFrame(step);
+    else onDone();
+  }
+  requestAnimationFrame(step);
+}
+
+// Called when a transporting unit arrives at the hospital.
+// Admits the patient, starts the offload timer, then routes unit home.
+function onTransportArrived(unit, hospital){
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  // Find and admit the transported patient
+  const patientId = unit.transportPatient;
+  if(patientId){
+    let patient = null;
+    incidents.forEach(inc => { const p=inc.patients.find(p=>p.id===patientId); if(p) patient=p; });
+    if(patient) admitPatient(hospital.id, patient, unit);
+  }
+  unit.status = 'offloading';
+  unit.transportPatient = null;
+  unit.transportDestination = null;
+  // Set offload end time (game-seconds) from ED stage duration config
+  const edCfg = BAM_CONFIG.hospitalDepartments?.emergency;
+  const offMin = edCfg?.stageDurationMinSec || 600;
+  const offMax = edCfg?.stageDurationMaxSec || 1800;
+  unit.offloadEndSec = gameSeconds + offMin + Math.random()*(offMax-offMin);
+  unit.lastHospitalId = hospital.id;
+  renderStationList();
+  setStatus(`🏥 ${unit.name} offloading at ${hospital.name}`);
+}
+
+// Dispatches a prisoner transport unit to a jail/prison. Called from criminals.js.
+function dispatchPrisonerTransport(suspect, facility){
+  const station = stations.find(s => s.id === suspect.holdingStationId);
+  const fromLat = station?.lat || 0;
+  const fromLng = station?.lng || 0;
+  const transportUnits = getAllUnits().filter(({unit}) => {
+    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
+    return (tags.includes('transport_prisoner')||tags.includes('patrol'))
+      && unit.status === 'available' && unit.inService !== false;
+  }).sort((a,b) =>
+    haversineKm(a.station.lat,a.station.lng,fromLat,fromLng) -
+    haversineKm(b.station.lat,b.station.lng,fromLat,fromLng)
+  );
+  if(!transportUnits.length){
+    setStatus(`⚠️ No transport unit available — suspect held pending transfer`);
+    return;
+  }
+  const {unit, station:unitStation} = transportUnits[0];
+  const distKm = haversineKm(unitStation.lat, unitStation.lng, facility.lat, facility.lng);
+  unit.transportDistanceMi = distKm * 0.621371;
+  unit.transportSuspect = suspect.id;
+  unit.transportDestination = { type: 'jail', id: facility.id };
+  unit.homeStationId = unitStation.id;
+  unit.status = 'transporting';
+  suspect.status = 'in_transport';
+  routeToPrison(unit, unitStation, facility, suspect);
+  setStatus(`🚔 ${unit.name} transporting prisoner to ${facility.name}`);
+}
+
+// Routes a police/transport unit to a jail/prison with a prisoner.
+async function routeToPrison(unit, station, facility, suspect){
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  const dotColor = BAM_CONFIG.unitTypes[unit.typeKey]?.color || '#aaaaaa';
+  unit._animGen = (unit._animGen||0)+1;
+  const myGen = unit._animGen;
+  try{
+    const url=`https://router.project-osrm.org/route/v1/driving/${station.lng},${station.lat};${facility.lng},${facility.lat}?overview=full&geometries=geojson&annotations=duration`;
+    const resp=await fetch(url); const data=await resp.json();
+    if(data.code!=='Ok') throw new Error('No route');
+    if(unit._animGen!==myGen) return;
+    const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
+    const rawDuration=data.routes[0].duration;
+    const distKm=data.routes[0].distance/1000;
+    const durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
+    const segDurs=data.routes[0].legs[0].annotation?.duration||[];
+    const cumTimes=[0];
+    for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
+    const totalT=cumTimes[cumTimes.length-1];
+    if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
+    else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
+    unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+    const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.6,dashArray:'3,3'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → ${facility.name}`);
+    unit.animMarker=animMarker; unit.routeCoords=coords;
+    _animateWithCallback(unit, coords, durationSec, ()=>onPrisonerTransportArrived(unit, facility, suspect));
+  } catch(e){
+    if(unit._animGen!==myGen) return;
+    const dist=haversineKm(station.lat,station.lng,facility.lat,facility.lng);
+    const coords=[[station.lat,station.lng],[facility.lat,facility.lng]];
+    const line=L.polyline(coords,{color:dotColor,weight:2,opacity:.4,dashArray:'3,3'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker([station.lat,station.lng],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:900}).addTo(map);
+    unit.animMarker=animMarker; unit.routeCoords=coords; unit.routeCumTimes=[0,1];
+    _animateWithCallback(unit, coords, (dist/48.28)*3600, ()=>onPrisonerTransportArrived(unit, facility, suspect));
+  }
+}
+
+// Called when a transport unit arrives at a jail with a prisoner.
+function onPrisonerTransportArrived(unit, facility, suspect){
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  // Pay transport revenue
+  const distMi = unit.transportDistanceMi || 0;
+  const revCfg = BAM_CONFIG.lawEnforcementRevenue?.prisonerTransport;
+  if(revCfg){
+    const rev = Math.round(revCfg.baseFee + distMi * revCfg.perMileFee);
+    if(rev > 0){ updateMoney(rev); logCashflow(rev, `[PRISONER TRANSPORT REVENUE] ${facility.name}`); }
+  }
+  // Intake at jail
+  intakePrisoner(facility.id, suspect.id);
+  // Unit returns to station immediately
+  unit.transportSuspect = null;
+  unit.transportDestination = null;
+  const homeStation = stations.find(s => s.id === unit.homeStationId);
+  unit.status = 'returning';
+  if(homeStation) routeAndAnimateReturn(unit, homeStation, facility.lat, facility.lng);
+  else { unit.status='available'; renderStationList(); }
+}
+
+// ── FACILITY PLACEMENT MODAL ──────────────────────────────────────────────────
+
+// Opens the facility naming dialog after the player clicks the map.
+// type: 'hospital' | 'county_jail' | 'state_correctional'
+function openFacilityModal(type){
+  _placingFacilityType = type;
+  const facCfg = BAM_CONFIG.facilityTypes?.[type];
+  const hospCfg = BAM_CONFIG.hospitalTypes?.[type];
+  const label = facCfg?.label || hospCfg?.label || type.replace(/_/g,' ');
+  document.getElementById('fm-title').textContent = `New ${label}`;
+  document.getElementById('fm-name').value = '';
+  document.getElementById('facility-modal').classList.add('open');
+  setTimeout(()=>document.getElementById('fm-name').focus(), 40);
+}
+
+function closeFacilityModal(){
+  document.getElementById('facility-modal').classList.remove('open');
+  setPlacing(null);
+}
+
+// Confirms facility placement after the player enters a name.
+function confirmFacilityPlacement(){
+  const name = document.getElementById('fm-name').value.trim();
+  if(!name){ setStatus('⚠️ Enter a name for this facility.'); return; }
+  if(!pendingLatLng){ closeFacilityModal(); return; }
+  const {lat, lng} = pendingLatLng;
+  if(_placingFacilityType === 'hospital'){
+    placeHospital(lat, lng, name);
+  } else if(_placingFacilityType === 'county_jail' || _placingFacilityType === 'state_correctional'){
+    placeJail(lat, lng, name, _placingFacilityType);
+  }
+  closeFacilityModal();
+}
+
+// ── CASHFLOW MODAL ────────────────────────────────────────────────────────────
+
+function openCashflowModal(){
+  renderCashflowModal();
+  document.getElementById('cashflow-modal').classList.add('open');
+}
+
+function closeCashflowModal(){
+  document.getElementById('cashflow-modal').classList.remove('open');
+}
+
+// Renders the cashflow modal body — summary stats + transaction list.
+function renderCashflowModal(){
+  const body = document.getElementById('cashflow-body');
+  if(!body) return;
+  const totalIn  = cashflowLog.filter(e=>e.amount>0).reduce((s,e)=>s+e.amount,0);
+  const totalOut = cashflowLog.filter(e=>e.amount<0).reduce((s,e)=>s+e.amount,0);
+  let html = `<div style="display:flex;gap:20px;margin-bottom:12px;flex-wrap:wrap;padding:4px 0;">
+    <div class="hstat"><div class="v" style="font-size:1rem;">$${money.toLocaleString()}</div><div class="l">Balance</div></div>
+    <div class="hstat"><div class="v" style="font-size:1rem;color:var(--green);">+$${totalIn.toLocaleString()}</div><div class="l">Total In</div></div>
+    <div class="hstat"><div class="v" style="font-size:1rem;color:var(--accent);">-$${Math.abs(totalOut).toLocaleString()}</div><div class="l">Total Out</div></div>
+  </div>
+  <div class="section-title">Recent Transactions (${cashflowLog.length})</div>`;
+  if(!cashflowLog.length){
+    html += `<div class="empty-msg">No transactions yet.</div>`;
+  } else {
+    cashflowLog.slice(0,100).forEach(tx => {
+      const sign  = tx.amount >= 0 ? '+' : '';
+      const color = tx.amount >= 0 ? 'var(--green)' : 'var(--accent)';
+      const h = Math.floor((tx.gameSec % 86400) / 3600);
+      const m = Math.floor((tx.gameSec % 3600) / 60);
+      const tStr = h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0');
+      html += `<div class="cf-tx-row">
+        <div class="cf-tx-time">${tStr}</div>
+        <div class="cf-tx-label">${tx.label}</div>
+        <div class="cf-tx-amount" style="color:${color};">${sign}$${Math.abs(tx.amount).toLocaleString()}</div>
+      </div>`;
+    });
+  }
+  body.innerHTML = html;
+}
+
+// ── FACILITIES LIST MODAL ─────────────────────────────────────────────────────
+
+function openFacilitiesModal(){
+  renderFacilitiesModal();
+  document.getElementById('facilities-modal').classList.add('open');
+}
+
+function closeFacilitiesModal(){
+  document.getElementById('facilities-modal').classList.remove('open');
+}
+
+// Renders the facilities list — hospitals, jails, and air stations — with filtering.
+function renderFacilitiesModal(){
+  const body = document.getElementById('facilities-body');
+  if(!body) return;
+  const q     = (document.getElementById('fac-search')?.value||'').toLowerCase();
+  const showH = document.getElementById('fac-show-hospitals')?.checked !== false;
+  const showJ = document.getElementById('fac-show-jails')?.checked !== false;
+  const showA = document.getElementById('fac-show-air')?.checked !== false;
+  let html = '';
+
+  if(showH){
+    hospitals.filter(h=>!q||h.name.toLowerCase().includes(q)).forEach(h => {
+      const depts = Object.keys(h.departments).map(dk=>BAM_CONFIG.hospitalDepartments?.[dk]?.label||dk).join(' · ');
+      const tot = Object.values(h.departments).reduce((s,d)=>s+d.beds,0);
+      const occ = Object.values(h.departments).reduce((s,d)=>s+d.occupiedBeds,0);
+      html += `<div class="scard">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div class="sn">🏥 ${h.name}</div>
+            <div class="st">${depts}</div>
+            <div class="su">${occ}/${tot} beds occupied${h.onDiversion?' · <span style="color:var(--accent)">ON DIVERSION</span>':''}</div>
+          </div>
+          <div style="display:flex;gap:5px;align-items:center;">
+            <span style="font-size:.6rem;${h.inService?'color:var(--green)':'color:var(--accent);font-weight:700;'}">${h.inService?'In Svc':'OOS'}</span>
+            <button class="btn-sm" onclick="closeFacilitiesModal();openHospitalModal('${h.id}')">Manage</button>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  if(showJ){
+    jails.filter(j=>!q||j.name.toLowerCase().includes(q)).forEach(j => {
+      const typeCfg = BAM_CONFIG.facilityTypes?.[j.type];
+      const icon = j.type==='county_jail'?'🔒':'⛓️';
+      html += `<div class="scard">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div class="sn">${icon} ${j.name}</div>
+            <div class="st">${typeCfg?.label||j.type}</div>
+            <div class="su">${j.occupied}/${j.cells} cells occupied</div>
+          </div>
+          <div style="display:flex;gap:5px;align-items:center;">
+            <span style="font-size:.6rem;${j.inService?'color:var(--green)':'color:var(--accent);font-weight:700;'}">${j.inService?'In Svc':'OOS'}</span>
+            <button class="btn-sm" onclick="closeFacilitiesModal();openJailModal('${j.id}')">Manage</button>
+          </div>
+        </div>
+      </div>`;
+    });
+  }
+
+  if(showA){
+    stations.filter(s=>['helipad_building','airport_building'].includes(s.type)&&(!q||s.name.toLowerCase().includes(q))).forEach(s => {
+      const icon = s.type==='helipad_building'?'🚁':'✈️';
+      const unitNames = s.units.map(u=>u.name).join(', ')||'No units';
+      html += `<div class="scard">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div class="sn">${icon} ${s.name}</div>
+            <div class="st">${BAM_CONFIG.stationTypeDefs?.[s.type]?.label||s.type}</div>
+            <div class="su">${unitNames}</div>
+          </div>
+          <button class="btn-sm" onclick="closeFacilitiesModal();openManageStation('${s.id}')">Manage</button>
+        </div>
+      </div>`;
+    });
+  }
+
+  if(!html) html = `<div class="empty-msg">No facilities match your filters.</div>`;
+  body.innerHTML = html;
+}
+
 // Releases a unit from its current call (works for both enroute and on-scene units).
 // Animates the unit back to its station from its current map position.
 function cancelUnitFromCall(unitId, incId){
@@ -1851,7 +2412,25 @@ function resolveIncident(incId){
   if(inc.escalateTimer) clearTimeout(inc.escalateTimer);
   const mCfg=BAM_CONFIG.missions[inc.missionKey];
   updateMoney(mCfg.reward);
+  if(mCfg.reward > 0) logCashflow(mCfg.reward, `[INCIDENT REWARD] ${inc.label}`);
   resolvedCount++;
+
+  // Generate suspect if this mission type produces criminal charges
+  if(mCfg.chargeTiers){
+    const suspect = createSuspect(inc.id, mCfg);
+    if(suspect){
+      // Assign the arresting unit (first on-scene law enforcement unit, if any)
+      const arrestUnit = inc.units.map(uid => getAllUnits().find(u => u.unit.id === uid))
+        .filter(Boolean)
+        .find(({unit}) => BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes('patrol'));
+      if(arrestUnit) suspect.arrestUnitId = arrestUnit.unit.id;
+      // Process at scene — may release immediately for summary offenses
+      const result = processSuspectAtScene(suspect);
+      if(result !== 'released_scene'){
+        setStatus(`🔒 Suspect detained — ${BAM_CONFIG.chargeTiers[suspect.chargeTier]?.label || suspect.chargeTier}`);
+      }
+    }
+  }
   // Dispatch each unit back to its station, routing from current position.
   // Enroute units (still traveling) return from wherever they are — not from the scene.
   inc.units.forEach(uid=>{
@@ -1949,9 +2528,11 @@ function _buildUnitDotIcon(unit, dotColor){
   let labelHtml = '';
   if(showUnitLabels){
     const statusBg = {
-      dispatched: avlColors.enroute,
-      on_scene:   avlColors.on_scene,
-      returning:  avlColors.returning,
+      dispatched:   avlColors.enroute,
+      on_scene:     avlColors.on_scene,
+      returning:    avlColors.returning,
+      transporting: avlColors.transporting,
+      offloading:   avlColors.offloading,
     }[unit.status];
     const bgStyle   = statusBg ? `background:${statusBg};` : '';
     const bdrStyle  = `border-color:${avlStyle.borderColor};`;
@@ -1976,22 +2557,7 @@ function setUnitLabelsVisible(visible){
   });
 }
 
-// Returns the tooltip content string for a station marker.
-function _buildStationTooltip(name, type){
-  const emojiMap = {fire:'🔴', ems:'🔵', police:'🟣'};
-  return `${emojiMap[type] || '📍'} <b>${name}</b>`;
-}
-
-// Toggles permanent vs hover-only station name labels on all placed station markers.
-function setStationLabelsVisible(visible){
-  stationLabelsVisible = visible;
-  stations.forEach(s => {
-    if(!s.marker) return;
-    s.marker.unbindTooltip();
-    s.marker.bindTooltip(_buildStationTooltip(s.name, s.type),
-      {permanent: visible, className:'station-tooltip', direction:'top'});
-  });
-}
+// _buildStationTooltip and setStationLabelsVisible are in stations.js
 
 // ── SETTINGS ──────────────────────────────────────────────────────────────────
 
@@ -2145,12 +2711,9 @@ function renderStats(){
   document.getElementById('hs-resolved').textContent=resolvedCount;
 }
 
+// getAllUnits() is in stations.js
+
 // ── HELPERS ───────────────────────────────────────────────────────────────────
-function getAllUnits(){
-  const out=[];
-  stations.forEach(s=>s.units.forEach(u=>out.push({station:s,unit:u})));
-  return out;
-}
 function haversineKm(lat1,lon1,lat2,lon2){
   const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
@@ -2193,10 +2756,11 @@ function _tickGameClock(){
 
   // Tick resolution progress for all on-scene incidents
   if(gameSpeed>0){
+    const deltaGameSec = gameSpeed;   // each tick = gameSpeed game-seconds
+
     incidents.filter(i=>i.status==='on_scene').forEach(inc=>{
       if(inc.resolutionTarget==null) return;
       const mCfg=BAM_CONFIG.missions[inc.missionKey];
-      // Only count units actually on scene — enroute units do not contribute to staffing
       const allDispatched=inc.units.map(uid=>getAllUnits().find(u=>u.unit.id===uid)).filter(Boolean);
       const onSceneUnits=allDispatched.filter(({unit})=>unit.status==='on_scene');
       const metCount=countMetRequirements(mCfg.requirements, onSceneUnits);
@@ -2206,12 +2770,62 @@ function _tickGameClock(){
         inc.resolutionProgress+=(gameSpeed/inc.resolutionTarget)*effectiveRate;
         if(inc.resolutionProgress>=1.0) resolveIncident(inc.id);
       }
-      // Live-update dispatch modal if open for this incident
       if(activeDispatchId===inc.id){
         const modal=document.getElementById('dispatch-modal');
         if(modal?.classList.contains('open')) _updateResolutionBar(inc, mCfg, onSceneUnits, staffingRatio, effectiveRate);
       }
+
+      // Tick patient stabilization — all on-scene units contribute by providerLevel
+      tickPatientStabilization(inc, onSceneUnits, deltaGameSec);
     });
+
+    // Phase 3 tick functions
+    tickHospitalPatients(deltaGameSec);
+    tickSuspectProcessing(deltaGameSec);
+    tickJailProcessing(deltaGameSec);
+
+    // Release offloading units back to their station when the offload timer expires
+    getAllUnits().forEach(({unit, station}) => {
+      if(unit.status !== 'offloading' || !unit.offloadEndSec) return;
+      if(gameSeconds < unit.offloadEndSec) return;
+      const hosp = hospitals.find(h => h.id === unit.lastHospitalId);
+      const fromLat = hosp ? hosp.lat : station.lat;
+      const fromLng = hosp ? hosp.lng : station.lng;
+      unit.offloadEndSec = null;
+      unit.lastHospitalId = null;
+      unit.status = 'returning';
+      routeAndAnimateReturn(unit, station, fromLat, fromLng);
+      renderStationList();
+    });
+  }
+}
+
+// Advances stabilization progress for all patients on an incident.
+// Each on-scene unit adds to the effective rate based on its providerLevel.
+function tickPatientStabilization(inc, onSceneUnits, deltaGameSec){
+  if(!inc.patients?.length) return;
+  // Sum effective stabilization rate from all on-scene units
+  let totalRate = 0;
+  onSceneUnits.forEach(({unit}) => {
+    const level = BAM_CONFIG.unitTypes[unit.typeKey]?.providerLevel;
+    totalRate += BAM_CONFIG.stabilizationRates[level] || 0;
+  });
+  if(totalRate <= 0) return;
+
+  let modalNeedsUpdate = false;
+  inc.patients.forEach(pt => {
+    if(pt.status !== 'stabilizing') return;
+    const injCfg = BAM_CONFIG.injuryTypes[pt.injuryType];
+    const stabTimeSec = injCfg?.stabilizeTimeSec || 60;
+    pt.stabilizeProgress = Math.min(1, pt.stabilizeProgress + (totalRate * deltaGameSec) / stabTimeSec);
+    if(pt.stabilizeProgress >= 1.0) pt.status = 'stabilized';
+    modalNeedsUpdate = true;
+  });
+
+  // Refresh dispatch modal Transport tab if open for this incident
+  if(modalNeedsUpdate && activeDispatchId === inc.id){
+    const modal = document.getElementById('dispatch-modal');
+    if(modal?.classList.contains('open')) _refreshTransportTab(inc);
   }
 }
 
@@ -2224,8 +2838,12 @@ function newGame(){
   incidents.forEach(i=>{ i.marker?.remove(); if(i.escalateTimer) clearTimeout(i.escalateTimer); });
   if(_spawnTimer){ clearTimeout(_spawnTimer); _spawnTimer=null; }
   clearESNState();
-  // Reset state
+  // Clear hospital and jail markers
+  hospitals.forEach(h=>h.marker?.remove()); hospitals=[];
+  jails.forEach(j=>j.marker?.remove()); jails=[];
+  // Reset all state including Phase 3
   stations=[]; incidents=[]; callLog=[]; responsePlans=[];
+  cashflowLog=[]; suspects=[];
   money=BAM_CONFIG.economy.startingMoney;
   resolvedCount=0; gameDay=1; gameSeconds=8*3600;
   // Refresh UI
@@ -2236,217 +2854,8 @@ function newGame(){
   setStatus('New game started. Build your first station!');
 }
 
-// ── STATION MANAGEMENT ────────────────────────────────────────────────────────
-
-function openManageStation(stationId){
-  const s=stations.find(x=>x.id===stationId);
-  if(!s) return;
-  _activeManageStation=stationId;
-  document.getElementById('msm-title').textContent=s.name;
-  _renderManageBody();
-  document.getElementById('manage-station-modal').classList.add('open');
-}
-
-function closeManageStation(){
-  document.getElementById('manage-station-modal').classList.remove('open');
-  _activeManageStation=null;
-  _deleteStationConfirm=null;
-  _deleteUnitConfirm=null;
-}
-
-function _renderManageBody(){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  if(!s) return;
-
-  // Available unit types for this station type
-  const availTypes=Object.entries(BAM_CONFIG.unitTypes)
-    .filter(([,u])=>u.stationType===s.type)
-    .map(([k,u])=>({key:k,...u}));
-
-  let html=`<label class="field-label">Station Name</label>
-  <div style="display:flex;gap:8px;">
-    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
-    <button class="btn-sm" onclick="renameStation()">Rename</button>
-  </div>
-  <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
-
-  if(!s.units.length){
-    html+='<div class="empty-msg">No units. Add one below.</div>';
-  }
-  s.units.forEach(u=>{
-    const utCfg=BAM_CONFIG.unitTypes[u.typeKey];
-    const statusBadge = u.status!=='available'
-      ? `<span style="font-size:.6rem;color:var(--gold);">${u.status.replace('_',' ').toUpperCase()}</span>` : '';
-    html+=`<div class="manage-unit-row">
-      <div class="manage-unit-name">
-        <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
-      </div>
-      <span class="manage-unit-label">${utCfg?.label||u.typeKey}</span>
-      ${statusBadge}
-      <button class="btn-sm" onclick="renameUnit('${u.id}')">Save</button>
-      ${_deleteUnitConfirm===u.id
-        ?`<button class="btn-sm danger" onclick="deleteUnit('${u.id}')" style="border-color:var(--accent);color:var(--accent);background:rgba(232,67,26,.15);">Confirm?</button>`
-        :`<button class="btn-sm danger" onclick="deleteUnit('${u.id}')">Delete</button>`}
-    </div>`;
-  });
-
-  html+=`<div class="section-title" style="margin-top:14px;">Add Unit</div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <select id="msm-add-type" style="flex:2;min-width:140px;" onchange="_updateAddUnitCost()">
-      ${availTypes.map(u=>`<option value="${u.key}">${u.label} — $${u.cost.toLocaleString()}</option>`).join('')}
-    </select>
-    <input type="text" id="msm-add-name" placeholder="Callsign (e.g. E-52)" style="flex:1;min-width:110px;"/>
-  </div>
-  <button class="btn-sm" style="margin-top:8px;width:100%;" onclick="addUnitToStation()">Purchase Unit</button>`;
-
-  // Delete station button — show confirm state if armed
-  const delBtn=document.getElementById('msm-delete-btn');
-  if(delBtn){
-    delBtn.disabled=false;
-    if(_deleteStationConfirm===s.id){
-      delBtn.textContent='Confirm Delete?';
-      delBtn.style.background='var(--accent)';
-    } else {
-      delBtn.textContent='Delete Station';
-      delBtn.style.background='';
-    }
-  }
-
-  document.getElementById('msm-body').innerHTML=html;
-  _updateAddUnitCost();
-}
-
-function _updateAddUnitCost(){
-  const typeKey=document.getElementById('msm-add-type')?.value;
-  const cost=BAM_CONFIG.unitTypes[typeKey]?.cost||0;
-  // The cost is shown inline in the option label; nothing extra needed.
-}
-
-function renameStation(){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  if(!s) return;
-  const newName=document.getElementById('msm-rename-input').value.trim();
-  if(!newName){ setStatus('⚠️ Enter a station name.'); return; }
-  s.name=newName;
-  s.marker?.setTooltipContent(_buildStationTooltip(newName, s.type));
-  document.getElementById('msm-title').textContent=newName;
-  renderStationList();
-  setStatus(`Station renamed to "${newName}".`);
-}
-
-function renameUnit(unitId){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  const u=s?.units.find(x=>x.id===unitId);
-  if(!u) return;
-  const newName=document.getElementById('msm-u-'+unitId)?.value.trim();
-  if(!newName){ setStatus('⚠️ Enter a unit callsign.'); return; }
-  u.name=newName;
-  renderStationList();
-  setStatus(`Unit renamed to "${newName}".`);
-}
-
-function deleteUnit(unitId){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  if(!s) return;
-  const u=s.units.find(x=>x.id===unitId);
-  if(!u) return;
-
-  // Two-click confirm pattern
-  if(_deleteUnitConfirm!==unitId){
-    _deleteUnitConfirm=unitId;
-    _renderManageBody();  // re-render to show confirm state on button
-    setTimeout(()=>{
-      if(_deleteUnitConfirm===unitId){
-        _deleteUnitConfirm=null;
-        if(stations.find(x=>x.id===_activeManageStation)) _renderManageBody();
-      }
-    },4000);
-    return;
-  }
-  _deleteUnitConfirm=null;
-
-  // Stop active animation
-  u._animGen=(u._animGen||0)+1;
-  u.animMarker?.remove();
-  u.routeLine?.remove();
-  u.returnLine?.remove();
-
-  // Remove from any active incident
-  incidents.forEach(inc=>{
-    inc.units=inc.units.filter(uid=>uid!==unitId);
-    if(inc.units.length===0&&inc.status!=='resolved'){
-      inc.status='needs_dispatch';
-      if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
-    }
-  });
-
-  s.units=s.units.filter(x=>x.id!==unitId);
-  const refund=Math.floor((BAM_CONFIG.unitTypes[u.typeKey]?.cost||0)*0.5);
-  updateMoney(refund);
-  renderStationList(); renderStats(); renderIncidentList(); _renderManageBody();
-  setStatus(`Deleted ${u.name}. Refund: +$${refund.toLocaleString()}`);
-}
-
-function addUnitToStation(){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  if(!s) return;
-  const typeKey=document.getElementById('msm-add-type').value;
-  const name=document.getElementById('msm-add-name').value.trim();
-  if(!name){ setStatus('⚠️ Enter a callsign for the new unit.'); return; }
-  const cost=BAM_CONFIG.unitTypes[typeKey]?.cost||0;
-  if(money<cost){ setStatus(`⚠️ Not enough funds. Need $${cost.toLocaleString()}.`); return; }
-  s.units.push({
-    id:'u_'+Date.now(), name, typeKey, status:'available', inService:true, _animGen:0,
-    incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
-  });
-  updateMoney(-cost);
-  document.getElementById('msm-add-name').value='';
-  renderStationList(); renderStats(); _renderManageBody();
-  setStatus(`✅ ${name} (${BAM_CONFIG.unitTypes[typeKey].label}) added. -$${cost.toLocaleString()}`);
-}
-
-function deleteStation(){
-  const s=stations.find(x=>x.id===_activeManageStation);
-  if(!s) return;
-  const delBtn=document.getElementById('msm-delete-btn');
-
-  // Two-click confirm: first click arms the confirm state, second click executes
-  if(_deleteStationConfirm!==s.id){
-    _deleteStationConfirm=s.id;
-    if(delBtn){ delBtn.textContent='Confirm Delete?'; delBtn.style.background='var(--accent)'; }
-    setTimeout(()=>{
-      if(_deleteStationConfirm===s.id){
-        _deleteStationConfirm=null;
-        if(delBtn){ delBtn.textContent='Delete Station'; delBtn.style.background=''; }
-      }
-    },4000);
-    return;
-  }
-  _deleteStationConfirm=null;
-
-  // Cancel all active animations and clean up units
-  s.units.forEach(u=>{
-    u._animGen=(u._animGen||0)+1;  // stop any active rAF loop
-    u.animMarker?.remove();
-    u.routeLine?.remove();
-    u.returnLine?.remove();
-    // Remove from any active incident
-    incidents.forEach(inc=>{
-      inc.units=inc.units.filter(uid=>uid!==u.id);
-      if(inc.units.length===0&&inc.status!=='resolved'){
-        inc.status='needs_dispatch';
-        if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
-      }
-    });
-  });
-  s.marker?.remove();
-  const refund=BAM_CONFIG.economy.stationCost[s.type]||0;
-  stations=stations.filter(x=>x.id!==_activeManageStation);
-  updateMoney(refund);
-  closeManageStation();
-  renderStationList(); renderStats(); renderIncidentList();
-  setStatus(`🗑 Station deleted. Refund: +$${refund.toLocaleString()}`);
-}
+// openManageStation, closeManageStation, _renderManageBody, renameStation, renameUnit,
+// deleteUnit, addUnitToStation, deleteStation — all in stations.js
 
 // ── DEV TOOLS ─────────────────────────────────────────────────────────────────
 function devSetMoney(){
@@ -2578,15 +2987,21 @@ function buildSaveData(){
     stations: stations.map(s=>({
       id:s.id,name:s.name,type:s.type,lat:s.lat,lng:s.lng,
       upgrades:s.upgrades, inService:s.inService,
+      _holdingCells: s._holdingCells || null,
       units:s.units.map(u=>({
         id:u.id,name:u.name,typeKey:u.typeKey, inService:u.inService,
-        status:u.status==='dispatched'?'available':u.status
+        // Reset in-flight statuses on save — units resume as available on load
+        status:(['dispatched','transporting','offloading'].includes(u.status))?'available':u.status
       }))
     })),
-    esns:          getESNSaveData(),
-    dispatchCenters: getDCSaveData(),
-    boxAlarms:     getBoxAlarmSaveData(),
-    responsePlans: responsePlans.map(r=>({...r}))
+    esns:           getESNSaveData(),
+    dispatchCenters:getDCSaveData(),
+    boxAlarms:      getBoxAlarmSaveData(),
+    responsePlans:  responsePlans.map(r=>({...r})),
+    hospitals:      getHospitalSaveData(),
+    jails:          getJailSaveData(),
+    suspects:       getSuspectSaveData(),
+    cashflowLog:    cashflowLog.slice(0, 200),
   };
 }
 
@@ -2681,10 +3096,14 @@ function loadFromSlot(name){
     // Support both old gameMinutes saves and new gameSeconds saves
     gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
     responsePlans=data.responsePlans||[];
+    cashflowLog=data.cashflowLog||[];
     data.stations?.forEach(s=>recreateStation(s));
     loadESNData(data.esns);
     loadDCData(data.dispatchCenters);
     loadBoxAlarmData(data.boxAlarms);
+    loadHospitalData(data.hospitals||[]);
+    loadJailData(data.jails||[]);
+    loadSuspectData(data.suspects||[]);
 
     localStorage.setItem(LAST_SLOT_KEY,name);
     updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
@@ -2731,10 +3150,14 @@ function autoLoadLastSlot(){
     gameDay=data.gameDay||1;
     gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
     responsePlans=data.responsePlans||[];
+    cashflowLog=data.cashflowLog||[];
     data.stations?.forEach(s=>recreateStation(s));
     loadESNData(data.esns);
     loadDCData(data.dispatchCenters);
     loadBoxAlarmData(data.boxAlarms);
+    loadHospitalData(data.hospitals||[]);
+    loadJailData(data.jails||[]);
+    loadSuspectData(data.suspects||[]);
     updateMoney(0); renderStationList(); renderStats();
     renderResponsePlanList(); renderBoxAlarmList();
     setStatus(`💾 Loaded "${lastName}" — ${stations.length} station(s), ${esns.length} ESN(s).`);
@@ -2742,60 +3165,9 @@ function autoLoadLastSlot(){
   }catch(e){ console.error('Auto-load failed',e); return false; }
 }
 
-// Rebuilds a station from saved data and places it on the map.
-function recreateStation(s){
-  const color=getStationColor(s.type);
-  const icon=L.divIcon({
-    className:'',
-    html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);"></div>`,
-    iconSize:[22,22],iconAnchor:[11,22]
-  });
-  const marker=L.marker([s.lat,s.lng],{icon}).addTo(map);
-  marker.bindTooltip(_buildStationTooltip(s.name, s.type),
-    {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
-  marker.on('click',()=>openManageStation(s.id));
-  if(s.inService===false) marker.setOpacity(.4);
-  const station={...s, marker,
-    inService: s.inService!==false,
-    units:s.units.map(u=>({
-      ...u, inService:u.inService!==false,
-      // Normalize any mid-call status to 'available' — animations don't survive page loads
-      status:['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
-      _animGen:0,
-      incidentId:null,routeLine:null,returnLine:null,animMarker:null,routeCoords:[]
-    }))
-  };
-  stations.push(station);
-}
+// recreateStation() is in stations.js
 
-// ── SEED TEST STATIONS ────────────────────────────────────────────────────────
-function seedTestData(){
-  if(stations.length>0) return;
-  if(!BAM_CONFIG.seedStations?.length) return;
-  BAM_CONFIG.seedStations.forEach(seed=>{
-    const color=getStationColor(seed.type);
-    const icon=L.divIcon({
-      className:'',
-      html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);opacity:.7;"></div>`,
-      iconSize:[22,22],iconAnchor:[11,22]
-    });
-    const id='st_seed_'+Date.now()+'_'+Math.random();
-    const marker=L.marker([seed.lat,seed.lng],{icon}).addTo(map);
-    marker.bindTooltip(_buildStationTooltip(seed.name, seed.type),
-      {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
-    marker.on('click',()=>openManageStation(id));
-    stations.push({
-      id, name:seed.name, type:seed.type, lat:seed.lat, lng:seed.lng,
-      upgrades:[], marker, inService:true,
-      units:seed.units.map((u,i)=>({
-        id:'u_seed_'+Date.now()+'_'+i, name:u.name, typeKey:u.typeKey,
-        status:'available', inService:true, _animGen:0,
-        incidentId:null,routeLine:null,returnLine:null,animMarker:null,routeCoords:[]
-      }))
-    });
-  });
-  renderStationList(); renderStats();
-}
+// seedTestData() and recreateStation() are in stations.js
 
 // ── INCIDENT SPAWNER ──────────────────────────────────────────────────────────
 function scheduleNextSpawn(){
@@ -2819,6 +3191,7 @@ document.addEventListener('keydown',e=>{
     closeStationModal(); closeDispatch(); closeSaveModal(); closeSettings();
     closeESNModal(); closeDCModal(); closeDCSummary();
     closeResponsePlanModal(); closeBoxAlarmModal(); closeManageStation();
+    closeFacilityModal(); closeCashflowModal(); closeFacilitiesModal();
     if(drawingESN) cancelESNDraw();
   }
   if(e.key==='Enter' && drawingESN){ e.preventDefault(); _finishDrawESN(); }
