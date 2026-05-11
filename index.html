@@ -1,0 +1,2870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>By Any Means — CAD</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:      #0a0c10;
+      --panel:   #12161e;
+      --panel2:  #1a1f2b;
+      --border:  #252c3a;
+      --border2: #2e3748;
+      --accent:  #e8431a;
+      --gold:    #f0a500;
+      --text:    #d0d8e8;
+      --muted:   #5a6478;
+      --fire:    #e8431a;
+      --ems:     #1a9eff;
+      --police:  #6270f5;
+      --green:   #34c96a;
+      --mono:    'Share Tech Mono', monospace;
+      --ui:      'Rajdhani', sans-serif;
+    }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--ui);}
+
+    /* ── HEADER ── */
+    #header{
+      display:flex;align-items:center;gap:16px;padding:6px 16px;height:46px;
+      background:var(--panel);border-bottom:2px solid var(--accent);
+      flex-shrink:0;z-index:900;position:relative;
+    }
+    .logo{font-family:var(--mono);font-size:1.1rem;letter-spacing:3px;color:var(--accent);}
+    .logo span{color:var(--gold);}
+    .header-right{margin-left:auto;display:flex;align-items:center;gap:20px;}
+    .hstat{text-align:center;}
+    .hstat .v{font-family:var(--mono);font-size:1.1rem;color:var(--gold);}
+    .hstat .l{font-size:.6rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
+    #money-display{font-family:var(--mono);font-size:1.2rem;color:var(--green);letter-spacing:1px;}
+    .money-lbl{font-size:.6rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
+
+    /* ── LAYOUT ── */
+    #layout{display:flex;height:calc(100vh - 46px - 26px);}
+
+    /* ── SIDEBAR ── */
+    #sidebar{
+      width:250px;flex-shrink:0;
+      background:var(--panel);border-right:1px solid var(--border);
+      display:flex;flex-direction:column;overflow:hidden;
+    }
+    .sb-section{padding:10px 12px;border-bottom:1px solid var(--border);}
+    .sb-title{font-size:.62rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
+    .tool-btn{
+      display:block;width:100%;padding:7px 10px;margin-bottom:5px;
+      background:var(--bg);border:1px solid var(--border);color:var(--text);
+      font-family:var(--ui);font-size:.9rem;font-weight:600;letter-spacing:.5px;
+      text-transform:uppercase;cursor:pointer;border-radius:2px;text-align:left;
+      transition:border-color .15s,color .15s,background .15s;
+    }
+    .tool-btn:hover{border-color:var(--accent);color:var(--accent);}
+    .tool-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(232,67,26,.08);}
+    .tool-btn.esn-btn{border-color:rgba(240,165,0,.3);color:var(--gold);}
+    .tool-btn.esn-btn:hover,.tool-btn.esn-btn.active{border-color:var(--gold);background:rgba(240,165,0,.08);}
+    .tool-btn .cost{float:right;font-family:var(--mono);font-size:.75rem;color:var(--muted);}
+
+    /* ── SIDEBAR TABS ── */
+    .sb-tabs{display:flex;border-bottom:1px solid var(--border);}
+    .sb-tab{
+      flex:1;padding:7px 4px;text-align:center;font-size:.65rem;
+      letter-spacing:1px;text-transform:uppercase;color:var(--muted);
+      cursor:pointer;border-bottom:2px solid transparent;
+      transition:color .15s,border-color .15s;
+    }
+    .sb-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+
+    /* search bar */
+    .sb-search{
+      padding:8px 12px;border-bottom:1px solid var(--border);
+    }
+    .sb-search input{
+      width:100%;background:var(--bg);border:1px solid var(--border);
+      color:var(--text);font-family:var(--mono);font-size:.75rem;
+      padding:5px 8px;border-radius:2px;
+    }
+    .sb-search input:focus{outline:none;border-color:var(--border2);}
+
+    /* station / ESN list scroll */
+    .sb-scroll{flex:1;overflow-y:auto;padding:10px 12px;}
+
+    /* station cards */
+    .scard{
+      background:var(--bg);border:1px solid var(--border);border-radius:2px;
+      padding:8px 10px;margin-bottom:6px;
+      transition:border-color .15s;
+    }
+    .scard.oos{opacity:.5;}
+    .scard:hover{border-color:var(--border2);}
+    .scard .sn{font-weight:700;font-size:.9rem;color:var(--gold);}
+    .scard .st{font-size:.62rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;}
+    .scard .su{font-size:.75rem;color:var(--text);}
+    .scard-actions{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;}
+    .oos-badge{
+      display:inline-block;padding:0 4px;background:rgba(232,67,26,.2);
+      border:1px solid var(--accent);color:var(--accent);
+      font-size:.58rem;letter-spacing:1px;border-radius:2px;vertical-align:middle;
+    }
+    .unit-pill{
+      display:inline-block;padding:1px 6px;border-radius:10px;
+      font-size:.65rem;font-family:var(--mono);margin:2px 2px 0 0;border:1px solid;
+      cursor:pointer;transition:opacity .15s;
+    }
+    .unit-pill.available{border-color:var(--green);color:var(--green);}
+    .unit-pill.dispatched{border-color:var(--gold);color:var(--gold);}
+    .unit-pill.returning{border-color:var(--muted);color:var(--muted);}
+    .unit-pill.oos{border-color:var(--accent);color:var(--accent);text-decoration:line-through;}
+
+    /* tag pills */
+    .tag-pill{
+      display:inline-block;padding:1px 5px;border-radius:10px;
+      font-size:.62rem;font-family:var(--mono);margin:1px;border:1px solid;
+    }
+
+    /* plans tab */
+    .plans-section-title{
+      font-size:.62rem;letter-spacing:2px;text-transform:uppercase;
+      color:var(--muted);margin:10px 0 6px;
+    }
+    .plan-card{
+      background:var(--bg);border:1px solid var(--border);border-radius:2px;
+      padding:8px 10px;margin-bottom:5px;
+    }
+    .plan-name{font-weight:700;font-size:.88rem;color:var(--gold);}
+    .plan-meta{font-size:.68rem;color:var(--muted);margin-top:2px;}
+
+    /* ── MAP ── */
+    #map{flex:1;background:#0a0c10;}
+    .leaflet-tile-pane{filter:brightness(0.65) saturate(0.75) contrast(1.05);}
+    .leaflet-container{background:#0a0c10;}
+    .esn-label{
+      background:transparent!important;border:none!important;box-shadow:none!important;
+      font-family:'Share Tech Mono',monospace;font-size:11px;font-weight:700;
+      color:rgba(240,165,0,.8);text-shadow:0 1px 3px rgba(0,0,0,.9);
+      white-space:nowrap;
+    }
+    .dc-marker-label{
+      background:#1a1f2b;border:2px solid var(--gold);padding:3px 7px;
+      font-size:10px;font-weight:700;color:var(--gold);
+      font-family:'Share Tech Mono',monospace;border-radius:2px;
+      white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.6);
+    }
+
+    /* ── RIGHT PANEL ── */
+    #rightpanel{
+      width:290px;flex-shrink:0;
+      background:var(--panel);border-left:1px solid var(--border);
+      display:flex;flex-direction:column;overflow:hidden;
+    }
+    .rp-tabs{display:flex;border-bottom:1px solid var(--border);}
+    .rp-tab{
+      flex:1;padding:8px 4px;text-align:center;
+      font-size:.7rem;letter-spacing:1px;text-transform:uppercase;
+      color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;
+      transition:color .15s,border-color .15s;
+    }
+    .rp-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+    .rp-content{flex:1;overflow-y:auto;padding:10px 12px;}
+
+    /* incident cards */
+    .icard{
+      background:var(--bg);border:1px solid var(--border);
+      border-left:3px solid var(--fire);border-radius:2px;
+      padding:8px 10px;margin-bottom:8px;cursor:pointer;
+      transition:border-color .15s;
+    }
+    .icard.ems{border-left-color:var(--ems);}
+    .icard.police{border-left-color:var(--police);}
+    .icard.escalated{border-left-color:#ff0;animation:flash .8s infinite alternate;}
+    @keyframes flash{from{opacity:1}to{opacity:.6}}
+    .icard .ihead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px;}
+    .icard .iname{font-weight:700;font-size:.9rem;}
+    .icard .itime{font-family:var(--mono);font-size:.65rem;color:var(--muted);}
+    .icard .ireqs{font-size:.7rem;color:var(--muted);margin:3px 0;}
+    .icard .istatus{font-size:.68rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-top:4px;}
+    .istatus.needs{color:var(--accent);}
+    .istatus.partial{color:var(--gold);}
+    .istatus.enroute{color:var(--ems);}
+    .istatus.resolved{color:var(--green);}
+    .icard .ipatients{font-size:.68rem;color:var(--ems);margin-top:2px;}
+
+    /* ── SHARED MODAL CHROME ── */
+    .modal-overlay{
+      display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);
+      z-index:9999;align-items:center;justify-content:center;
+    }
+    .modal-overlay.open{display:flex;}
+    .modal-box{
+      background:var(--panel2);border:1px solid var(--border2);
+      border-top:3px solid var(--accent);border-radius:3px;
+      display:flex;flex-direction:column;font-size:.85rem;overflow:hidden;
+    }
+    .modal-box.gold-top{border-top-color:var(--gold);}
+    .modal-header{padding:14px 16px;border-bottom:1px solid var(--border);}
+    .modal-header h2{font-size:1rem;letter-spacing:1px;text-transform:uppercase;}
+    .modal-header h2.accent{color:var(--accent);}
+    .modal-header h2.gold{color:var(--gold);}
+    .modal-header .modal-sub{font-size:.72rem;color:var(--muted);margin-top:2px;}
+    .modal-body{flex:1;overflow-y:auto;padding:12px 16px;}
+    .modal-footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;}
+    label.field-label{display:block;font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:3px;margin-top:10px;}
+    input,select{
+      width:100%;background:var(--bg);border:1px solid var(--border);
+      color:var(--text);font-family:var(--ui);font-size:.9rem;
+      padding:6px 9px;border-radius:2px;
+    }
+    .btn-primary{
+      flex:1;background:var(--accent);color:#fff;border:none;
+      padding:9px;font-family:var(--ui);font-size:.9rem;font-weight:700;
+      letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:2px;
+    }
+    .btn-primary:disabled{background:var(--muted);cursor:not-allowed;}
+    .btn-primary.gold{background:var(--gold);color:#000;}
+    .btn-secondary{
+      flex:1;background:transparent;color:var(--muted);
+      border:1px solid var(--border);padding:9px;
+      font-family:var(--ui);font-size:.9rem;cursor:pointer;border-radius:2px;
+    }
+    .btn-sm{
+      padding:4px 10px;font-family:var(--ui);font-size:.75rem;font-weight:600;
+      letter-spacing:.5px;text-transform:uppercase;cursor:pointer;border-radius:2px;
+      border:1px solid var(--border2);background:var(--panel2);color:var(--text);
+      transition:border-color .15s,color .15s;
+    }
+    .btn-sm:hover{border-color:var(--ems);color:var(--ems);}
+    .btn-sm.danger:hover{border-color:var(--accent);color:var(--accent);}
+    .section-title{font-size:.62rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;}
+    .modal-actions{display:flex;gap:8px;margin-top:16px;}
+
+    /* dispatch modal specific */
+    .dm-req-row{display:flex;align-items:center;gap:8px;margin-bottom:4px;font-size:.8rem;}
+    .dm-req-tag{
+      padding:2px 8px;border-radius:2px;font-family:var(--mono);font-size:.68rem;
+      background:rgba(232,67,26,.15);border:1px solid var(--accent);color:var(--accent);
+    }
+    .dm-req-tag.met{background:rgba(52,201,106,.15);border-color:var(--green);color:var(--green);}
+    .dm-unit-row{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:7px 10px;background:var(--bg);border:1px solid var(--border);
+      border-radius:2px;margin-bottom:4px;cursor:pointer;
+      transition:border-color .15s;
+    }
+    .dm-unit-row:hover{border-color:var(--ems);}
+    .dm-unit-row.selected{border-color:var(--green);background:rgba(52,201,106,.08);}
+    .dm-unit-row.unavailable{opacity:.35;cursor:not-allowed;}
+    .dm-unit-name{font-weight:700;font-size:.85rem;}
+    .dm-unit-station{font-size:.68rem;color:var(--muted);}
+    .dm-unit-eta{font-family:var(--mono);font-size:.8rem;color:var(--gold);}
+    .dm-patient-row{
+      padding:6px 10px;background:var(--bg);border:1px solid var(--border);
+      border-radius:2px;margin-bottom:3px;font-size:.78rem;
+    }
+    .dm-patient-row .ptype{color:var(--ems);font-weight:600;}
+    .dm-patient-row .pals{color:var(--accent);font-size:.68rem;}
+    .dm-ba-card{
+      padding:8px 10px;background:rgba(240,165,0,.06);border:1px solid rgba(240,165,0,.3);
+      border-radius:2px;margin-bottom:6px;
+    }
+    .dm-ba-name{font-weight:700;font-size:.85rem;color:var(--gold);}
+    .dm-ba-reqs{font-size:.7rem;color:var(--muted);margin-top:2px;}
+    .dm-plan-row{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:6px 10px;background:var(--bg);border:1px solid var(--border);
+      border-radius:2px;margin-bottom:4px;cursor:pointer;
+      transition:border-color .15s;
+    }
+    .dm-plan-row:hover{border-color:var(--gold);}
+    .dm-plan-name{font-weight:700;font-size:.82rem;}
+    .dm-plan-reqs{font-size:.68rem;color:var(--muted);}
+
+    /* ESN modal specific */
+    .esn-assign-group{margin-bottom:12px;}
+    .esn-assign-label{font-size:.62rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;}
+    .esn-assign-empty{font-size:.72rem;color:var(--muted);font-style:italic;padding:3px 0;}
+    .esn-check-row{
+      display:flex;align-items:center;gap:8px;
+      font-size:.82rem;padding:4px 0;cursor:pointer;
+    }
+    .esn-check-row input{width:auto;flex-shrink:0;}
+    .ba-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);}
+    .ba-info{flex:1;min-width:0;}
+    .ba-name{font-weight:700;font-size:.82rem;color:var(--gold);}
+    .ba-meta{font-size:.65rem;color:var(--muted);}
+    .ba-actions{flex-shrink:0;}
+    .ba-req-row{display:flex;gap:6px;align-items:center;margin-bottom:4px;}
+    .ba-req-select{flex:1;}
+    .dc-status-row{display:flex;align-items:center;justify-content:space-between;font-size:.82rem;}
+
+    /* save modal */
+    .save-slot-list{overflow-y:auto;display:flex;flex-direction:column;gap:5px;max-height:300px;}
+    .save-slot-row{
+      display:flex;align-items:center;
+      padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:2px;
+    }
+    .save-slot-info{flex:1;min-width:0;}
+    .save-slot-name{font-weight:700;font-size:.9rem;color:var(--gold);}
+    .save-slot-meta{font-size:.63rem;color:var(--muted);margin-top:1px;}
+    .save-slot-actions{display:flex;gap:6px;margin-left:10px;flex-shrink:0;}
+    .save-new-row{display:flex;gap:8px;border-top:1px solid var(--border);padding-top:14px;}
+    .save-new-row input{flex:1;}
+    .save-empty{color:var(--muted);font-size:.78rem;font-style:italic;padding:6px 0;}
+
+    /* response plan req row */
+    .rp-req-row{display:flex;gap:6px;align-items:center;margin-bottom:4px;}
+    .rp-req-select{flex:1;}
+
+    /* ── STATUS BAR ── */
+    #statusbar{
+      height:26px;background:var(--panel);border-top:1px solid var(--border);
+      padding:4px 14px;font-size:.68rem;font-family:var(--mono);
+      color:var(--muted);letter-spacing:.5px;flex-shrink:0;
+    }
+    .unit-marker-dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(255,255,255,.5);}
+    ::-webkit-scrollbar{width:3px;}
+    ::-webkit-scrollbar-track{background:var(--bg);}
+    ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+    .empty-msg{color:var(--muted);font-size:.78rem;font-style:italic;line-height:1.6;}
+
+    /* ── ESN DRAW TOOLBAR (floats at top-center of viewport while drawing) ── */
+    #esn-draw-toolbar{
+      position:fixed;top:52px;left:50%;transform:translateX(-50%);
+      z-index:2000;background:var(--panel2);
+      border:1px solid var(--gold);border-top:2px solid var(--gold);
+      border-radius:0 0 4px 4px;padding:7px 14px;
+      display:none;align-items:center;gap:12px;
+      box-shadow:0 4px 20px rgba(0,0,0,.6);
+      font-family:var(--mono);font-size:.75rem;
+    }
+    #draw-toolbar-status{color:var(--gold);min-width:120px;text-align:center;}
+
+    /* ── LAYER CONTROL (Leaflet bottom-left) ── */
+    .layer-ctrl-wrap{
+      background:var(--panel2);border:1px solid var(--border2);
+      border-radius:3px;overflow:hidden;
+    }
+    .layer-ctrl-btn{
+      display:block;width:100%;padding:7px 10px;
+      background:var(--panel2);border:none;color:var(--text);
+      cursor:pointer;font-size:.85rem;text-align:center;letter-spacing:1px;
+    }
+    .layer-ctrl-btn:hover{background:var(--panel);}
+    .layer-ctrl-panel{
+      padding:8px 10px;border-top:1px solid var(--border);
+      display:none;flex-direction:column;gap:6px;min-width:170px;
+    }
+    .layer-ctrl-panel.open{display:flex;}
+    .layer-ctrl-panel label{
+      display:flex;align-items:center;gap:7px;
+      font-size:.78rem;cursor:pointer;color:var(--text);
+    }
+    .layer-ctrl-panel input{width:auto;}
+
+    /* ── GAME TIME + SPEED CONTROLS (header) ── */
+    .game-clock{display:flex;flex-direction:column;align-items:center;}
+    .game-clock .v{font-family:var(--mono);font-size:1rem;color:var(--gold);}
+    .game-clock .l{font-size:.58rem;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
+    .speed-ctrl{display:flex;align-items:center;gap:3px;}
+    .speed-btn{
+      padding:3px 7px;background:var(--bg);border:1px solid var(--border);
+      color:var(--muted);font-family:var(--mono);font-size:.7rem;
+      cursor:pointer;border-radius:2px;transition:border-color .15s,color .15s;
+    }
+    .speed-btn:hover{border-color:var(--gold);color:var(--gold);}
+    .speed-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(240,165,0,.1);}
+
+    /* ── ESN COLOR SWATCHES ── */
+    .color-swatch-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;}
+    .color-swatch{
+      width:22px;height:22px;border-radius:50%;cursor:pointer;
+      border:2px solid transparent;transition:transform .15s,border-color .15s;
+      box-shadow:0 1px 4px rgba(0,0,0,.5);
+    }
+    .color-swatch:hover,.color-swatch.selected{transform:scale(1.25);border-color:#fff;}
+
+    /* ── STATION MANAGE MODAL ── */
+    .manage-unit-row{
+      display:flex;align-items:center;gap:7px;
+      padding:5px 0;border-bottom:1px solid var(--border);
+    }
+    .manage-unit-name{flex:1;min-width:0;}
+    .manage-unit-name input{padding:4px 7px;font-size:.82rem;}
+    .manage-unit-label{font-size:.68rem;color:var(--muted);flex-shrink:0;min-width:80px;}
+
+    /* ── RESPONSE PLAN COUNT ROWS ── */
+    .rp-req-count{width:52px;text-align:center;flex-shrink:0;}
+    .rp-req-x{font-size:.75rem;color:var(--muted);flex-shrink:0;}
+
+    /* ── RESOLUTION PROGRESS BAR ── */
+    .res-bar-track{
+      height:6px;background:var(--border);border-radius:3px;
+      overflow:hidden;margin:6px 0 2px;
+    }
+    .res-bar-fill{
+      height:100%;background:var(--green);
+      border-radius:3px;transition:width .8s linear;
+    }
+    .res-bar-fill.stalled{background:var(--accent);}
+
+    /* ── UNITS ENROUTE SECTION IN DISPATCH MODAL ── */
+    .dm-enroute-row{
+      display:flex;align-items:center;justify-content:space-between;
+      padding:5px 10px;background:rgba(240,165,0,.07);
+      border:1px solid rgba(240,165,0,.25);border-radius:2px;margin-bottom:3px;
+      font-size:.8rem;
+    }
+    .dm-enroute-name{font-weight:700;}
+    .dm-enroute-eta{font-family:var(--mono);font-size:.75rem;color:var(--gold);}
+
+    /* ── UNIT LABELS (AVL style) ── */
+    .unit-label{
+      position:absolute;top:-18px;left:50%;transform:translateX(-50%);
+      white-space:nowrap;font-size:9px;font-family:var(--mono);color:#fff;
+      pointer-events:none;letter-spacing:.5px;
+      background:rgba(30,33,43,0.9);border:1px solid #000;
+      border-radius:2px;padding:1px 5px;
+    }
+    /* ── SETTINGS MODAL ── */
+    .settings-tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:10px;}
+    .settings-tab{
+      padding:7px 14px;font-size:.72rem;letter-spacing:1px;text-transform:uppercase;
+      color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;
+      transition:color .15s,border-color .15s;
+    }
+    .settings-tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+    .settings-pane{display:none;}
+    .settings-pane.active{display:block;}
+    .settings-row{display:flex;align-items:center;justify-content:space-between;padding:6px 0;font-size:.82rem;}
+    .settings-label{color:var(--text);}
+    .settings-color{width:40px;height:24px;padding:1px 2px;border:1px solid var(--border);background:var(--bg);cursor:pointer;border-radius:2px;}
+    .settings-select{width:auto;padding:4px 8px;font-size:.82rem;}
+    .settings-range{width:120px;}
+
+    /* ── STATION TOOLTIPS (hover / persistent labels) ── */
+    .station-tooltip{
+      background:var(--panel2)!important;border:1px solid var(--gold)!important;
+      border-radius:2px!important;padding:4px 9px!important;
+      font-family:var(--mono)!important;font-size:10px!important;font-weight:700!important;
+      color:var(--gold)!important;white-space:nowrap!important;
+      box-shadow:0 2px 8px rgba(0,0,0,.7)!important;
+    }
+    .station-tooltip.leaflet-tooltip-top::before{border-top-color:var(--gold)!important;}
+    .station-tooltip.leaflet-tooltip-bottom::before{border-bottom-color:var(--gold)!important;}
+
+    /* ── OVERWRITE SAVE BUTTON ── */
+    .btn-sm.overwrite{border-color:var(--border2);color:var(--muted);}
+    .btn-sm.overwrite:hover{border-color:var(--gold);color:var(--gold);}
+    .btn-sm.overwrite.confirm{border-color:var(--accent);color:var(--accent);
+      background:rgba(232,67,26,.12);font-weight:700;}
+
+    /* ── DC FILTER CARD (selected state in DC list) ── */
+    .dc-filter-card{cursor:pointer;transition:border-color .15s;}
+    .dc-filter-card:hover{border-color:var(--border2);}
+    .dc-filter-card.active{border-color:var(--gold);background:rgba(240,165,0,.07);}
+    .dc-collapse-btn{
+      background:none;border:none;color:var(--muted);cursor:pointer;
+      font-size:.8rem;padding:0 3px;line-height:1;transition:color .15s;
+    }
+    .dc-collapse-btn:hover{color:var(--text);}
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div id="header">
+  <div class="logo">By <span>Any</span> Means</div>
+  <div style="font-size:.65rem;color:var(--muted);letter-spacing:1px;">SUSQUEHANNA CO. · FIELD OPERATIONS</div>
+  <div class="header-right">
+    <div class="hstat"><div class="v" id="hs-stations">0</div><div class="l">Stations</div></div>
+    <div class="hstat"><div class="v" id="hs-units">0</div><div class="l">Units</div></div>
+    <div class="hstat"><div class="v" id="hs-esns">0</div><div class="l">ESNs</div></div>
+    <div class="hstat"><div class="v" id="hs-active">0</div><div class="l">Active</div></div>
+    <div class="hstat"><div class="v" id="hs-resolved">0</div><div class="l">Resolved</div></div>
+    <div style="width:1px;height:28px;background:var(--border);margin:0 4px;"></div>
+    <div class="game-clock"><div class="v" id="hs-day">Day 1</div><div class="l">Day</div></div>
+    <div class="game-clock"><div class="v" id="hs-time">08:00:00</div><div class="l">Time</div></div>
+    <div class="speed-ctrl">
+      <button class="speed-btn" id="spd-0"  onclick="setGameSpeed(0)"  title="Pause">⏸</button>
+      <button class="speed-btn active" id="spd-1"  onclick="setGameSpeed(1)"  title="1×">1×</button>
+      <button class="speed-btn" id="spd-2"  onclick="setGameSpeed(2)"  title="2×">2×</button>
+      <button class="speed-btn" id="spd-5"  onclick="setGameSpeed(5)"  title="5×">5×</button>
+      <button class="speed-btn" id="spd-10" onclick="setGameSpeed(10)" title="10×">10×</button>
+      <button class="speed-btn" id="spd-30" onclick="setGameSpeed(30)" title="30×">30×</button>
+      <button class="speed-btn" id="spd-60" onclick="setGameSpeed(60)" title="60×">60×</button>
+    </div>
+    <div style="width:1px;height:28px;background:var(--border);margin:0 4px;"></div>
+    <div>
+      <div class="money-lbl">Budget</div>
+      <div id="money-display">$0</div>
+    </div>
+    <button class="btn-sm" id="btn-settings" onclick="openSettings()" title="Settings" style="padding:5px 10px;">⚙ Settings</button>
+  </div>
+</div>
+
+<!-- LAYOUT -->
+<div id="layout">
+
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="sb-section">
+      <div class="sb-title">Build — Stations</div>
+      <button class="tool-btn" id="btn-fire"   onclick="setPlacing('fire')">
+        🔴 Fire Station <span class="cost" id="cost-fire"></span>
+      </button>
+      <button class="tool-btn" id="btn-ems"    onclick="setPlacing('ems')">
+        🔵 EMS Station <span class="cost" id="cost-ems"></span>
+      </button>
+      <button class="tool-btn" id="btn-police" onclick="setPlacing('police')">
+        🟣 Police Station <span class="cost" id="cost-police"></span>
+      </button>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title">Build — Coverage</div>
+      <button class="tool-btn esn-btn" id="btn-draw-esn" onclick="startDrawESN()">
+        🗺 Draw ESN Zone
+      </button>
+      <button class="tool-btn esn-btn" id="btn-dispatch-center" onclick="startPlaceDispatchCenter()">
+        📡 Dispatch Center
+      </button>
+    </div>
+    <div class="sb-section">
+      <button class="tool-btn active" id="btn-pan" onclick="setPlacing(null)">
+        ✋ Pan / Select
+      </button>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title">Actions</div>
+      <button class="tool-btn" onclick="openSaveModal()">💾 Save / Load <span style="float:right;font-size:.65rem;color:var(--muted)">Ctrl+S</span></button>
+      <button class="tool-btn" onclick="spawnIncident(true)">🚨 Spawn Test Call</button>
+      <button class="tool-btn" onclick="newGame()" style="color:var(--muted);border-color:rgba(90,100,120,.5);">🆕 New Game</button>
+    </div>
+    <div class="sb-section">
+      <div class="sb-title">Dev Tools</div>
+      <div style="display:flex;gap:5px;">
+        <input type="number" id="dev-money-input" placeholder="Amount"
+               style="flex:1;padding:5px 8px;font-size:.8rem;"
+               onkeydown="if(event.key==='Enter') devSetMoney()"/>
+        <button class="btn-sm" onclick="devSetMoney()" style="flex-shrink:0;padding:5px 10px;">Set $</button>
+      </div>
+      <div style="display:flex;gap:5px;margin-top:5px;">
+        <button class="btn-sm" style="flex:1;" onclick="updateMoney( 10000)">+$10k</button>
+        <button class="btn-sm" style="flex:1;" onclick="updateMoney( 50000)">+$50k</button>
+        <button class="btn-sm" style="flex:1;" onclick="updateMoney(100000)">+$100k</button>
+      </div>
+    </div>
+
+    <!-- SIDEBAR TABS -->
+    <div class="sb-tabs">
+      <div class="sb-tab active" id="sbtab-stations" onclick="switchSBTab('stations')">Stations</div>
+      <div class="sb-tab" id="sbtab-esns"     onclick="switchSBTab('esns')">DCs &amp; ESNs</div>
+      <div class="sb-tab" id="sbtab-plans"    onclick="switchSBTab('plans')">Plans</div>
+    </div>
+
+    <!-- STATIONS TAB -->
+    <div id="sb-stations-pane">
+      <div class="sb-search">
+        <input type="text" id="station-search" placeholder="Search stations…"
+               oninput="renderStationList()"/>
+      </div>
+      <div class="sb-scroll" id="station-scroll">
+        <div class="empty-msg">No stations yet.<br>Select a type above and click the map.</div>
+      </div>
+    </div>
+
+    <!-- ESNs TAB -->
+    <div id="sb-esns-pane" style="display:none;flex:1;display:none;flex-direction:column;overflow:hidden;">
+      <!-- DC section at top of ESN tab — collapsible, click a DC card to filter ESN list -->
+      <div style="border-bottom:1px solid var(--border);">
+        <div style="padding:6px 12px 4px;display:flex;align-items:center;justify-content:space-between;">
+          <div class="sb-title" style="margin-bottom:0;">Dispatch Centers</div>
+          <button class="dc-collapse-btn" id="dc-collapse-btn" onclick="toggleDCSection()" title="Collapse/expand">▲</button>
+        </div>
+        <div id="dc-section-body" style="padding:0 12px 8px;">
+          <div id="dc-list"><div class="empty-msg">No dispatch centers placed yet.</div></div>
+        </div>
+      </div>
+      <div class="sb-search">
+        <input type="text" id="esn-search" placeholder="Search ESN zones…"
+               oninput="renderESNList()"/>
+      </div>
+      <div class="sb-scroll" id="esn-scroll">
+        <div class="empty-msg">No ESN zones yet.<br>Click "Draw ESN Zone" and draw on the map.</div>
+      </div>
+    </div>
+
+    <!-- PLANS TAB -->
+    <div id="sb-plans-pane" style="display:none;flex:1;flex-direction:column;overflow:hidden;">
+      <div class="sb-scroll" id="plans-scroll">
+        <div class="plans-section-title">Response Plans</div>
+        <button class="btn-sm" style="width:100%;margin-bottom:8px;" onclick="openResponsePlanModal()">+ New Response Plan</button>
+        <div id="rp-list"><div class="empty-msg">No response plans yet.</div></div>
+        <div class="plans-section-title" style="margin-top:14px;">Box Alarms</div>
+        <div id="ba-list"><div class="empty-msg">No box alarms yet.<br>Open an ESN and click "+ Box Alarm".</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAP -->
+  <div id="map"></div>
+
+  <!-- RIGHT PANEL -->
+  <div id="rightpanel">
+    <div class="rp-tabs">
+      <div class="rp-tab active" id="tab-incidents" onclick="switchTab('incidents')">Incidents</div>
+      <div class="rp-tab" id="tab-log" onclick="switchTab('log')">Call Log</div>
+    </div>
+    <div class="rp-content" id="rp-incidents"></div>
+    <div class="rp-content" id="rp-log" style="display:none;"></div>
+  </div>
+</div>
+
+<!-- STATUS BAR -->
+<div id="statusbar">SYSTEM READY</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ MODALS ═══ -->
+
+<!-- STATION MODAL -->
+<div id="station-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:380px;padding:20px;">
+    <h2 id="sm-title" class="gold" style="font-size:1rem;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px;">New Station</h2>
+    <label class="field-label">Station Name</label>
+    <input type="text" id="sm-name" placeholder="e.g. Harford Fire Co."/>
+    <label class="field-label">First Unit Name</label>
+    <input type="text" id="sm-unitname" placeholder="e.g. Engine 51"/>
+    <label class="field-label">First Unit Type</label>
+    <select id="sm-unittype"></select>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeStationModal()">Cancel</button>
+      <button class="btn-primary gold" onclick="confirmStation()">Place Station</button>
+    </div>
+  </div>
+</div>
+
+<!-- DISPATCH / CAD MODAL -->
+<div id="dispatch-modal" class="modal-overlay">
+  <div class="modal-box" style="width:500px;max-height:85vh;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;">
+      <div>
+        <h2 id="dm-title" class="accent">Incident</h2>
+        <div class="modal-sub" id="dm-sub"></div>
+      </div>
+      <button id="dm-refresh-btn" class="btn-sm" onclick="_manualRefreshDispatch()"
+        style="flex-shrink:0;margin-top:2px;font-size:.7rem;padding:3px 8px;" title="Refresh call window">↻ Update</button>
+    </div>
+    <div class="modal-body" id="dm-body"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeDispatch()">Close</button>
+      <button class="btn-primary" id="dm-dispatch-btn" onclick="executeDispatch()">Dispatch Selected</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div id="settings-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:460px;max-height:85vh;">
+    <div class="modal-header">
+      <h2 class="gold">⚙ Settings</h2>
+    </div>
+    <div class="modal-body" id="settings-body">
+      <div class="settings-tabs">
+        <div class="settings-tab active" onclick="switchSettingsTab('simulation')">Simulation</div>
+        <div class="settings-tab" onclick="switchSettingsTab('avl')">AVL Labels</div>
+        <div class="settings-tab" onclick="switchSettingsTab('map')">Map</div>
+      </div>
+      <!-- Simulation tab -->
+      <div id="stab-simulation" class="settings-pane active">
+        <div class="settings-row">
+          <span class="settings-label">Call Spawn Rate</span>
+          <select id="s-spawn-rate" class="settings-select" onchange="applySpawnRate(this.value)">
+            <option value="0.25">0.25× — Very Slow</option>
+            <option value="0.5">0.5× — Slow</option>
+            <option value="0.75">0.75× — Slightly Slow</option>
+            <option value="1" selected>1× — Normal</option>
+            <option value="1.5">1.5× — Busy</option>
+            <option value="2">2× — Fast</option>
+            <option value="3">3× — Chaos</option>
+          </select>
+        </div>
+      </div>
+      <!-- AVL Labels tab -->
+      <div id="stab-avl" class="settings-pane">
+        <div class="settings-row">
+          <span class="settings-label">Enroute Background</span>
+          <input type="color" id="s-avl-enroute" class="settings-color" onchange="applyAVLColor('enroute',this.value)"/>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">On Scene Background</span>
+          <input type="color" id="s-avl-onscene" class="settings-color" onchange="applyAVLColor('on_scene',this.value)"/>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Returning Background</span>
+          <input type="color" id="s-avl-returning" class="settings-color" onchange="applyAVLColor('returning',this.value)"/>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Border Color</span>
+          <input type="color" id="s-avl-border" class="settings-color" onchange="applyAVLStyle('borderColor',this.value)"/>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Text Color</span>
+          <input type="color" id="s-avl-text" class="settings-color" onchange="applyAVLStyle('textColor',this.value)"/>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Font Size (<span id="s-avl-size-lbl">9</span>px)</span>
+          <input type="range" id="s-avl-size" class="settings-range" min="7" max="14" value="9"
+            oninput="document.getElementById('s-avl-size-lbl').textContent=this.value;applyAVLStyle('fontSize',parseInt(this.value))"/>
+        </div>
+      </div>
+      <!-- Map tab -->
+      <div id="stab-map" class="settings-pane">
+        <div style="font-size:.8rem;color:var(--muted);padding:10px 0;">Map style options — coming soon.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeSettings()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- SAVE / LOAD MODAL -->
+<div id="save-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:440px;max-height:80vh;padding:20px;gap:14px;flex-direction:column;">
+    <h2 class="gold" style="font-size:1rem;letter-spacing:1px;text-transform:uppercase;">Save / Load Game</h2>
+    <div class="save-slot-list" id="save-slot-list"></div>
+    <div class="save-new-row">
+      <input type="text" id="save-new-name" placeholder="New save name…" maxlength="40"
+             onkeydown="if(event.key==='Enter') saveToSlot()"/>
+      <button class="btn-primary gold" style="flex:0;padding:8px 16px;" onclick="saveToSlot()">Save</button>
+      <button class="btn-secondary" style="flex:0;padding:8px 16px;" onclick="closeSaveModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ESN MODAL (create / edit) -->
+<div id="esn-modal" class="modal-overlay" data-edit-id="">
+  <div class="modal-box gold-top" style="width:460px;max-height:85vh;">
+    <div class="modal-header">
+      <h2 id="esn-modal-title" class="gold">New ESN Zone</h2>
+    </div>
+    <div class="modal-body">
+      <label class="field-label">Zone Name</label>
+      <input type="text" id="esn-name-input" placeholder="e.g. ESN-1 — Harford"
+             onkeydown="if(event.key==='Enter') confirmESNModal()"/>
+
+      <label class="field-label" style="margin-top:10px;">Zone Color</label>
+      <div class="color-swatch-row" id="esn-color-swatches"></div>
+      <input type="color" id="esn-color-custom" value="#f0a500"
+             oninput="_renderColorSwatches(this.value)"
+             style="margin-top:6px;height:28px;width:48px;padding:2px;cursor:pointer;
+                    background:var(--bg);border:1px solid var(--border);border-radius:2px;"/>
+
+      <label class="field-label" style="margin-top:10px;">Label Size</label>
+      <select id="esn-label-size">
+        <option value="hidden">Hidden</option>
+        <option value="sm">Small</option>
+        <option value="md" selected>Medium (default)</option>
+        <option value="lg">Large</option>
+      </select>
+
+      <div class="section-title" style="margin-top:14px;">Station Assignments</div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:8px;">
+        Assign stations to provide coverage in this zone by service type.
+        Calls of a type only spawn here if a station is assigned for that type.
+      </div>
+      <div id="esn-assignments"></div>
+
+      <!-- Box alarms section — only shown when editing an existing ESN -->
+      <div id="esn-ba-section" style="display:none;">
+        <div class="section-title" style="margin-top:14px;">Box Alarms</div>
+        <div id="esn-ba-list"></div>
+        <button class="btn-sm" style="margin-top:6px;"
+          onclick="closeESNModal();openBoxAlarmModal(document.getElementById('esn-modal').dataset.editId)">
+          + Add Box Alarm
+        </button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeESNModal()">Cancel</button>
+      <button class="btn-sm" id="esn-edit-shape-btn" style="display:none;padding:9px 14px;"
+        onclick="startEditESNShape(document.getElementById('esn-modal').dataset.editId)">Edit Shape</button>
+      <button class="btn-primary gold" onclick="confirmESNModal()">Save ESN</button>
+    </div>
+  </div>
+</div>
+
+<!-- DISPATCH CENTER — CREATE / EDIT MODAL -->
+<div id="dc-modal" class="modal-overlay" data-edit-id="">
+  <div class="modal-box gold-top" style="width:400px;max-height:80vh;">
+    <div class="modal-header"><h2 id="dc-modal-title" class="gold">New Dispatch Center</h2></div>
+    <div class="modal-body">
+      <input type="hidden" id="dc-latlng"/>
+      <label class="field-label">Name</label>
+      <input type="text" id="dc-name-input" placeholder="e.g. Susquehanna Co. 911"
+             onkeydown="if(event.key==='Enter') confirmDCModal()"/>
+      <div class="section-title" style="margin-top:14px;">Assign ESN Zones</div>
+      <div id="dc-esn-checkboxes"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeDCModal()">Cancel</button>
+      <button class="btn-primary gold" onclick="confirmDCModal()">Place Center</button>
+    </div>
+  </div>
+</div>
+
+<!-- DISPATCH CENTER — SUMMARY MODAL -->
+<div id="dc-summary-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:420px;max-height:80vh;">
+    <div class="modal-header"><h2 id="dc-summary-name" class="gold">Dispatch Center</h2></div>
+    <div class="modal-body" id="dc-summary-body"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeDCSummary()">Close</button>
+      <button class="btn-sm" id="dc-summary-edit-btn" style="padding:9px 16px;">Edit</button>
+      <button class="btn-sm" id="dc-summary-oos-btn" style="padding:9px 16px;">Place Out of Service</button>
+    </div>
+  </div>
+</div>
+
+<!-- RESPONSE PLAN MODAL -->
+<div id="rp-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:420px;max-height:80vh;">
+    <div class="modal-header"><h2 id="rp-modal-title" class="gold">New Response Plan</h2></div>
+    <div class="modal-body">
+      <label class="field-label">Plan Name</label>
+      <input type="text" id="rp-name-input" placeholder="e.g. Structure Fire — First Alarm"
+             onkeydown="if(event.key==='Enter') confirmResponsePlan()"/>
+      <div class="section-title" style="margin-top:14px;">Unit Requirements</div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:8px;">
+        Add one row per unit needed. When applied, the closest available unit matching that tag will be selected.
+      </div>
+      <div id="rp-req-rows"></div>
+      <button class="btn-sm" style="margin-top:4px;" onclick="addRPReqRow()">+ Add Unit</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeResponsePlanModal()">Cancel</button>
+      <button class="btn-primary gold" onclick="confirmResponsePlan()">Save Plan</button>
+    </div>
+  </div>
+</div>
+
+<!-- BOX ALARM MODAL -->
+<div id="ba-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:440px;max-height:85vh;">
+    <div class="modal-header">
+      <h2 class="gold">New Box Alarm</h2>
+      <div class="modal-sub" id="ba-esn-label"></div>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="ba-esn-id"/>
+      <label class="field-label">Alarm Name</label>
+      <input type="text" id="ba-name-input" placeholder="e.g. Harford Box 1"
+             onkeydown="if(event.key==='Enter') confirmBoxAlarm()"/>
+
+      <div class="section-title" style="margin-top:14px;">Trigger — Mission Types</div>
+      <div style="font-size:.7rem;color:var(--muted);margin-bottom:6px;">
+        Leave all unchecked to match every call type in this ESN.
+      </div>
+      <div id="ba-mission-types" style="max-height:140px;overflow-y:auto;"></div>
+
+      <div class="section-title" style="margin-top:14px;">Unit Requirements</div>
+      <div id="ba-req-rows"></div>
+      <button class="btn-sm" style="margin-top:4px;" onclick="_addBAReqRow()">+ Add Unit</button>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeBoxAlarmModal()">Cancel</button>
+      <button class="btn-primary gold" onclick="confirmBoxAlarm()">Save Box Alarm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ESN DRAW TOOLBAR (visible only while drawing an ESN polygon) -->
+<div id="esn-draw-toolbar">
+  <span id="draw-toolbar-status">Click map to add points</span>
+  <button class="btn-sm" onclick="_finishDrawESN()">✓ Confirm</button>
+  <span style="font-size:.65rem;color:var(--muted);">Enter / dbl-click</span>
+  <button class="btn-sm danger" onclick="cancelESNDraw()">✕ Cancel (Esc)</button>
+</div>
+
+<!-- STATION MANAGEMENT MODAL -->
+<div id="manage-station-modal" class="modal-overlay">
+  <div class="modal-box gold-top" style="width:460px;max-height:88vh;">
+    <div class="modal-header">
+      <h2 id="msm-title" class="gold">Manage Station</h2>
+      <div class="modal-sub">Rename, add, or remove units · Delete station</div>
+    </div>
+    <div class="modal-body" id="msm-body"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeManageStation()">Close</button>
+      <button class="btn-primary" id="msm-delete-btn"
+        style="background:var(--accent);flex:0;padding:9px 18px;"
+        onclick="deleteStation()">Delete Station</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════ SCRIPTS ══ -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="config.js"></script>
+<script src="esn.js"></script>
+<script>
+// =============================================================================
+// BY ANY MEANS — GAME ENGINE v2  (Phase 2)
+// =============================================================================
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let money        = BAM_CONFIG.economy.startingMoney;
+let stations     = [];
+let incidents    = [];
+let callLog      = [];
+let resolvedCount= 0;
+let placingType  = null;
+let pendingLatLng= null;
+let activeDispatchId = null;
+let selectedUnitsForDispatch = new Set();
+let responsePlans = [];  // { id, name, requirements: [['engine'], ...] }
+
+// ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
+let gameSpeed   = 1;            // 0 = paused, 1 = real-time, 60 = 1 game-min per real-sec
+let gameDay     = 1;
+let gameSeconds = 8 * 3600;     // game clock starts at 08:00:00 (expressed in game-seconds)
+let _spawnTimer = null;         // handle for the current spawn setTimeout
+let _activeManageStation = null;  // station id open in manage modal
+let showUnitLabels       = true;   // AVL-style callsign labels on moving unit dots
+let stationLabelsVisible = false;  // persistent station name labels on map markers
+let _overwriteConfirmSlot = null;  // name of save slot pending overwrite confirmation
+let _deleteStationConfirm = null;  // station id pending two-click delete confirm
+let _deleteUnitConfirm    = null;  // unit id pending two-click delete confirm
+let _dispatchModalDirty   = false; // true when modal needs a refresh indicator
+
+// AVL label runtime colors — pulled from config defaults, overridden by settings
+let avlColors = {
+  enroute:   BAM_CONFIG.ui?.avlLabelColors?.enroute   || '#22c55e',
+  on_scene:  BAM_CONFIG.ui?.avlLabelColors?.on_scene  || '#3b82f6',
+  returning: BAM_CONFIG.ui?.avlLabelColors?.returning || '#fbbf24',
+};
+let avlStyle = {
+  borderColor: BAM_CONFIG.ui?.avlLabelStyle?.borderColor || '#000000',
+  textColor:   BAM_CONFIG.ui?.avlLabelStyle?.textColor   || '#ffffff',
+  fontSize:    BAM_CONFIG.ui?.avlLabelStyle?.fontSize    || 9,
+};
+
+// Player-adjustable spawn rate multiplier (0.25 = very slow, 3 = chaos)
+let playerSpawnRate = 1;
+
+// ── MAP ───────────────────────────────────────────────────────────────────────
+const map = L.map('map',{
+  center:[BAM_CONFIG.map.startLat, BAM_CONFIG.map.startLng],
+  zoom:  BAM_CONFIG.map.startZoom,
+  zoomControl:true
+});
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© OpenStreetMap contributors', maxZoom:19
+}).addTo(map);
+
+map.on('click', e => {
+  if(!placingType) return;
+  pendingLatLng = e.latlng;
+  openStationModal(placingType);
+});
+
+// ── MONEY ─────────────────────────────────────────────────────────────────────
+function updateMoney(delta=0){
+  money += delta;
+  document.getElementById('money-display').textContent = '$' + money.toLocaleString();
+}
+
+// Reads station type color from CSS var (--fire / --ems / --police).
+function getStationColor(type){
+  return getComputedStyle(document.documentElement).getPropertyValue('--'+type).trim();
+}
+
+// Fills the cost spans in the sidebar buttons from config so they stay in sync.
+function initSidebarCosts(){
+  const costs = BAM_CONFIG.economy.stationCost;
+  ['fire','ems','police'].forEach(type => {
+    const el = document.getElementById('cost-'+type);
+    if(el) el.textContent = '$' + (costs[type]/1000) + 'k';
+  });
+}
+
+// ── SIDEBAR TABS ──────────────────────────────────────────────────────────────
+function switchSBTab(tab){
+  ['stations','esns','plans'].forEach(t => {
+    document.getElementById('sbtab-'+t).classList.toggle('active', t===tab);
+    const pane = document.getElementById('sb-'+t+'-pane');
+    if(pane) pane.style.display = t===tab ? 'flex' : 'none';
+  });
+  // Ensure the active pane shows as flex column
+  const active = document.getElementById('sb-'+tab+'-pane');
+  if(active) active.style.flexDirection = 'column';
+  if(tab === 'plans') { renderResponsePlanList(); renderBoxAlarmList(); }
+  if(tab === 'esns')  renderESNList();
+}
+
+// ── PLACING MODE ──────────────────────────────────────────────────────────────
+function setPlacing(type){
+  placingType = type;
+  document.querySelectorAll('.tool-btn:not(.esn-btn)').forEach(b => b.classList.remove('active'));
+  const key = type ? 'btn-'+type : 'btn-pan';
+  document.getElementById(key)?.classList.add('active');
+  map.getContainer().style.cursor = type ? 'crosshair' : '';
+  if(type){
+    const cost = BAM_CONFIG.economy.stationCost[type];
+    setStatus(`📍 Click map to place ${type} station ($${cost.toLocaleString()})`);
+  } else if(!drawingESN) {
+    setStatus('Pan mode. Click incidents to dispatch · Ctrl+S to save');
+  }
+}
+
+// ── STATION MODAL ─────────────────────────────────────────────────────────────
+let _placingStationType = null;
+function openStationModal(type){
+  _placingStationType = type;
+  const cost = BAM_CONFIG.economy.stationCost[type];
+  if(money < cost){ setStatus(`⚠️ Not enough funds! Need $${cost.toLocaleString()}`); pendingLatLng=null; return; }
+
+  const typeLabel = {fire:'Fire Station',ems:'EMS Station',police:'Police Station'}[type];
+  document.getElementById('sm-title').textContent = `New ${typeLabel}`;
+  document.getElementById('sm-name').value = '';
+  document.getElementById('sm-unitname').value = '';
+
+  const sel = document.getElementById('sm-unittype');
+  sel.innerHTML = Object.entries(BAM_CONFIG.unitTypes)
+    .filter(([,u])=>u.stationType===type)
+    .map(([k,u])=>`<option value="${k}">${u.label} ($${u.cost.toLocaleString()})</option>`)
+    .join('');
+
+  document.getElementById('station-modal').classList.add('open');
+  setTimeout(() => document.getElementById('sm-name').focus(), 40);
+}
+
+function closeStationModal(){
+  document.getElementById('station-modal').classList.remove('open');
+  pendingLatLng = null;
+}
+
+function confirmStation(){
+  const name        = document.getElementById('sm-name').value.trim();
+  const unitName    = document.getElementById('sm-unitname').value.trim();
+  const unitTypeKey = document.getElementById('sm-unittype').value;
+  if(!name||!unitName) return;
+
+  const stCost   = BAM_CONFIG.economy.stationCost[_placingStationType];
+  const unitCost = BAM_CONFIG.unitTypes[unitTypeKey].cost;
+  const total    = stCost + unitCost;
+  if(money < total){ setStatus(`⚠️ Not enough funds ($${total.toLocaleString()} needed)`); return; }
+
+  const id    = 'st_'+Date.now();
+  const color = getStationColor(_placingStationType);
+  const emojiMap = {fire:'🔴',ems:'🔵',police:'🟣'};
+
+  const icon = L.divIcon({
+    className:'',
+    html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);"></div>`,
+    iconSize:[22,22],iconAnchor:[11,22]
+  });
+
+  const marker = L.marker([pendingLatLng.lat,pendingLatLng.lng],{icon}).addTo(map);
+  marker.bindTooltip(_buildStationTooltip(name, _placingStationType),
+    {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
+  marker.on('click',()=>openManageStation(id));
+
+  const firstUnit = {
+    id:'u_'+Date.now(), name:unitName, typeKey:unitTypeKey,
+    status:'available', inService:true, _animGen:0,
+    incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
+  };
+
+  const station = {
+    id, name, type:_placingStationType,
+    lat:pendingLatLng.lat, lng:pendingLatLng.lng,
+    units:[firstUnit], marker, upgrades:[], inService:true
+  };
+
+  stations.push(station);
+  updateMoney(-total);
+  closeStationModal();
+  renderStationList();
+  renderStats();
+  setStatus(`✅ ${name} placed. Budget: $${money.toLocaleString()}`);
+  setPlacing(null);
+}
+
+// ── STATION LIST ──────────────────────────────────────────────────────────────
+function renderStationList(){
+  const el = document.getElementById('station-scroll');
+  const q  = document.getElementById('station-search')?.value.trim().toLowerCase() || '';
+  const filtered = stations.filter(s => !q || s.name.toLowerCase().includes(q));
+
+  if(!filtered.length){
+    el.innerHTML = stations.length
+      ? '<div class="empty-msg">No stations match search.</div>'
+      : '<div class="empty-msg">No stations yet.<br>Select a type above and click the map.</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(s => {
+    const oos = s.inService === false;
+    const pills = s.units.map(u => {
+      const uOOS = u.inService === false;
+      const cls  = uOOS ? 'oos' : u.status;
+      const isRet = u.status==='returning' && u._returnRemSec>0;
+      const pillTxt = isRet ? `${u.name} ↩${formatETA(u._returnRemSec)}` : u.name;
+      const ttip = uOOS ? 'Out of service'
+                 : isRet ? `Returning — ${formatETA(u._returnRemSec)} to ST`
+                 : u.status;
+      return `<span class="unit-pill ${cls}" title="${ttip}"
+               onclick="toggleUnitService('${s.id}','${u.id}');event.stopPropagation();">${pillTxt}</span>`;
+    }).join('');
+
+    return `<div class="scard${oos?' oos':''}">
+      <div class="sn">${s.name}${oos?' <span class="oos-badge">OOS</span>':''}</div>
+      <div class="st">${s.type} station</div>
+      <div class="su">${pills}</div>
+      <div class="scard-actions">
+        <button class="btn-sm" onclick="focusStation('${s.id}')">Focus</button>
+        <button class="btn-sm" onclick="openManageStation('${s.id}')">Manage</button>
+        <button class="btn-sm" onclick="toggleStationService('${s.id}')">${oos?'In Svc':'OOS'}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function focusStation(id){
+  const s = stations.find(x=>x.id===id);
+  if(s) map.setView([s.lat,s.lng],14);
+}
+
+// ── IN / OUT OF SERVICE ───────────────────────────────────────────────────────
+// Toggles an entire station in/out of service.
+// OOS stations don't spawn calls (Phase 1 fallback mode) and their units are unavailable.
+function toggleStationService(stationId){
+  const s = stations.find(x=>x.id===stationId);
+  if(!s) return;
+  s.inService = s.inService === false ? true : false;
+  s.marker?.setOpacity(s.inService ? 1 : .4);
+  renderStationList();
+  setStatus(`${s.name} — ${s.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
+}
+
+// Toggles a single unit in/out of service (click the unit pill).
+function toggleUnitService(stationId, unitId){
+  const s = stations.find(x=>x.id===stationId);
+  const u = s?.units.find(x=>x.id===unitId);
+  if(!u) return;
+  u.inService = u.inService === false ? true : false;
+  renderStationList();
+  setStatus(`${u.name} — ${u.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
+}
+
+// ── INCIDENT MARKER ICON ──────────────────────────────────────────────────────
+function incidentIcon(inc){
+  const mCfg = BAM_CONFIG.missions[inc.missionKey];
+  const col  = mCfg?.color || '#e8431a';
+  const pulse = inc.status==='needs_dispatch' ? 'animation:inc-pulse 1s infinite alternate;' : '';
+  return L.divIcon({
+    className:'',
+    html:`<div style="background:${col};color:#fff;font-size:10px;font-weight:700;
+      padding:3px 7px;border-radius:2px;border:1px solid rgba(255,255,255,.25);
+      box-shadow:0 2px 10px rgba(0,0,0,.7);white-space:nowrap;
+      font-family:'Share Tech Mono',monospace;${pulse}">⚠ ${inc.label.toUpperCase()}</div>`,
+    iconAnchor:[0,10]
+  });
+}
+
+// ── SPAWN INCIDENT ────────────────────────────────────────────────────────────
+async function spawnIncident(manual=false){
+  if(stations.length===0 && !manual) return;
+  const active = incidents.filter(i=>i.status!=='resolved');
+  if(active.length >= BAM_CONFIG.spawn.maxActiveIncidents) return;
+
+  // Only spawn missions the player can actually respond to.
+  // Check ownership only (inService) — not availability.
+  // A call type shouldn't be suppressed just because all units are busy.
+  const availableTags = new Set();
+  getAllUnits().forEach(({unit}) => {
+    if(unit.inService !== false)
+      BAM_CONFIG.unitTypes[unit.typeKey]?.tags.forEach(t => availableTags.add(t));
+  });
+
+  const pool = Object.entries(BAM_CONFIG.missions).filter(([,m]) => {
+    if(m.spawnWeight <= 0) return false;
+    return m.requirements.every(reqGroup => reqGroup.some(tag => availableTags.has(tag)));
+  });
+
+  if(!pool.length) return;
+
+  const totalW = pool.reduce((s,[,m])=>s+m.spawnWeight,0);
+  let r = Math.random()*totalW;
+  let missionKey = pool[0][0];
+  for(const [k,m] of pool){ r-=m.spawnWeight; if(r<=0){missionKey=k;break;} }
+  const mCfg = BAM_CONFIG.missions[missionKey];
+
+  let lat, lng, esnId = null;
+  let _pendingAddress = null;
+
+  if(esns.length > 0){
+    // Phase 2: spawn inside an eligible ESN polygon.
+    // Requires at least one DC to be placed — no DC = no calls.
+    if(dispatchCenters.length === 0) return;
+    const result = getESNSpawnLocation(mCfg);
+    if(!result) return; // no eligible ESN / DC at cap — skip this spawn cycle
+    ({lat, lng, esnId} = result);
+
+    // For 'random' spawnMode (or OSM cache miss), snap to nearest driveable road
+    // via OSRM and store the road name as inc.address.
+    const spawnMode = mCfg.spawnMode || 'random';
+    if(spawnMode === 'random' && BAM_CONFIG.spawn.snapToRoad){
+      try{
+        const snapUrl=`https://router.project-osrm.org/nearest/v1/driving/${lng},${lat}?number=1`;
+        const snapResp=await fetch(snapUrl);
+        const snapData=await snapResp.json();
+        if(snapData.code==='Ok' && snapData.waypoints?.length){
+          const wp=snapData.waypoints[0];
+          const maxDist=BAM_CONFIG.spawn.snapToRoadRadiusM||500;
+          if(wp.distance<=maxDist){
+            lat=wp.location[1]; lng=wp.location[0];
+            if(wp.name) _pendingAddress=wp.name;
+          }
+        }
+      }catch(e){ /* snap failed, keep random point */ }
+    }
+  } else {
+    // Phase 1 fallback: spawn within radius of stations capable of this call
+    const neededTags = new Set(mCfg.requirements.flat());
+    const eligible   = stations.filter(s =>
+      s.inService !== false &&
+      s.units.some(u => BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => neededTags.has(t)))
+    );
+    const ref = eligible.length
+      ? eligible[Math.floor(Math.random()*eligible.length)]
+      : stations[Math.floor(Math.random()*stations.length)];
+    const radKm = BAM_CONFIG.spawn.defaultRadiusKm;
+    lat = ref.lat + (radKm/111)*(Math.random()*2-1);
+    lng = ref.lng + (radKm/111)*(Math.random()*2-1);
+  }
+
+  // Generate patients — only if transport-capable units exist and EMS covers this area.
+  // (No point spawning patients if no one can transport them.)
+  const hasTransport = getAllUnits().some(({unit}) =>
+    unit.inService !== false &&
+    BAM_CONFIG.unitTypes[unit.typeKey]?.tags.some(t => ['transport','bls','als'].includes(t))
+  );
+  const hasEMSCoverage = esns.length === 0 ||
+    (esnId && esns.find(e => e.id === esnId)?.assignments?.ems?.length > 0);
+  const patients = [];
+  if(hasTransport && hasEMSCoverage && Math.random() < mCfg.patientChance){
+    const [mn,mx] = mCfg.patientCount;
+    const n = mn + Math.floor(Math.random()*(mx-mn+1));
+    const injKeys = Object.keys(BAM_CONFIG.injuryTypes);
+    for(let i=0;i<n;i++){
+      const ikey = injKeys[Math.floor(Math.random()*injKeys.length)];
+      patients.push({id:'p_'+Date.now()+'_'+i, injuryKey:ikey, status:'waiting'});
+    }
+  }
+
+  const now = new Date();
+  const timeStr = now.getHours().toString().padStart(2,'0')+':'+
+                  now.getMinutes().toString().padStart(2,'0')+':'+
+                  now.getSeconds().toString().padStart(2,'0');
+
+  const inc = {
+    id:'inc_'+Date.now(),
+    missionKey, originalMissionKey:missionKey,
+    label:mCfg.label, category:mCfg.category,
+    lat, lng, esnId,
+    time:timeStr, status:'needs_dispatch',
+    units:[], patients, routeLines:[], escalateTimer:null, marker:null,
+    address:_pendingAddress,  // road name from OSRM nearest snap (may be null)
+    resolutionTarget:null,    // game-seconds of scene time (set on first unit arrival)
+    resolutionProgress:0      // 0.0 → 1.0
+  };
+
+  const marker = L.marker([lat,lng],{icon:incidentIcon(inc)}).addTo(map);
+  marker.on('click',()=>openDispatch(inc.id));
+  marker.bindTooltip(inc.label+' — click to dispatch');
+  inc.marker = marker;
+  incidents.push(inc);
+
+  if(mCfg.escalatesTo && mCfg.escalateChance>0)
+    inc.escalateTimer = setTimeout(()=>checkEscalate(inc.id), mCfg.escalateAfter*1000);
+
+  renderIncidentList();
+  renderStats();
+  setStatus(`🚨 ${inc.label} — ${timeStr}`);
+  logCall(inc,'Dispatched needed');
+}
+
+function checkEscalate(incId){
+  const inc = incidents.find(x=>x.id===incId);
+  if(!inc||inc.status==='resolved') return;
+  const mCfg = BAM_CONFIG.missions[inc.missionKey];
+  if(!mCfg.escalatesTo) return;
+  if(Math.random() < mCfg.escalateChance){
+    const escalatedMCfg = BAM_CONFIG.missions[mCfg.escalatesTo];
+    // Only escalate if the player owns at least one unit for each required tag group
+    const ownedTags = new Set(getAllUnits().flatMap(({unit}) =>
+      BAM_CONFIG.unitTypes[unit.typeKey]?.tags || []
+    ));
+    const canHandle = escalatedMCfg.requirements.every(reqGroup =>
+      reqGroup.some(tag => ownedTags.has(tag))
+    );
+    if(canHandle){
+      inc.missionKey = mCfg.escalatesTo;
+      inc.label = escalatedMCfg.label;
+      inc.status = 'needs_dispatch';
+      if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+      inc.marker?.getTooltip()?.setContent(inc.label+' — ESCALATED');
+      renderIncidentList();
+      setStatus(`🔺 ESCALATED: ${inc.label}`);
+      logCall(inc,'Escalated');
+      _refreshDispatchModalIfOpen(inc.id);
+    }
+  }
+  const newCfg = BAM_CONFIG.missions[inc.missionKey];
+  if(newCfg.escalatesTo && newCfg.escalateChance>0)
+    inc.escalateTimer = setTimeout(()=>checkEscalate(incId),(newCfg.escalateAfter||60)*1000);
+}
+
+// ── DISPATCH MODAL ────────────────────────────────────────────────────────────
+function openDispatch(incId){
+  const inc = incidents.find(x=>x.id===incId);
+  if(!inc||inc.status==='resolved') return;
+  activeDispatchId = incId;
+  selectedUnitsForDispatch = new Set(inc.units);
+
+  const mCfg = BAM_CONFIG.missions[inc.missionKey];
+  document.getElementById('dm-title').textContent = inc.label;
+  const esnName = inc.esnId ? (esns.find(e=>e.id===inc.esnId)?.name || '') : '';
+  const addrPart = inc.address ? inc.address : `${inc.lat.toFixed(4)}, ${inc.lng.toFixed(4)}`;
+  document.getElementById('dm-sub').textContent =
+    `${inc.time}  ·  ${esnName ? esnName+' — ' : ''}${addrPart}  ·  ${inc.status.replace(/_/g,' ').toUpperCase()}`;
+
+  renderDispatchBody(inc, mCfg);
+  document.getElementById('dispatch-modal').classList.add('open');
+}
+
+// Updates only the resolution bar element inside an already-open dispatch modal.
+function _updateResolutionBar(inc, mCfg, onSceneUnits, staffingRatio, effectiveRate){
+  const bar = document.getElementById('res-bar-fill-'+inc.id);
+  const eta = document.getElementById('res-eta-'+inc.id);
+  if(!bar||!eta) return;
+  const pct = Math.min(100, inc.resolutionProgress*100).toFixed(1);
+  bar.style.width = pct+'%';
+  bar.className = 'res-bar-fill'+(effectiveRate===0?' stalled':'');
+  if(effectiveRate===0){
+    eta.textContent = '⏱ Stalled — send more units';
+  } else {
+    const remProgress = Math.max(0, 1.0 - inc.resolutionProgress);
+    const remGameSec = (remProgress / effectiveRate) * inc.resolutionTarget;
+    eta.textContent = `⏱ Est. clear: ~${formatETA(Math.ceil(remGameSec))}`;
+  }
+}
+
+function renderDispatchBody(inc, mCfg){
+  const body = document.getElementById('dm-body');
+  let html = '';
+
+  // ── Address / location
+  const addrLine = inc.address
+    ? `📍 ${inc.address}`
+    : `📍 ${inc.lat.toFixed(4)}°N, ${Math.abs(inc.lng).toFixed(4)}°W`;
+  const esnName = inc.esnId ? (esns.find(e=>e.id===inc.esnId)?.name||'') : '';
+  if(esnName||inc.address) html += `<div style="font-size:.72rem;color:var(--muted);margin-bottom:8px;">${esnName?esnName+' · ':''}${addrLine}</div>`;
+
+  // ── Units Enroute / On Scene (only when units are assigned)
+  const dispatchedUnits = inc.units.map(uid=>getAllUnits().find(u=>u.unit.id===uid)).filter(Boolean);
+  if(dispatchedUnits.length){
+    html += `<div class="section-title">Units Enroute / On Scene</div>`;
+    dispatchedUnits.forEach(({unit,station}) => {
+      const stCfg = BAM_CONFIG.unitTypes[unit.typeKey];
+      const isOnScene = unit.status==='on_scene';
+      const statusTxt = isOnScene
+        ? '<span style="color:var(--green);font-weight:700;">ON SCENE</span>'
+        : `<span id="eta_${unit.id}" class="dm-enroute-eta">Enroute…</span>`;
+      const cancelLabel = isOnScene ? '✕ Release' : '✕ Cancel';
+      html += `<div class="dm-enroute-row">
+        <div style="flex:1;">
+          <div class="dm-enroute-name">${stCfg.icon} ${unit.name}</div>
+          <div style="font-size:.65rem;color:var(--muted);">${station.name}</div>
+        </div>
+        ${statusTxt}
+        <button class="btn-sm danger" style="font-size:.62rem;padding:2px 6px;margin-left:8px;"
+          onclick="cancelUnitFromCall('${unit.id}','${inc.id}')">${cancelLabel}</button>
+      </div>`;
+    });
+  }
+
+  // ── Resolution progress bar (when on scene)
+  if(inc.status==='on_scene' && inc.resolutionTarget!=null){
+    const pct = Math.min(100, inc.resolutionProgress*100).toFixed(1);
+    // Staffing counts only units actually on scene — not enroute
+    // countMetRequirements ensures each unit satisfies at most one requirement group
+    const onSceneForBar = dispatchedUnits.filter(({unit})=>unit.status==='on_scene');
+    const metCount = countMetRequirements(mCfg.requirements, onSceneForBar);
+    const staffingRatio = mCfg.requirements.length>0 ? metCount/mCfg.requirements.length : 1;
+    const effectiveRate = Math.pow(staffingRatio, 2);
+    const staffPct = Math.round(staffingRatio*100);
+    html += `<div style="margin:8px 0 4px;">
+      <div style="display:flex;justify-content:space-between;font-size:.68rem;color:var(--muted);margin-bottom:3px;">
+        <span>⚡ ${metCount}/${mCfg.requirements.length} reqs met (${staffPct}% efficiency)</span>
+        <span id="res-eta-${inc.id}">${effectiveRate===0?'⏱ Stalled — send more units':'⏱ Calculating…'}</span>
+      </div>
+      <div class="res-bar-track"><div id="res-bar-fill-${inc.id}" class="res-bar-fill${effectiveRate===0?' stalled':''}" style="width:${pct}%"></div></div>
+    </div>`;
+  }
+
+  // ── Requirements checklist (uses all dispatched units for "covered" display)
+  html += `<div class="section-title">Requirements</div>`;
+  mCfg.requirements.forEach(req => {
+    const met = dispatchedUnits.some(({unit}) =>
+      req.some(tag => BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(tag))
+    );
+    html += `<div class="dm-req-row">
+      <span class="dm-req-tag ${met?'met':''}">${req.join(' / ')}</span>
+      <span style="font-size:.72rem;color:${met?'var(--green)':'var(--accent)'}">${met?'✓ Covered':'⚠ Needed'}</span>
+    </div>`;
+  });
+
+  // ── Patients
+  if(inc.patients.length){
+    html += `<div class="section-title">Patients (${inc.patients.length})</div>`;
+    inc.patients.forEach(p => {
+      const inj = BAM_CONFIG.injuryTypes[p.injuryKey];
+      html += `<div class="dm-patient-row">
+        <span class="ptype">${inj.label}</span>
+        ${inj.needsALS?'<span class="pals"> · ALS Required</span>':''}
+        · Transport → ${inj.transport}
+      </div>`;
+    });
+  }
+
+  // ── Box alarms for this ESN + mission
+  const applicableAlarms = getApplicableBoxAlarms(inc.esnId, inc.missionKey);
+  if(applicableAlarms.length){
+    html += `<div class="section-title">Box Alarms</div>`;
+    applicableAlarms.forEach(ba => {
+      const reqs = ba.requirements.map(r=>r.join('/')).join(' + ');
+      html += `<div class="dm-ba-card">
+        <div class="dm-ba-name">${ba.name}</div>
+        <div class="dm-ba-reqs">${reqs}</div>
+        <button class="btn-sm" style="margin-top:6px;"
+          onclick="applyAutoDispatch(${JSON.stringify(ba.requirements).replace(/"/g,'&quot;')})">
+          Apply Box Alarm
+        </button>
+      </div>`;
+    });
+  }
+
+  // ── Response plans
+  if(responsePlans.length){
+    html += `<div class="section-title">Response Plans</div>`;
+    responsePlans.forEach(rp => {
+      const reqs = rp.requirements.map(r=>r.join('/')).join(' + ');
+      html += `<div class="dm-plan-row"
+        onclick="applyAutoDispatch(${JSON.stringify(rp.requirements).replace(/"/g,'&quot;')})">
+        <div>
+          <div class="dm-plan-name">${rp.name}</div>
+          <div class="dm-plan-reqs">${reqs}</div>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);">Apply ▶</div>
+      </div>`;
+    });
+  }
+
+  // ── Available units sorted by ETA
+  html += `<div class="section-title">Available Units — closest first</div>`;
+  const sorted = getAllUnits().map(({station,unit}) => {
+    const dist = haversineKm(station.lat,station.lng,inc.lat,inc.lng);
+    return {station,unit,etaMin:(dist/60)*60};
+  }).sort((a,b)=>a.etaMin-b.etaMin);
+
+  sorted.forEach(({station,unit,etaMin}) => {
+    const uOOS        = unit.inService === false;
+    const isAvail     = unit.status==='available' && !uOOS;
+    const isReturn    = unit.status==='returning' && !uOOS;
+    const isDisp      = unit.status==='dispatched' && !uOOS;
+    const avail       = isAvail || isReturn || isDisp;
+    const sel         = selectedUnitsForDispatch.has(unit.id);
+    const utCfg       = BAM_CONFIG.unitTypes[unit.typeKey];
+    const cls         = (avail||sel) ? '' : ' unavailable';
+    const selCls      = sel ? ' selected' : '';
+    const rowStyle    = isDisp ? ' style="border-left:3px solid #f59e0b;"' : '';
+    // For returning units: compute ETA to this call from current position
+    let etaToCallMin = etaMin;
+    if(isReturn){
+      const curPos=unit.animMarker?.getLatLng();
+      if(curPos) etaToCallMin=haversineKm(curPos.lat,curPos.lng,inc.lat,inc.lng)/48.28*60;
+    }
+    const origLabel = isDisp
+      ? (incidents.find(x=>x.id===unit.incidentId)?.label||'call') : '';
+    const etaTxt = uOOS     ? 'OOS'
+      : isDisp              ? `<span style="color:#f59e0b;">✦ ENROUTE<br>${origLabel}</span>`
+      : isReturn            ? `↩ ${unit._returnRemSec>0?formatETA(unit._returnRemSec)+' to ST':'RETURNING'}<br>${Math.ceil(etaToCallMin)}m to SCN`
+      : isAvail             ? Math.ceil(etaMin)+'m ETA'
+      :                       'IN USE';
+    html += `<div class="dm-unit-row${cls}${selCls}"${rowStyle}
+      onclick="toggleDispatchUnit('${unit.id}','${avail||sel}')"
+      id="dur_${unit.id}">
+      <div>
+        <div class="dm-unit-name">${utCfg.icon} ${unit.name}</div>
+        <div class="dm-unit-station">${station.name} · ${utCfg.label}</div>
+        <div style="font-size:.62rem;color:var(--muted)">Tags: ${utCfg.tags.join(', ')}</div>
+      </div>
+      <div class="dm-unit-eta" style="text-align:right;line-height:1.4;">${etaTxt}</div>
+    </div>`;
+  });
+
+  body.innerHTML = html;
+}
+
+// Applies a set of tag requirements to the dispatch selection,
+// picking the closest available unit for each requirement group.
+function applyAutoDispatch(requirements){
+  const inc = incidents.find(x=>x.id===activeDispatchId);
+  if(!inc) return;
+
+  const sorted = getAllUnits()
+    .filter(({unit}) => (unit.status==='available'||unit.status==='returning') && unit.inService!==false)
+    .map(({station,unit}) => ({
+      station, unit,
+      dist: haversineKm(station.lat,station.lng,inc.lat,inc.lng)
+    }))
+    .sort((a,b)=>a.dist-b.dist);
+
+  const used = new Set(); // track units already selected in this pass
+  requirements.forEach(reqGroup => {
+    const match = sorted.find(({unit}) =>
+      !used.has(unit.id) &&
+      reqGroup.some(tag => BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(tag))
+    );
+    if(match){
+      selectedUnitsForDispatch.add(match.unit.id);
+      used.add(match.unit.id);
+    }
+  });
+
+  renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+function toggleDispatchUnit(unitId, available){
+  if(available==='false') return;
+  if(selectedUnitsForDispatch.has(unitId)) selectedUnitsForDispatch.delete(unitId);
+  else selectedUnitsForDispatch.add(unitId);
+  const inc = incidents.find(x=>x.id===activeDispatchId);
+  if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+function closeDispatch(){
+  document.getElementById('dispatch-modal').classList.remove('open');
+  activeDispatchId = null;
+  selectedUnitsForDispatch = new Set();
+}
+
+function executeDispatch(){
+  const inc = incidents.find(x=>x.id===activeDispatchId);
+  if(!inc) return;
+
+  const toDispatch = [...selectedUnitsForDispatch].filter(uid=>!inc.units.includes(uid));
+  if(!toDispatch.length){ closeDispatch(); return; }
+
+  // Stagger departures by 3 game-seconds per unit (scaled to real time by gameSpeed)
+  toDispatch.forEach((uid, idx) => {
+    const departureGameSec = idx * 3;
+    const departureRealMs  = departureGameSec * 1000 / Math.max(1, gameSpeed);
+    setTimeout(() => {
+      const found = getAllUnits().find(({unit})=>unit.id===uid);
+      if(!found||found.unit.inService===false) return;
+      const {station,unit} = found;
+      const isAvailable  = unit.status==='available';
+      const isReturning  = unit.status==='returning';
+      const isDispatched = unit.status==='dispatched';
+      if(!isAvailable&&!isReturning&&!isDispatched) return;  // on scene — skip
+
+      // For returning or enroute units: capture position and stop current animation
+      let fromLatLng=null;
+      if(isReturning||isDispatched){
+        const curLatlng=unit.animMarker?.getLatLng();
+        if(curLatlng) fromLatLng={ lat:curLatlng.lat, lng:curLatlng.lng };
+        unit._animGen=(unit._animGen||0)+1;  // cancel current animation loop
+        if(unit.routeLine)  { unit.routeLine.remove();  unit.routeLine=null;  }
+        if(unit.returnLine) { unit.returnLine.remove(); unit.returnLine=null; }
+        // For enroute units: remove from original incident before reassigning
+        if(isDispatched&&unit.incidentId){
+          const origInc=incidents.find(x=>x.id===unit.incidentId);
+          if(origInc){
+            origInc.units=origInc.units.filter(id=>id!==unit.id);
+            if(origInc.units.length===0&&origInc.status!=='resolved'){
+              origInc.status='needs_dispatch';
+              if(origInc.marker) origInc.marker.setIcon(incidentIcon(origInc));
+            }
+            _refreshDispatchModalIfOpen(origInc.id);
+          }
+        }
+      }
+
+      inc.units.push(uid);
+      unit.status='dispatched';
+      unit.incidentId=inc.id;
+      routeAndAnimate(unit, station, inc, fromLatLng);
+      renderStationList();
+      _refreshDispatchModalIfOpen(inc.id);
+    }, departureRealMs);
+  });
+
+  inc.status = 'enroute';
+  if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+  renderIncidentList();
+  logCall(inc,`Units dispatched: ${toDispatch.length}`);
+  closeDispatch();
+  setStatus(`🚒 ${toDispatch.length} unit(s) dispatched to ${inc.label}`);
+}
+
+// ── ROUTING + ANIMATION ───────────────────────────────────────────────────────
+// fromLatLng: optional {lat, lng} — used when redirecting a unit mid-travel
+// (e.g. a returning unit picked up for a new call routes from current position).
+async function routeAndAnimate(unit, station, inc, fromLatLng=null){
+  const origin = fromLatLng || { lat:station.lat, lng:station.lng };
+  // Remove any stale marker before creating a new one — prevents ghost dots on reroute
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  try{
+    // annotations=duration gives per-segment travel times for speed-accurate animation
+    const url=`https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${inc.lng},${inc.lat}?overview=full&geometries=geojson&annotations=duration`;
+    const resp=await fetch(url);
+    const data=await resp.json();
+    if(data.code!=='Ok'||!data.routes.length) throw new Error('No route');
+
+    const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
+    // Enforce minimum 30 MPH (48.28 km/h) — OSRM can return very slow rural estimates.
+    const rawDuration=data.routes[0].duration;
+    const distKm=data.routes[0].distance/1000;
+    const minSpeedDuration=(distKm/48.28)*3600;  // time at exactly 30 MPH
+    const durationSec=Math.min(rawDuration, minSpeedDuration);
+    // Build normalized cumulative time array from OSRM per-segment annotations
+    const segDurs=data.routes[0].legs[0].annotation?.duration||[];
+    const cumTimes=[0];
+    for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
+    const totalT=cumTimes[cumTimes.length-1];
+    if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
+    else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
+    const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
+    const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.7,dashArray:'6,4'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → ${inc.label}`);
+    unit.animMarker=animMarker; unit.routeCoords=coords;
+    unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+    animateUnit(unit,inc,coords,durationSec);
+  } catch(e){
+    console.warn('OSRM failed, straight line',e);
+    const coords=[[origin.lat,origin.lng],[inc.lat,inc.lng]];
+    const dist=haversineKm(origin.lat,origin.lng,inc.lat,inc.lng);
+    const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
+    const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.5,dashArray:'4,4'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker([origin.lat,origin.lng],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    unit.animMarker=animMarker; unit.routeCoords=coords;
+    unit.routeCumTimes=null;  // no time data for straight-line fallback
+    animateUnit(unit,inc,coords,(dist/48.28)*3600);
+  }
+}
+
+// Animates a unit along coords over totalGameSec game-seconds.
+// Uses accumulated game-time so pausing (gameSpeed=0) freezes movement,
+// and mid-flight speed changes take effect immediately on the next frame.
+// Generation counter (_animGen) lets us cancel a stale loop cleanly — any call
+// to animateUnit increments the counter; old loops check and exit immediately.
+function animateUnit(unit, inc, coords, totalGameSec){
+  // Guard: zero/NaN duration or invalid coords — arrive immediately rather than hang
+  if(!coords||coords.length<2||totalGameSec<=0||!isFinite(totalGameSec)){
+    if(inc) onUnitArrived(unit,inc); else onUnitReturned(unit);
+    return;
+  }
+  unit._animGen=(unit._animGen||0)+1;
+  const myGen=unit._animGen;
+  const totalGameMs=totalGameSec*1000;
+  let gameElapsedMs=0, lastTs=performance.now();
+
+  function step(now){
+    if(unit._animGen!==myGen) return;  // superseded — exit cleanly
+    const realDelta=Math.min(now-lastTs,250);  // cap to prevent tab-switch jump
+    lastTs=now;
+    gameElapsedMs+=realDelta*gameSpeed;  // scale by current speed; 0 when paused
+    const progress=Math.min(1,gameElapsedMs/totalGameMs);
+    // Use time-weighted interpolation if OSRM segment durations are available;
+    // otherwise fall back to distance-weighted (straight-line or missing annotation).
+    const pos=(unit.routeCumTimes&&unit.routeCumTimes.length===coords.length)
+      ?interpolatePolylineByTime(coords,unit.routeCumTimes,progress)
+      :interpolatePolyline(coords,progress);
+    if(pos) unit.animMarker?.setLatLng(pos);
+    const remSec=Math.ceil(Math.max(0,totalGameMs-gameElapsedMs)/1000);
+    if(inc){
+      // Enroute trip — update ETA in the dispatch modal
+      const etaEl=document.getElementById('eta_'+unit.id);
+      if(etaEl) etaEl.textContent=remSec>0?`ETA: ${formatETA(remSec)}`:'On SCN';
+    } else {
+      // Return trip — expose remaining time for station list and dispatch modal ETA display
+      unit._returnRemSec=remSec;
+    }
+    if(progress<1) requestAnimationFrame(step);
+    else if(inc) onUnitArrived(unit,inc); else onUnitReturned(unit);
+  }
+  requestAnimationFrame(step);
+}
+
+// Counts how many requirement groups are satisfied by on-scene units.
+// Each unit may satisfy at most ONE group (greedy matching) — prevents a single
+// multi-tag unit (e.g. pumper-tanker) from counting as both an engine slot AND a
+// tanker slot simultaneously.
+function countMetRequirements(requirements, onSceneUnits){
+  const used=new Set();
+  let met=0;
+  for(const reqGroup of requirements){
+    const match=onSceneUnits.find(({unit})=>
+      !used.has(unit.id)&&
+      reqGroup.some(tag=>BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(tag))
+    );
+    if(match){ used.add(match.unit.id); met++; }
+  }
+  return met;
+}
+
+// Distance-weighted interpolation — unit moves at constant apparent speed regardless
+// of whether road segments are short city blocks or long highway stretches.
+function interpolatePolyline(coords, t){
+  if(!coords||coords.length<2) return null;
+  if(t<=0) return coords[0];
+  if(t>=1) return coords[coords.length-1];
+  // Build cumulative distance table (Euclidean on lat/lng — good enough at this scale)
+  const dists=[0];
+  for(let i=1;i<coords.length;i++){
+    const dlat=coords[i][0]-coords[i-1][0], dlng=coords[i][1]-coords[i-1][1];
+    dists.push(dists[i-1]+Math.sqrt(dlat*dlat+dlng*dlng));
+  }
+  const total=dists[dists.length-1];
+  if(total===0) return coords[coords.length-1];
+  const target=t*total;
+  // Binary search for the segment containing target distance
+  let lo=0, hi=coords.length-2;
+  while(lo<hi){ const mid=(lo+hi)>>1; if(dists[mid+1]<target) lo=mid+1; else hi=mid; }
+  const segLen=dists[lo+1]-dists[lo];
+  const frac=segLen>0?(target-dists[lo])/segLen:0;
+  const a=coords[lo], b=coords[lo+1];
+  return [a[0]+(b[0]-a[0])*frac, a[1]+(b[1]-a[1])*frac];
+}
+
+// Time-weighted interpolation — uses per-segment OSRM travel times so units
+// visually speed up on highways and slow down on back roads, matching OSRM predictions.
+// cumTimes must be a normalized array (0..1) of cumulative time fractions, length = coords.length.
+function interpolatePolylineByTime(coords, cumTimes, t){
+  if(!coords||coords.length<2) return null;
+  if(t<=0) return coords[0];
+  if(t>=1) return coords[coords.length-1];
+  let lo=0, hi=coords.length-2;
+  while(lo<hi){ const mid=(lo+hi)>>1; if(cumTimes[mid+1]<t) lo=mid+1; else hi=mid; }
+  const segT=cumTimes[lo+1]-cumTimes[lo];
+  const frac=segT>0?(t-cumTimes[lo])/segT:0;
+  const a=coords[lo], b=coords[lo+1];
+  return [a[0]+(b[0]-a[0])*frac, a[1]+(b[1]-a[1])*frac];
+}
+
+function onUnitArrived(unit, inc){
+  if(!inc) return;  // null inc = return-to-station trip (handled by onUnitReturned)
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  unit.status='on_scene';
+  // Refresh the map dot icon so the label turns from enroute-green to on-scene-blue
+  if(unit.animMarker){
+    const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
+    unit.animMarker.setIcon(_buildUnitDotIcon(unit, dotColor));
+  }
+  if(inc.status!=='resolved'){
+    inc.status='on_scene';
+    // Initialize resolution target on first unit arrival
+    if(inc.resolutionTarget==null){
+      inc.resolutionTarget=30+Math.random()*90;  // game-seconds on scene (config-based)
+      inc.resolutionProgress=0;
+    }
+    renderIncidentList();
+    setStatus(`✅ ${unit.name} on scene at ${inc.label}`);
+    _refreshDispatchModalIfOpen(inc.id);
+  }
+}
+
+// Auto-refreshes the dispatch modal body if it is currently open for the given incident.
+// Called from onUnitArrived, checkEscalate, executeDispatch, and cancelUnitFromCall.
+function _refreshDispatchModalIfOpen(incId){
+  if(activeDispatchId!==incId) return;
+  const modal=document.getElementById('dispatch-modal');
+  if(!modal?.classList.contains('open')) return;
+  const inc=incidents.find(x=>x.id===incId);
+  if(!inc) return;
+  renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+// Manual refresh button handler for dispatch modal
+function _manualRefreshDispatch(){
+  const inc=incidents.find(x=>x.id===activeDispatchId);
+  if(!inc) return;
+  renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+// Releases a unit from its current call (works for both enroute and on-scene units).
+// Animates the unit back to its station from its current map position.
+function cancelUnitFromCall(unitId, incId){
+  const inc=incidents.find(x=>x.id===incId);
+  const found=getAllUnits().find(({unit})=>unit.id===unitId);
+  if(!inc||!found) return;
+  const {unit,station}=found;
+
+  // Capture current map position:
+  // - Enroute unit: animMarker is on the map at current travel position
+  // - On-scene unit: animMarker is null (removed on arrival), so fall back to incident location
+  const curLatlng=unit.animMarker?.getLatLng();
+  const fromLat=curLatlng?.lat ?? inc.lat;
+  const fromLng=curLatlng?.lng ?? inc.lng;
+
+  // Stop current animation by bumping the generation counter, clean up visuals
+  unit._animGen=(unit._animGen||0)+1;
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  if(unit.returnLine){ unit.returnLine.remove(); unit.returnLine=null; }
+
+  // Remove from incident's unit list
+  inc.units=inc.units.filter(uid=>uid!==unitId);
+  if(inc.units.length===0&&inc.status!=='resolved'){
+    inc.status='needs_dispatch';
+    if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+  }
+
+  // Route home from current position
+  routeAndAnimateReturn(unit, station, fromLat, fromLng);
+
+  renderStationList(); renderIncidentList();
+  _refreshDispatchModalIfOpen(incId);
+  setStatus(`${unit.name} released — returning to station.`);
+}
+
+function resolveIncident(incId){
+  const inc=incidents.find(x=>x.id===incId);
+  if(!inc||inc.status==='resolved') return;
+  inc.status='resolved';
+  if(inc.marker){ inc.marker.remove(); inc.marker=null; }
+  if(inc.escalateTimer) clearTimeout(inc.escalateTimer);
+  const mCfg=BAM_CONFIG.missions[inc.missionKey];
+  updateMoney(mCfg.reward);
+  resolvedCount++;
+  // Dispatch each unit back to its station, routing from current position.
+  // Enroute units (still traveling) return from wherever they are — not from the scene.
+  inc.units.forEach(uid=>{
+    const found=getAllUnits().find(({unit})=>unit.id===uid);
+    if(!found) return;
+    const {station,unit}=found;
+    // For enroute units: capture current map position BEFORE removing the marker
+    const isEnroute=unit.status==='dispatched';
+    const curLatlng=isEnroute?unit.animMarker?.getLatLng():null;
+    const returnLat=curLatlng?.lat??inc.lat;
+    const returnLng=curLatlng?.lng??inc.lng;
+    // Stop any active animation
+    unit._animGen=(unit._animGen||0)+1;
+    if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+    if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+    unit.status='returning';
+    unit.incidentId=null;
+    routeAndAnimateReturn(unit, station, returnLat, returnLng);
+  });
+  logCall(inc,`Resolved +$${mCfg.reward}`);
+  renderIncidentList(); renderStationList(); renderStats();
+  setStatus(`✅ ${inc.label} resolved. +$${mCfg.reward.toLocaleString()}`);
+  setTimeout(()=>{ incidents=incidents.filter(x=>x.id!==incId); renderIncidentList(); },5000);
+}
+
+// Routes a unit back to its station after incident resolution or cancellation.
+// Draws a dashed return line and animates the dot home.
+async function routeAndAnimateReturn(unit, station, fromLat, fromLng){
+  // Ensure status is 'returning' — callers may have already set it, but this guards
+  // the cancelUnitFromCall path which calls us directly without going through resolveIncident.
+  unit.status='returning';
+  unit.incidentId=null;
+  // Remove any stale marker before creating a new one — prevents ghost dots on reroute
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
+  try{
+    // annotations=duration gives per-segment travel times for speed-accurate animation
+    const url=`https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${station.lng},${station.lat}?overview=full&geometries=geojson&annotations=duration`;
+    const resp=await fetch(url);
+    const data=await resp.json();
+    if(data.code!=='Ok'||!data.routes.length) throw new Error('No route');
+
+    const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
+    const rawDuration=data.routes[0].duration;
+    const distKm=data.routes[0].distance/1000;
+    const minSpeedDuration=(distKm/48.28)*3600;
+    const durationSec=Math.min(rawDuration, minSpeedDuration);
+    // Build normalized cumulative time array from OSRM per-segment annotations
+    const segDurs=data.routes[0].legs[0].annotation?.duration||[];
+    const cumTimes=[0];
+    for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
+    const totalT=cumTimes[cumTimes.length-1];
+    if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
+    else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
+    // Dashed return line — 50% opacity of unit color
+    const returnLine=L.polyline(coords,{
+      color:dotColor,weight:2,opacity:.45,dashArray:'4,6'
+    }).addTo(map);
+    unit.returnLine=returnLine;
+
+    const dotIcon=_buildUnitDotIcon(unit, dotColor);
+    const animMarker=L.marker(coords[0],{icon:dotIcon,zIndexOffset:900}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → ${station.name}`);
+    unit.animMarker=animMarker;
+    unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+    animateUnit(unit, null, coords, durationSec);
+  }catch(e){
+    // Fallback: straight line home
+    const dist=haversineKm(fromLat,fromLng,station.lat,station.lng);
+    const coords=[[fromLat,fromLng],[station.lat,station.lng]];
+    const returnLine=L.polyline(coords,{color:dotColor,weight:2,opacity:.35,dashArray:'3,6'}).addTo(map);
+    unit.returnLine=returnLine;
+    const dotIcon=_buildUnitDotIcon(unit, dotColor);
+    const animMarker=L.marker([fromLat,fromLng],{icon:dotIcon,zIndexOffset:900}).addTo(map);
+    unit.animMarker=animMarker;
+    unit.routeCumTimes=null;  // no time data for straight-line fallback
+    animateUnit(unit, null, coords, (dist/48.28)*3600);
+  }
+}
+
+// Called when a returning unit reaches its station.
+function onUnitReturned(unit){
+  if(unit.returnLine){ unit.returnLine.remove(); unit.returnLine=null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  unit.status='available';
+  unit.incidentId=null;
+  unit._returnRemSec=0;
+  renderStationList();
+  setStatus(`${unit.name} returned to station.`);
+}
+
+// Builds the animated dot icon for a unit, optionally with AVL callsign label.
+// Label background reflects unit status using the player-configurable avlColors.
+function _buildUnitDotIcon(unit, dotColor){
+  let labelHtml = '';
+  if(showUnitLabels){
+    const statusBg = {
+      dispatched: avlColors.enroute,
+      on_scene:   avlColors.on_scene,
+      returning:  avlColors.returning,
+    }[unit.status];
+    const bgStyle   = statusBg ? `background:${statusBg};` : '';
+    const bdrStyle  = `border-color:${avlStyle.borderColor};`;
+    const txtStyle  = `color:${avlStyle.textColor};`;
+    const fszStyle  = `font-size:${avlStyle.fontSize}px;`;
+    labelHtml = `<div class="unit-label" style="${bgStyle}${bdrStyle}${txtStyle}${fszStyle}">${unit.name}</div>`;
+  }
+  return L.divIcon({
+    className:'',
+    html:`<div style="position:relative;">${labelHtml}<div class="unit-marker-dot" style="background:${dotColor};"></div></div>`,
+    iconSize:[12,12], iconAnchor:[6,6]
+  });
+}
+
+// Toggles AVL-style callsign labels on all currently moving unit dots.
+function setUnitLabelsVisible(visible){
+  showUnitLabels = visible;
+  getAllUnits().forEach(({unit}) => {
+    if(!unit.animMarker) return;
+    const dotColor = BAM_CONFIG.unitTypes[unit.typeKey]?.color || '#fff';
+    unit.animMarker.setIcon(_buildUnitDotIcon(unit, dotColor));
+  });
+}
+
+// Returns the tooltip content string for a station marker.
+function _buildStationTooltip(name, type){
+  const emojiMap = {fire:'🔴', ems:'🔵', police:'🟣'};
+  return `${emojiMap[type] || '📍'} <b>${name}</b>`;
+}
+
+// Toggles permanent vs hover-only station name labels on all placed station markers.
+function setStationLabelsVisible(visible){
+  stationLabelsVisible = visible;
+  stations.forEach(s => {
+    if(!s.marker) return;
+    s.marker.unbindTooltip();
+    s.marker.bindTooltip(_buildStationTooltip(s.name, s.type),
+      {permanent: visible, className:'station-tooltip', direction:'top'});
+  });
+}
+
+// ── SETTINGS ──────────────────────────────────────────────────────────────────
+
+function openSettings(){
+  // Sync controls to current state before opening
+  const sr = document.getElementById('s-spawn-rate');
+  if(sr) sr.value = playerSpawnRate;
+  const ec=document.getElementById('s-avl-enroute');   if(ec) ec.value=avlColors.enroute;
+  const oc=document.getElementById('s-avl-onscene');   if(oc) oc.value=avlColors.on_scene;
+  const rc=document.getElementById('s-avl-returning'); if(rc) rc.value=avlColors.returning;
+  const bc=document.getElementById('s-avl-border');    if(bc) bc.value=avlStyle.borderColor;
+  const tc=document.getElementById('s-avl-text');      if(tc) tc.value=avlStyle.textColor;
+  const fs=document.getElementById('s-avl-size');      if(fs) fs.value=avlStyle.fontSize;
+  const fl=document.getElementById('s-avl-size-lbl');  if(fl) fl.textContent=avlStyle.fontSize;
+  document.getElementById('settings-modal').classList.add('open');
+}
+
+function closeSettings(){
+  document.getElementById('settings-modal').classList.remove('open');
+}
+
+function switchSettingsTab(tab){
+  document.querySelectorAll('.settings-tab').forEach((el,i)=>{
+    const tabs=['simulation','avl','map'];
+    el.classList.toggle('active', tabs[i]===tab);
+  });
+  ['simulation','avl','map'].forEach(t=>{
+    const p=document.getElementById('stab-'+t);
+    if(p) p.classList.toggle('active', t===tab);
+  });
+}
+
+function applySpawnRate(val){
+  playerSpawnRate = parseFloat(val)||1;
+  saveSettings();
+  // Restart the spawn timer so new rate takes effect immediately
+  if(_spawnTimer){ clearTimeout(_spawnTimer); _spawnTimer=null; }
+  scheduleNextSpawn();
+}
+
+function applyAVLColor(key, val){
+  avlColors[key]=val;
+  setUnitLabelsVisible(showUnitLabels);  // rebuild active unit icons
+  saveSettings();
+}
+
+function applyAVLStyle(key, val){
+  avlStyle[key]=val;
+  setUnitLabelsVisible(showUnitLabels);  // rebuild active unit icons
+  saveSettings();
+}
+
+function saveSettings(){
+  try{
+    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle }));
+  }catch(e){}
+}
+
+function loadSettings(){
+  try{
+    const s=JSON.parse(localStorage.getItem('bam_settings')||'{}');
+    if(s.playerSpawnRate) playerSpawnRate=parseFloat(s.playerSpawnRate)||1;
+    if(s.avlColors) avlColors={...avlColors,...s.avlColors};
+    if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
+  }catch(e){}
+}
+
+// Collapses or expands the DC section in the DCs & ESNs sidebar tab.
+function toggleDCSection(){
+  const body = document.getElementById('dc-section-body');
+  const btn  = document.getElementById('dc-collapse-btn');
+  if(!body || !btn) return;
+  const collapsed = body.style.display === 'none';
+  body.style.display = collapsed ? '' : 'none';
+  btn.textContent = collapsed ? '▲' : '▼';
+}
+
+// ── INCIDENT PANEL ────────────────────────────────────────────────────────────
+function renderIncidentList(){
+  const el=document.getElementById('rp-incidents');
+  const active=incidents.filter(i=>i.status!=='resolved');
+  if(!active.length){
+    el.innerHTML='<div class="empty-msg">No active incidents.<br>They spawn automatically once you have stations.</div>';
+    return;
+  }
+  el.innerHTML=active.map(inc=>{
+    const mCfg=BAM_CONFIG.missions[inc.missionKey];
+    const statusMap={
+      needs_dispatch:{cls:'needs',txt:'● NEEDS DISPATCH'},
+      partial:{cls:'partial',txt:'◑ PARTIAL RESPONSE'},
+      enroute:{cls:'enroute',txt:'▶ ENROUTE'},
+      on_scene:{cls:'enroute',txt:'⬛ ON SCENE'},
+      resolved:{cls:'resolved',txt:'✓ RESOLVED'}
+    };
+    const st=statusMap[inc.status]||statusMap.needs_dispatch;
+    const esc=inc.missionKey!==inc.originalMissionKey?'escalated':'';
+    const ptxt=inc.patients.length?`<div class="ipatients">🩺 ${inc.patients.length} patient(s)</div>`:'';
+    const esnName=inc.esnId?(esns.find(e=>e.id===inc.esnId)?.name||''):'';
+    const addrTxt=inc.address
+      ?`<div style="font-size:.65rem;color:var(--muted);">📍 ${inc.address}</div>`
+      :`<div style="font-size:.65rem;color:var(--muted);">📍 ${inc.lat.toFixed(4)}°N, ${Math.abs(inc.lng).toFixed(4)}°W</div>`;
+    const unitCount=inc.units.length;
+    const unitTxt=unitCount?`<div style="font-size:.65rem;color:var(--gold);margin-top:2px;">🚒 ${unitCount} unit${unitCount!==1?'s':''} assigned</div>`:'';
+    const dispatched=inc.units.map(uid=>{
+      const f=getAllUnits().find(u=>u.unit.id===uid);
+      return f?`<span style="font-size:.65rem;color:var(--gold);margin-right:6px;">${f.unit.name}</span>`:'';
+    }).join('');
+    return `<div class="icard ${mCfg.category} ${esc}" onclick="openDispatch('${inc.id}')">
+      <div class="ihead"><span class="iname">${inc.label}</span><span class="itime">${inc.time}</span></div>
+      ${esnName?`<div style="font-size:.65rem;color:var(--muted);">${esnName}</div>`:''}
+      ${addrTxt}
+      ${ptxt}
+      ${unitTxt}
+      <div class="istatus ${st.cls}">${st.txt}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── CALL LOG ──────────────────────────────────────────────────────────────────
+function logCall(inc, note){
+  callLog.unshift({time:inc.time, label:inc.label, note, id:inc.id});
+  if(callLog.length>50) callLog=callLog.slice(0,50);
+  if(document.getElementById('tab-log').classList.contains('active')) renderLog();
+}
+function renderLog(){
+  const el=document.getElementById('rp-log');
+  if(!callLog.length){ el.innerHTML='<div class="empty-msg">No calls yet.</div>'; return; }
+  el.innerHTML=callLog.map(c=>`
+    <div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:.78rem;">
+      <span style="font-family:var(--mono);color:var(--muted);font-size:.65rem;">${c.time}</span>
+      <span style="font-weight:600;margin-left:8px;">${c.label}</span>
+      <span style="float:right;color:var(--muted);font-size:.68rem;">${c.note}</span>
+    </div>`).join('');
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function switchTab(tab){
+  document.getElementById('rp-incidents').style.display=tab==='incidents'?'':'none';
+  document.getElementById('rp-log').style.display=tab==='log'?'':'none';
+  document.getElementById('tab-incidents').classList.toggle('active',tab==='incidents');
+  document.getElementById('tab-log').classList.toggle('active',tab==='log');
+  if(tab==='log') renderLog();
+}
+
+// ── STATS ─────────────────────────────────────────────────────────────────────
+function renderStats(){
+  document.getElementById('hs-stations').textContent=stations.length;
+  document.getElementById('hs-units').textContent=getAllUnits().length;
+  document.getElementById('hs-esns').textContent=esns.length;
+  document.getElementById('hs-active').textContent=incidents.filter(i=>i.status!=='resolved').length;
+  document.getElementById('hs-resolved').textContent=resolvedCount;
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+function getAllUnits(){
+  const out=[];
+  stations.forEach(s=>s.units.forEach(u=>out.push({station:s,unit:u})));
+  return out;
+}
+function haversineKm(lat1,lon1,lat2,lon2){
+  const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function formatETA(sec){
+  if(sec<60) return sec+'s';
+  return Math.floor(sec/60)+'m '+(sec%60)+'s';
+}
+function setStatus(msg){ document.getElementById('statusbar').textContent=msg; }
+
+// ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
+
+// Sets the game speed multiplier and reschedules spawning accordingly.
+// 1 = real-time (1 game-second per real second). 60 = 1 game-minute per real second.
+function setGameSpeed(speed){
+  gameSpeed=speed;
+  ['0','1','2','5','10','30','60'].forEach(s=>{
+    document.getElementById('spd-'+s)?.classList.toggle('active',s===String(speed));
+  });
+  if(_spawnTimer){ clearTimeout(_spawnTimer); _spawnTimer=null; }
+  if(speed>0) scheduleNextSpawn();
+  setStatus(speed===0?'⏸ Game paused.':'▶ Speed: '+speed+'×');
+}
+
+// Advances the in-game clock by gameSpeed seconds. Called every real second.
+// Also ticks any on-scene incident resolution progress.
+function _tickGameClock(){
+  if(gameSpeed>0){
+    gameSeconds+=gameSpeed;
+    if(gameSeconds>=86400){ gameSeconds-=86400; gameDay++; }
+  }
+  const h=Math.floor(gameSeconds/3600);
+  const m=Math.floor((gameSeconds%3600)/60);
+  const s=Math.floor(gameSeconds%60);
+  const dayEl=document.getElementById('hs-day'); if(dayEl) dayEl.textContent='Day '+gameDay;
+  const timeEl=document.getElementById('hs-time');
+  if(timeEl) timeEl.textContent=
+    h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0');
+
+  // Tick resolution progress for all on-scene incidents
+  if(gameSpeed>0){
+    incidents.filter(i=>i.status==='on_scene').forEach(inc=>{
+      if(inc.resolutionTarget==null) return;
+      const mCfg=BAM_CONFIG.missions[inc.missionKey];
+      // Only count units actually on scene — enroute units do not contribute to staffing
+      const allDispatched=inc.units.map(uid=>getAllUnits().find(u=>u.unit.id===uid)).filter(Boolean);
+      const onSceneUnits=allDispatched.filter(({unit})=>unit.status==='on_scene');
+      const metCount=countMetRequirements(mCfg.requirements, onSceneUnits);
+      const staffingRatio=mCfg.requirements.length>0?metCount/mCfg.requirements.length:1;
+      const effectiveRate=Math.pow(staffingRatio,2);
+      if(effectiveRate>0){
+        inc.resolutionProgress+=(gameSpeed/inc.resolutionTarget)*effectiveRate;
+        if(inc.resolutionProgress>=1.0) resolveIncident(inc.id);
+      }
+      // Live-update dispatch modal if open for this incident
+      if(activeDispatchId===inc.id){
+        const modal=document.getElementById('dispatch-modal');
+        if(modal?.classList.contains('open')) _updateResolutionBar(inc, mCfg, onSceneUnits, staffingRatio, effectiveRate);
+      }
+    });
+  }
+}
+
+// ── NEW GAME ──────────────────────────────────────────────────────────────────
+
+function newGame(){
+  if(!confirm('Start a new game? All unsaved progress will be lost. Make sure to save first!')) return;
+  // Clear map objects
+  stations.forEach(s=>{ s.marker?.remove(); s.units.forEach(u=>{ u.animMarker?.remove(); u.routeLine?.remove(); }); });
+  incidents.forEach(i=>{ i.marker?.remove(); if(i.escalateTimer) clearTimeout(i.escalateTimer); });
+  if(_spawnTimer){ clearTimeout(_spawnTimer); _spawnTimer=null; }
+  clearESNState();
+  // Reset state
+  stations=[]; incidents=[]; callLog=[]; responsePlans=[];
+  money=BAM_CONFIG.economy.startingMoney;
+  resolvedCount=0; gameDay=1; gameSeconds=8*3600;
+  // Refresh UI
+  updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
+  renderResponsePlanList(); renderBoxAlarmList(); renderESNList();
+  _tickGameClock();
+  scheduleNextSpawn();
+  setStatus('New game started. Build your first station!');
+}
+
+// ── STATION MANAGEMENT ────────────────────────────────────────────────────────
+
+function openManageStation(stationId){
+  const s=stations.find(x=>x.id===stationId);
+  if(!s) return;
+  _activeManageStation=stationId;
+  document.getElementById('msm-title').textContent=s.name;
+  _renderManageBody();
+  document.getElementById('manage-station-modal').classList.add('open');
+}
+
+function closeManageStation(){
+  document.getElementById('manage-station-modal').classList.remove('open');
+  _activeManageStation=null;
+  _deleteStationConfirm=null;
+  _deleteUnitConfirm=null;
+}
+
+function _renderManageBody(){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  if(!s) return;
+
+  // Available unit types for this station type
+  const availTypes=Object.entries(BAM_CONFIG.unitTypes)
+    .filter(([,u])=>u.stationType===s.type)
+    .map(([k,u])=>({key:k,...u}));
+
+  let html=`<label class="field-label">Station Name</label>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
+    <button class="btn-sm" onclick="renameStation()">Rename</button>
+  </div>
+  <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
+
+  if(!s.units.length){
+    html+='<div class="empty-msg">No units. Add one below.</div>';
+  }
+  s.units.forEach(u=>{
+    const utCfg=BAM_CONFIG.unitTypes[u.typeKey];
+    const statusBadge = u.status!=='available'
+      ? `<span style="font-size:.6rem;color:var(--gold);">${u.status.replace('_',' ').toUpperCase()}</span>` : '';
+    html+=`<div class="manage-unit-row">
+      <div class="manage-unit-name">
+        <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
+      </div>
+      <span class="manage-unit-label">${utCfg?.label||u.typeKey}</span>
+      ${statusBadge}
+      <button class="btn-sm" onclick="renameUnit('${u.id}')">Save</button>
+      ${_deleteUnitConfirm===u.id
+        ?`<button class="btn-sm danger" onclick="deleteUnit('${u.id}')" style="border-color:var(--accent);color:var(--accent);background:rgba(232,67,26,.15);">Confirm?</button>`
+        :`<button class="btn-sm danger" onclick="deleteUnit('${u.id}')">Delete</button>`}
+    </div>`;
+  });
+
+  html+=`<div class="section-title" style="margin-top:14px;">Add Unit</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <select id="msm-add-type" style="flex:2;min-width:140px;" onchange="_updateAddUnitCost()">
+      ${availTypes.map(u=>`<option value="${u.key}">${u.label} — $${u.cost.toLocaleString()}</option>`).join('')}
+    </select>
+    <input type="text" id="msm-add-name" placeholder="Callsign (e.g. E-52)" style="flex:1;min-width:110px;"/>
+  </div>
+  <button class="btn-sm" style="margin-top:8px;width:100%;" onclick="addUnitToStation()">Purchase Unit</button>`;
+
+  // Delete station button — show confirm state if armed
+  const delBtn=document.getElementById('msm-delete-btn');
+  if(delBtn){
+    delBtn.disabled=false;
+    if(_deleteStationConfirm===s.id){
+      delBtn.textContent='Confirm Delete?';
+      delBtn.style.background='var(--accent)';
+    } else {
+      delBtn.textContent='Delete Station';
+      delBtn.style.background='';
+    }
+  }
+
+  document.getElementById('msm-body').innerHTML=html;
+  _updateAddUnitCost();
+}
+
+function _updateAddUnitCost(){
+  const typeKey=document.getElementById('msm-add-type')?.value;
+  const cost=BAM_CONFIG.unitTypes[typeKey]?.cost||0;
+  // The cost is shown inline in the option label; nothing extra needed.
+}
+
+function renameStation(){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  if(!s) return;
+  const newName=document.getElementById('msm-rename-input').value.trim();
+  if(!newName){ setStatus('⚠️ Enter a station name.'); return; }
+  s.name=newName;
+  s.marker?.setTooltipContent(_buildStationTooltip(newName, s.type));
+  document.getElementById('msm-title').textContent=newName;
+  renderStationList();
+  setStatus(`Station renamed to "${newName}".`);
+}
+
+function renameUnit(unitId){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  const u=s?.units.find(x=>x.id===unitId);
+  if(!u) return;
+  const newName=document.getElementById('msm-u-'+unitId)?.value.trim();
+  if(!newName){ setStatus('⚠️ Enter a unit callsign.'); return; }
+  u.name=newName;
+  renderStationList();
+  setStatus(`Unit renamed to "${newName}".`);
+}
+
+function deleteUnit(unitId){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  if(!s) return;
+  const u=s.units.find(x=>x.id===unitId);
+  if(!u) return;
+
+  // Two-click confirm pattern
+  if(_deleteUnitConfirm!==unitId){
+    _deleteUnitConfirm=unitId;
+    _renderManageBody();  // re-render to show confirm state on button
+    setTimeout(()=>{
+      if(_deleteUnitConfirm===unitId){
+        _deleteUnitConfirm=null;
+        if(stations.find(x=>x.id===_activeManageStation)) _renderManageBody();
+      }
+    },4000);
+    return;
+  }
+  _deleteUnitConfirm=null;
+
+  // Stop active animation
+  u._animGen=(u._animGen||0)+1;
+  u.animMarker?.remove();
+  u.routeLine?.remove();
+  u.returnLine?.remove();
+
+  // Remove from any active incident
+  incidents.forEach(inc=>{
+    inc.units=inc.units.filter(uid=>uid!==unitId);
+    if(inc.units.length===0&&inc.status!=='resolved'){
+      inc.status='needs_dispatch';
+      if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+    }
+  });
+
+  s.units=s.units.filter(x=>x.id!==unitId);
+  const refund=Math.floor((BAM_CONFIG.unitTypes[u.typeKey]?.cost||0)*0.5);
+  updateMoney(refund);
+  renderStationList(); renderStats(); renderIncidentList(); _renderManageBody();
+  setStatus(`Deleted ${u.name}. Refund: +$${refund.toLocaleString()}`);
+}
+
+function addUnitToStation(){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  if(!s) return;
+  const typeKey=document.getElementById('msm-add-type').value;
+  const name=document.getElementById('msm-add-name').value.trim();
+  if(!name){ setStatus('⚠️ Enter a callsign for the new unit.'); return; }
+  const cost=BAM_CONFIG.unitTypes[typeKey]?.cost||0;
+  if(money<cost){ setStatus(`⚠️ Not enough funds. Need $${cost.toLocaleString()}.`); return; }
+  s.units.push({
+    id:'u_'+Date.now(), name, typeKey, status:'available', inService:true, _animGen:0,
+    incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
+  });
+  updateMoney(-cost);
+  document.getElementById('msm-add-name').value='';
+  renderStationList(); renderStats(); _renderManageBody();
+  setStatus(`✅ ${name} (${BAM_CONFIG.unitTypes[typeKey].label}) added. -$${cost.toLocaleString()}`);
+}
+
+function deleteStation(){
+  const s=stations.find(x=>x.id===_activeManageStation);
+  if(!s) return;
+  const delBtn=document.getElementById('msm-delete-btn');
+
+  // Two-click confirm: first click arms the confirm state, second click executes
+  if(_deleteStationConfirm!==s.id){
+    _deleteStationConfirm=s.id;
+    if(delBtn){ delBtn.textContent='Confirm Delete?'; delBtn.style.background='var(--accent)'; }
+    setTimeout(()=>{
+      if(_deleteStationConfirm===s.id){
+        _deleteStationConfirm=null;
+        if(delBtn){ delBtn.textContent='Delete Station'; delBtn.style.background=''; }
+      }
+    },4000);
+    return;
+  }
+  _deleteStationConfirm=null;
+
+  // Cancel all active animations and clean up units
+  s.units.forEach(u=>{
+    u._animGen=(u._animGen||0)+1;  // stop any active rAF loop
+    u.animMarker?.remove();
+    u.routeLine?.remove();
+    u.returnLine?.remove();
+    // Remove from any active incident
+    incidents.forEach(inc=>{
+      inc.units=inc.units.filter(uid=>uid!==u.id);
+      if(inc.units.length===0&&inc.status!=='resolved'){
+        inc.status='needs_dispatch';
+        if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+      }
+    });
+  });
+  s.marker?.remove();
+  const refund=BAM_CONFIG.economy.stationCost[s.type]||0;
+  stations=stations.filter(x=>x.id!==_activeManageStation);
+  updateMoney(refund);
+  closeManageStation();
+  renderStationList(); renderStats(); renderIncidentList();
+  setStatus(`🗑 Station deleted. Refund: +$${refund.toLocaleString()}`);
+}
+
+// ── DEV TOOLS ─────────────────────────────────────────────────────────────────
+function devSetMoney(){
+  const val = parseInt(document.getElementById('dev-money-input').value, 10);
+  if(isNaN(val)) return;
+  money = 0;
+  updateMoney(val);
+  setStatus(`💰 Budget set to $${val.toLocaleString()}`);
+}
+
+// ── RESPONSE PLANS ────────────────────────────────────────────────────────────
+function openResponsePlanModal(editId=null){
+  const existing = editId ? responsePlans.find(r=>r.id===editId) : null;
+  document.getElementById('rp-modal-title').textContent = existing ? 'Edit Response Plan' : 'New Response Plan';
+  document.getElementById('rp-name-input').value = existing?.name || '';
+  document.getElementById('rp-modal').dataset.editId = editId || '';
+
+  const rowsEl = document.getElementById('rp-req-rows');
+  rowsEl.innerHTML = '';
+  if(existing?.requirements.length){
+    // Group single-tag reqs by tag so they display as "engine × 2" etc.
+    const counts = {};
+    const multiTag = [];
+    existing.requirements.forEach(req => {
+      if(req.length === 1) counts[req[0]] = (counts[req[0]] || 0) + 1;
+      else multiTag.push(req);
+    });
+    Object.entries(counts).forEach(([tag, count]) => addRPReqRow(tag, count));
+    multiTag.forEach(req => addRPReqRow(req[0], 1));
+  } else {
+    addRPReqRow();
+  }
+  document.getElementById('rp-modal').classList.add('open');
+  setTimeout(()=>document.getElementById('rp-name-input').focus(),40);
+}
+
+function closeResponsePlanModal(){
+  document.getElementById('rp-modal').classList.remove('open');
+}
+
+// Adds a tag + count requirement row to the response plan modal.
+// defaultTag pre-selects a tag; defaultCount sets the quantity spinner.
+function addRPReqRow(defaultTag=null, defaultCount=1){
+  const container = document.getElementById('rp-req-rows');
+  const allTags = [...new Set(Object.values(BAM_CONFIG.unitTypes).flatMap(u=>u.tags))].sort();
+  const row = document.createElement('div');
+  row.className = 'rp-req-row';
+  row.innerHTML = `<select class="rp-req-select" style="flex:1;">
+    ${allTags.map(t=>`<option value="${t}"${t===defaultTag?' selected':''}>${t}</option>`).join('')}
+  </select>
+  <span class="rp-req-x">×</span>
+  <input type="number" class="rp-req-count" value="${Math.max(1,defaultCount||1)}" min="1" max="20"/>
+  <button class="btn-sm danger" onclick="this.closest('.rp-req-row').remove()" style="flex-shrink:0;">✕</button>`;
+  container.appendChild(row);
+}
+
+function confirmResponsePlan(){
+  const name = document.getElementById('rp-name-input').value.trim();
+  if(!name){ setStatus('⚠️ Enter a name for this plan.'); return; }
+  // Expand count-based rows: "engine × 2" becomes [['engine'],['engine']]
+  const requirements = [];
+  document.querySelectorAll('#rp-req-rows .rp-req-row').forEach(row => {
+    const tag   = row.querySelector('.rp-req-select').value;
+    const count = Math.max(1, parseInt(row.querySelector('.rp-req-count').value, 10) || 1);
+    for(let i = 0; i < count; i++) requirements.push([tag]);
+  });
+  if(!requirements.length){ setStatus('⚠️ Add at least one unit requirement.'); return; }
+
+  const editId = document.getElementById('rp-modal').dataset.editId;
+  if(editId){
+    const plan = responsePlans.find(r=>r.id===editId);
+    if(plan){ plan.name=name; plan.requirements=requirements; }
+  } else {
+    responsePlans.push({id:'rp_'+Date.now(), name, requirements});
+  }
+  closeResponsePlanModal();
+  renderResponsePlanList();
+  setStatus(`✅ Response plan "${name}" saved.`);
+}
+
+function deleteResponsePlan(id){
+  if(!confirm('Delete this response plan?')) return;
+  responsePlans = responsePlans.filter(r=>r.id!==id);
+  renderResponsePlanList();
+}
+
+function renderResponsePlanList(){
+  const el = document.getElementById('rp-list');
+  if(!el) return;
+  if(!responsePlans.length){
+    el.innerHTML='<div class="empty-msg">No response plans yet.</div>';
+    return;
+  }
+  el.innerHTML = responsePlans.map(rp=>{
+    const reqs = rp.requirements.map(r=>r.join('/')).join(' + ');
+    return `<div class="plan-card">
+      <div class="plan-name">${rp.name}</div>
+      <div class="plan-meta">${reqs}</div>
+      <div style="display:flex;gap:5px;margin-top:6px;">
+        <button class="btn-sm" onclick="openResponsePlanModal('${rp.id}')">Edit</button>
+        <button class="btn-sm danger" onclick="deleteResponsePlan('${rp.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── SAVE / LOAD — MULTI-SLOT ──────────────────────────────────────────────────
+const SAVE_PREFIX   = 'bam_save_';
+const LAST_SLOT_KEY = 'bam_last_slot';
+
+function getSaveSlots(){
+  const slots=[];
+  for(let i=0;i<localStorage.length;i++){
+    const key=localStorage.key(i);
+    if(key&&key.startsWith(SAVE_PREFIX)){
+      try{
+        const data=JSON.parse(localStorage.getItem(key));
+        slots.push({name:key.slice(SAVE_PREFIX.length),data});
+      }catch(e){}
+    }
+  }
+  return slots.sort((a,b)=>(b.data.savedAt||0)-(a.data.savedAt||0));
+}
+
+function buildSaveData(){
+  return {
+    savedAt:Date.now(), money, resolvedCount,
+    gameDay, gameSeconds,
+    stations: stations.map(s=>({
+      id:s.id,name:s.name,type:s.type,lat:s.lat,lng:s.lng,
+      upgrades:s.upgrades, inService:s.inService,
+      units:s.units.map(u=>({
+        id:u.id,name:u.name,typeKey:u.typeKey, inService:u.inService,
+        status:u.status==='dispatched'?'available':u.status
+      }))
+    })),
+    esns:          getESNSaveData(),
+    dispatchCenters: getDCSaveData(),
+    boxAlarms:     getBoxAlarmSaveData(),
+    responsePlans: responsePlans.map(r=>({...r}))
+  };
+}
+
+function openSaveModal(){
+  renderSaveSlotList();
+  document.getElementById('save-new-name').value='';
+  document.getElementById('save-modal').classList.add('open');
+  setTimeout(()=>document.getElementById('save-new-name').focus(),50);
+}
+
+function closeSaveModal(){
+  document.getElementById('save-modal').classList.remove('open');
+}
+
+function renderSaveSlotList(){
+  const el=document.getElementById('save-slot-list');
+  const slots=getSaveSlots();
+  if(!slots.length){
+    el.innerHTML='<div class="save-empty">No saves yet. Enter a name below to create your first save.</div>';
+    return;
+  }
+  el.innerHTML=slots.map(({name,data})=>{
+    const date=data.savedAt?new Date(data.savedAt).toLocaleString():'Unknown';
+    const stCount=data.stations?.length||0;
+    const esnCount=data.esns?.length||0;
+    const budget=data.money!=null?'$'+data.money.toLocaleString():'';
+    const safe=name.replace(/'/g,"\\'");
+    return `<div class="save-slot-row">
+      <div class="save-slot-info">
+        <div class="save-slot-name">${name}</div>
+        <div class="save-slot-meta">${stCount} station(s) · ${esnCount} ESN(s) · ${budget} · ${date}</div>
+      </div>
+      <div class="save-slot-actions">
+        <button class="btn-sm" onclick="loadFromSlot('${safe}')">Load</button>
+        <button class="btn-sm overwrite${_overwriteConfirmSlot===name?' confirm':''}" id="owbtn-${safe}"
+          onclick="overwriteSlot('${safe}')">${_overwriteConfirmSlot===name?'Confirm?':'Overwrite'}</button>
+        <button class="btn-sm danger" onclick="deleteSlot('${safe}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function saveToSlot(){
+  const name=document.getElementById('save-new-name').value.trim();
+  if(!name){ setStatus('⚠️ Enter a save name.'); return; }
+  const key=SAVE_PREFIX+name;
+  // If slot already exists, use the same confirm flow as overwriteSlot
+  if(localStorage.getItem(key)!==null){ overwriteSlot(name); return; }
+  localStorage.setItem(key,JSON.stringify(buildSaveData()));
+  localStorage.setItem(LAST_SLOT_KEY,name);
+  renderSaveSlotList();
+  document.getElementById('save-new-name').value='';
+  setStatus(`💾 Saved as "${name}".`);
+}
+
+// Two-click overwrite: first click turns button red "Confirm?", second click saves.
+// Clicking any other button or waiting resets the pending slot.
+function overwriteSlot(name){
+  if(_overwriteConfirmSlot === name){
+    // Second click — confirmed, do the save
+    localStorage.setItem(SAVE_PREFIX+name, JSON.stringify(buildSaveData()));
+    localStorage.setItem(LAST_SLOT_KEY, name);
+    _overwriteConfirmSlot = null;
+    renderSaveSlotList();
+    // Clear the new-name field if it matched
+    const inp = document.getElementById('save-new-name');
+    if(inp && inp.value.trim() === name) inp.value='';
+    setStatus(`💾 Saved over "${name}".`);
+  } else {
+    // First click — arm the confirm state
+    _overwriteConfirmSlot = name;
+    renderSaveSlotList();
+    // Auto-reset after 4 seconds if user doesn't confirm
+    setTimeout(()=>{ if(_overwriteConfirmSlot===name){ _overwriteConfirmSlot=null; renderSaveSlotList(); } }, 4000);
+  }
+}
+
+function loadFromSlot(name){
+  const raw=localStorage.getItem(SAVE_PREFIX+name);
+  if(!raw){ setStatus('⚠️ Save not found.'); return; }
+  try{
+    const data=JSON.parse(raw);
+    // Clear all map state
+    stations.forEach(s=>{ s.marker?.remove(); s.units.forEach(u=>{ u.animMarker?.remove(); u.routeLine?.remove(); }); });
+    incidents.forEach(i=>{ i.marker?.remove(); if(i.escalateTimer) clearTimeout(i.escalateTimer); });
+    clearESNState();
+    stations=[]; incidents=[]; callLog=[];
+
+    money=data.money||BAM_CONFIG.economy.startingMoney;
+    resolvedCount=data.resolvedCount||0;
+    gameDay=data.gameDay||1;
+    // Support both old gameMinutes saves and new gameSeconds saves
+    gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
+    responsePlans=data.responsePlans||[];
+    data.stations?.forEach(s=>recreateStation(s));
+    loadESNData(data.esns);
+    loadDCData(data.dispatchCenters);
+    loadBoxAlarmData(data.boxAlarms);
+
+    localStorage.setItem(LAST_SLOT_KEY,name);
+    updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
+    renderResponsePlanList(); renderBoxAlarmList(); _tickGameClock();
+    closeSaveModal();
+    setStatus(`💾 Loaded "${name}" — ${stations.length} station(s), ${esns.length} ESN(s). Budget: $${money.toLocaleString()}`);
+  } catch(e){
+    console.error('Load failed',e);
+    setStatus('⚠️ Load failed — save may be corrupt.');
+  }
+}
+
+function deleteSlot(name){
+  if(!confirm(`Delete save "${name}"? This cannot be undone.`)) return;
+  localStorage.removeItem(SAVE_PREFIX+name);
+  if(localStorage.getItem(LAST_SLOT_KEY)===name) localStorage.removeItem(LAST_SLOT_KEY);
+  renderSaveSlotList();
+  setStatus(`🗑 Deleted save "${name}".`);
+}
+
+// One-time migration from the old bam_v2 single-slot format.
+function migrateOldSave(){
+  const legacy=localStorage.getItem('bam_v2');
+  if(!legacy||localStorage.getItem(LAST_SLOT_KEY)) return;
+  try{
+    const parsed=JSON.parse(legacy);
+    parsed.savedAt=parsed.savedAt||Date.now();
+    localStorage.setItem(SAVE_PREFIX+'Imported Save',JSON.stringify(parsed));
+    localStorage.setItem(LAST_SLOT_KEY,'Imported Save');
+    localStorage.removeItem('bam_v2');
+  }catch(e){}
+}
+
+// Loads the last used slot on startup. Returns true if successful.
+function autoLoadLastSlot(){
+  const lastName=localStorage.getItem(LAST_SLOT_KEY);
+  if(!lastName) return false;
+  const raw=localStorage.getItem(SAVE_PREFIX+lastName);
+  if(!raw) return false;
+  try{
+    const data=JSON.parse(raw);
+    money=data.money||BAM_CONFIG.economy.startingMoney;
+    resolvedCount=data.resolvedCount||0;
+    gameDay=data.gameDay||1;
+    gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
+    responsePlans=data.responsePlans||[];
+    data.stations?.forEach(s=>recreateStation(s));
+    loadESNData(data.esns);
+    loadDCData(data.dispatchCenters);
+    loadBoxAlarmData(data.boxAlarms);
+    updateMoney(0); renderStationList(); renderStats();
+    renderResponsePlanList(); renderBoxAlarmList();
+    setStatus(`💾 Loaded "${lastName}" — ${stations.length} station(s), ${esns.length} ESN(s).`);
+    return true;
+  }catch(e){ console.error('Auto-load failed',e); return false; }
+}
+
+// Rebuilds a station from saved data and places it on the map.
+function recreateStation(s){
+  const color=getStationColor(s.type);
+  const icon=L.divIcon({
+    className:'',
+    html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);"></div>`,
+    iconSize:[22,22],iconAnchor:[11,22]
+  });
+  const marker=L.marker([s.lat,s.lng],{icon}).addTo(map);
+  marker.bindTooltip(_buildStationTooltip(s.name, s.type),
+    {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
+  marker.on('click',()=>openManageStation(s.id));
+  if(s.inService===false) marker.setOpacity(.4);
+  const station={...s, marker,
+    inService: s.inService!==false,
+    units:s.units.map(u=>({
+      ...u, inService:u.inService!==false,
+      // Normalize any mid-call status to 'available' — animations don't survive page loads
+      status:['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
+      _animGen:0,
+      incidentId:null,routeLine:null,returnLine:null,animMarker:null,routeCoords:[]
+    }))
+  };
+  stations.push(station);
+}
+
+// ── SEED TEST STATIONS ────────────────────────────────────────────────────────
+function seedTestData(){
+  if(stations.length>0) return;
+  if(!BAM_CONFIG.seedStations?.length) return;
+  BAM_CONFIG.seedStations.forEach(seed=>{
+    const color=getStationColor(seed.type);
+    const icon=L.divIcon({
+      className:'',
+      html:`<div style="background:${color};width:22px;height:22px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.6);opacity:.7;"></div>`,
+      iconSize:[22,22],iconAnchor:[11,22]
+    });
+    const id='st_seed_'+Date.now()+'_'+Math.random();
+    const marker=L.marker([seed.lat,seed.lng],{icon}).addTo(map);
+    marker.bindTooltip(_buildStationTooltip(seed.name, seed.type),
+      {permanent: stationLabelsVisible, className:'station-tooltip', direction:'top'});
+    marker.on('click',()=>openManageStation(id));
+    stations.push({
+      id, name:seed.name, type:seed.type, lat:seed.lat, lng:seed.lng,
+      upgrades:[], marker, inService:true,
+      units:seed.units.map((u,i)=>({
+        id:'u_seed_'+Date.now()+'_'+i, name:u.name, typeKey:u.typeKey,
+        status:'available', inService:true, _animGen:0,
+        incidentId:null,routeLine:null,returnLine:null,animMarker:null,routeCoords:[]
+      }))
+    });
+  });
+  renderStationList(); renderStats();
+}
+
+// ── INCIDENT SPAWNER ──────────────────────────────────────────────────────────
+function scheduleNextSpawn(){
+  if(gameSpeed===0) return;  // paused — don't schedule
+  const {intervalMinMs,intervalMaxMs}=BAM_CONFIG.spawn;
+  // playerSpawnRate: >1 = shorter intervals = more calls. Divide by (gameSpeed * spawnRate).
+  const realMin=intervalMinMs/(gameSpeed*playerSpawnRate);
+  const realMax=intervalMaxMs/(gameSpeed*playerSpawnRate);
+  const delay=realMin+Math.random()*(realMax-realMin);
+  _spawnTimer=setTimeout(()=>{
+    _spawnTimer=null;
+    spawnIncident(false);
+    scheduleNextSpawn();
+  },delay);
+}
+
+// ── KEYBOARD ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    setPlacing(null);
+    closeStationModal(); closeDispatch(); closeSaveModal(); closeSettings();
+    closeESNModal(); closeDCModal(); closeDCSummary();
+    closeResponsePlanModal(); closeBoxAlarmModal(); closeManageStation();
+    if(drawingESN) cancelESNDraw();
+  }
+  if(e.key==='Enter' && drawingESN){ e.preventDefault(); _finishDrawESN(); }
+  if(e.key==='s'&&e.ctrlKey){ e.preventDefault(); openSaveModal(); }
+});
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+
+// Layer toggle control (Leaflet bottom-left)
+const LayerControl=L.Control.extend({
+  options:{position:'bottomleft'},
+  onAdd:function(){
+    const div=L.DomUtil.create('div','layer-ctrl-wrap');
+    div.innerHTML=`<button class="layer-ctrl-btn" title="Toggle map layers" onclick="
+      const p=document.getElementById('layer-ctrl-panel');
+      p.classList.toggle('open');">⊞ Layers</button>
+    <div id="layer-ctrl-panel" class="layer-ctrl-panel">
+      <label><input type="checkbox" checked onchange="setESNLayerVisible(this.checked)"/> ESN Zones</label>
+      <label><input type="checkbox" checked onchange="setDCLayerVisible(this.checked)"/> Dispatch Centers</label>
+      <label><input type="checkbox" checked onchange="setUnitLabelsVisible(this.checked)"/> Unit Labels</label>
+      <label><input type="checkbox" id="station-labels-chk" onchange="setStationLabelsVisible(this.checked)"/> Station Labels</label>
+    </div>`;
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.disableScrollPropagation(div);
+    return div;
+  }
+});
+new LayerControl().addTo(map);
+
+// Game clock — ticks every real second, advancing by gameSpeed game-minutes.
+setInterval(_tickGameClock, 1000);
+
+loadSettings();
+initSidebarCosts();
+migrateOldSave();
+const loaded = autoLoadLastSlot();
+if(!loaded) seedTestData();
+updateMoney(0);
+renderIncidentList(); renderStats();
+_tickGameClock();
+// Show stations pane by default (flex layout)
+document.getElementById('sb-stations-pane').style.display = 'flex';
+document.getElementById('sb-stations-pane').style.flexDirection = 'column';
+setPlacing(null);
+scheduleNextSpawn();
+setStatus('SYSTEM READY — Draw ESN zones for call spawning · Ctrl+S to save');
+</script>
+</body>
+</html>

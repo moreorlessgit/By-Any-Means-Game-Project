@@ -1,0 +1,1219 @@
+// =============================================================================
+// BY ANY MEANS — ESN SYSTEM
+// ESN zone drawing, dispatch centers, box alarms, and all geographic coverage logic.
+// This file depends on: config.js (BAM_CONFIG), and globals from index.html
+// (map, stations, getAllUnits, setStatus, setPlacing, renderStationList).
+// =============================================================================
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+let esns             = [];  // { id, name, coords, assignments, inService, color, labelSize, polygon }
+let dispatchCenters  = [];  // { id, name, lat, lng, assignedESNs, inService, marker }
+let boxAlarms        = [];  // { id, name, esnId, missionTypes, requirements }
+
+// ── ESN DRAWING STATE ─────────────────────────────────────────────────────────
+let drawingESN         = false;
+let drawCoords         = [];
+let _drawMarkers       = [];      // draggable vertex markers while drawing
+let _drawPolyline      = null;    // preview line while drawing
+let _drawPolygon       = null;    // preview fill while drawing
+let _clickTimer        = null;    // debounce timer for single-click vs. double-click
+let _editingESNId      = null;    // ESN id being shape-edited, or null for new draw
+let _suppressESNClicks = false;   // true while drawing — polygon clicks are silenced
+let _refDots           = [];      // L.circleMarker reference dots shown during draw
+let _selectedDCFilter  = null;    // DC id currently filtering the ESN list, or null (show all)
+let _dcSectionCollapsed = false;  // whether the DC section header is collapsed
+
+// ── ESN COLOR PRESETS ─────────────────────────────────────────────────────────
+const ESN_COLOR_PRESETS = [
+  '#f0a500', '#34c96a', '#2ea8ff', '#e8431a',
+  '#a855f7', '#ec4899', '#14b8a6', '#ffffff'
+];
+
+// =============================================================================
+// ESN POLYGON DRAWING
+// Vertices are draggable markers. Click = add vertex (debounced 200ms).
+// Double-click = finish. Enter = finish. Escape = cancel.
+// =============================================================================
+
+function startDrawESN() {
+  if (drawingESN) return;
+  drawingESN = true;
+  drawCoords = [];
+  _drawMarkers = [];
+  setPlacing(null);
+  map.doubleClickZoom.disable();
+  map.getContainer().style.cursor = 'crosshair';
+  map.on('click', _onESNClick);
+  map.on('dblclick', _onESNDblClick);
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-draw-esn')?.classList.add('active');
+  _showDrawToolbar();
+  // Suppress existing ESN polygon clicks so they can't be accidentally opened mid-draw
+  esns.forEach(esn => esn.polygon?.off('click'));
+  _suppressESNClicks = true;
+  // Show small gray reference dots at all existing ESN vertices as a visual snapping aid
+  esns.forEach(esn => {
+    esn.coords.forEach(([lat, lng]) => {
+      const dot = L.circleMarker([lat, lng], {
+        radius: 4, color: '#888', fillColor: '#888', fillOpacity: .7,
+        weight: 1, interactive: false
+      }).addTo(map);
+      _refDots.push(dot);
+    });
+  });
+  setStatus('Drawing ESN: click to add points · double-click or Enter to finish · Escape to cancel');
+}
+
+// Single-click handler — debounced to avoid double-click adding extra vertices.
+function _onESNClick(e) {
+  if (!drawingESN) return;
+  if (_clickTimer) clearTimeout(_clickTimer);
+  _clickTimer = setTimeout(() => {
+    _clickTimer = null;
+    const snapped = _snapLatlng(e.latlng);
+    _addVertex(snapped);
+  }, 200);
+}
+
+// Double-click handler — cancels pending single-click and finishes the polygon.
+function _onESNDblClick(e) {
+  if (!drawingESN) return;
+  L.DomEvent.stop(e);
+  if (_clickTimer) { clearTimeout(_clickTimer); _clickTimer = null; }
+  _finishDrawESN();
+}
+
+// Snaps a proposed latlng to any existing ESN vertex or current draw vertex
+// within 15 pixels. Returns the snapped latlng or the original if no snap.
+function _snapLatlng(latlng) {
+  const threshold = 15;
+  const pt = map.latLngToContainerPoint(latlng);
+
+  // Snap to existing ESN polygon vertices
+  for (const esn of esns) {
+    for (const coord of esn.coords) {
+      const cp = map.latLngToContainerPoint(L.latLng(coord[0], coord[1]));
+      const dx = pt.x - cp.x, dy = pt.y - cp.y;
+      if (Math.sqrt(dx * dx + dy * dy) < threshold) return L.latLng(coord[0], coord[1]);
+    }
+  }
+
+  // Snap to first vertex of current drawing (for self-closing)
+  if (drawCoords.length >= 2) {
+    const first = drawCoords[0];
+    const cp = map.latLngToContainerPoint(L.latLng(first[0], first[1]));
+    const dx = pt.x - cp.x, dy = pt.y - cp.y;
+    if (Math.sqrt(dx * dx + dy * dy) < threshold) return L.latLng(first[0], first[1]);
+  }
+
+  return latlng;
+}
+
+// Adds a vertex at the given latlng, creates a draggable marker, updates preview.
+// First vertex (idx 0) is green to show the polygon start; subsequent are gold.
+function _addVertex(latlng) {
+  const idx = drawCoords.length;
+  drawCoords.push([latlng.lat, latlng.lng]);
+
+  const dotColor = idx === 0 ? 'var(--green)' : 'var(--gold)';
+  const icon = L.divIcon({
+    className: '',
+    html: `<div style="width:14px;height:14px;background:${dotColor};border:2px solid #fff;
+      border-radius:50%;cursor:move;"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7]
+  });
+
+  const marker = L.marker(latlng, { icon, draggable: true, zIndexOffset: 500 }).addTo(map);
+  marker.on('drag', () => {
+    drawCoords[idx] = [marker.getLatLng().lat, marker.getLatLng().lng];
+    _updateDrawPreview();
+  });
+
+  _drawMarkers.push(marker);
+  _updateDrawPreview();
+  _updateDrawToolbar();
+}
+
+// Redraws the in-progress preview lines from current drawCoords.
+function _updateDrawPreview() {
+  if (_drawPolyline) { _drawPolyline.remove(); _drawPolyline = null; }
+  if (_drawPolygon)  { _drawPolygon.remove();  _drawPolygon  = null; }
+  if (drawCoords.length >= 2) {
+    _drawPolyline = L.polyline(drawCoords, {
+      color: '#f0a500', weight: 2, dashArray: '6,4', opacity: .9
+    }).addTo(map);
+  }
+  if (drawCoords.length >= 3) {
+    _drawPolygon = L.polygon(drawCoords, {
+      color: '#f0a500', weight: 2, fillColor: '#f0a500', fillOpacity: .1
+    }).addTo(map);
+  }
+}
+
+// Updates the floating toolbar vertex count text.
+function _updateDrawToolbar() {
+  const el = document.getElementById('draw-toolbar-status');
+  if (!el) return;
+  if (_editingESNId) {
+    const esn = esns.find(e => e.id === _editingESNId);
+    const n = drawCoords.length;
+    el.textContent = `Editing: ${esn?.name || 'ESN'} — ${n} point${n !== 1 ? 's' : ''}`;
+    return;
+  }
+  const n = drawCoords.length;
+  el.textContent = n === 0
+    ? 'Click map to add points'
+    : `${n} point${n !== 1 ? 's' : ''}${n >= 3 ? ' — ready' : ''}`;
+}
+
+function _showDrawToolbar() {
+  const tb = document.getElementById('esn-draw-toolbar');
+  if (tb) { tb.style.display = 'flex'; _updateDrawToolbar(); }
+}
+
+function _hideDrawToolbar() {
+  const tb = document.getElementById('esn-draw-toolbar');
+  if (tb) tb.style.display = 'none';
+}
+
+function _finishDrawESN() {
+  if (drawCoords.length < 3) {
+    setStatus('⚠️ Need at least 3 points to create an ESN zone.');
+    return;
+  }
+  // Capture editId before _cancelESNDraw clears it
+  const editId = _editingESNId;
+  _editingESNId = null;  // clear first so _cancelESNDraw doesn't try to restore the old polygon
+  _cancelESNDraw(false);
+
+  if (editId) {
+    // Shape-edit confirmed — update the ESN's coords and rebuild its polygon
+    const esn = esns.find(e => e.id === editId);
+    if (esn) {
+      esn.coords = [...drawCoords];
+      const polygon = L.polygon(esn.coords, {
+        color: esn.color, weight: 2, fillColor: esn.color, fillOpacity: .07
+      }).addTo(map);
+      polygon.bindTooltip(`<span style="color:${esn.color};">${esn.name}</span>`, {
+        permanent: true, direction: 'center', className: 'esn-label'
+      });
+      _applyTooltipStyle(polygon, esn.color, esn.labelSize);
+      polygon.on('click', () => openESNModal(esn.id));
+      esn.polygon = polygon;
+      setStatus(`✅ ESN "${esn.name}" shape updated.`);
+      openESNModal(editId);
+    }
+    drawCoords = [];
+  } else {
+    openESNModal(null);
+  }
+}
+
+// Cleans up all drawing state. Pass clearCoords=false to preserve drawn shape
+// for use by the modal that immediately follows (create flow).
+function _cancelESNDraw(clearCoords = true) {
+  if (_clickTimer) { clearTimeout(_clickTimer); _clickTimer = null; }
+  drawingESN = false;
+  map.off('click',   _onESNClick);
+  map.off('dblclick', _onESNDblClick);
+  map.doubleClickZoom.enable();
+  map.getContainer().style.cursor = '';
+  if (_drawPolyline) { _drawPolyline.remove(); _drawPolyline = null; }
+  if (_drawPolygon)  { _drawPolygon.remove();  _drawPolygon  = null; }
+  _drawMarkers.forEach(m => m.remove());
+  _drawMarkers = [];
+  if (clearCoords) drawCoords = [];
+  document.getElementById('btn-draw-esn')?.classList.remove('active');
+  _hideDrawToolbar();
+
+  // Restore click handlers on all ESN polygons
+  if (_suppressESNClicks) {
+    esns.forEach(esn => {
+      if (esn.polygon) esn.polygon.on('click', () => openESNModal(esn.id));
+    });
+    _suppressESNClicks = false;
+  }
+  // Remove reference dots
+  _refDots.forEach(d => d.remove());
+  _refDots = [];
+  // If shape-editing was cancelled (not finished), restore the original polygon
+  if (_editingESNId) {
+    const esn = esns.find(e => e.id === _editingESNId);
+    if (esn && !esn.polygon) {
+      const polygon = L.polygon(esn.coords, {
+        color: esn.color, weight: 2, fillColor: esn.color,
+        fillOpacity: esn.inService !== false ? .07 : .02,
+        opacity:     esn.inService !== false ? 1   : .3
+      }).addTo(map);
+      polygon.bindTooltip(`<span style="color:${esn.color};">${esn.name}</span>`, {
+        permanent: true, direction: 'center', className: 'esn-label'
+      });
+      _applyTooltipStyle(polygon, esn.color, esn.labelSize);
+      polygon.on('click', () => openESNModal(esn.id));
+      esn.polygon = polygon;
+    }
+    _editingESNId = null;
+  }
+}
+
+// Public cancel — called by Escape key handler in index.html.
+function cancelESNDraw() { _cancelESNDraw(true); }
+
+// Enters draw mode pre-loaded with an existing ESN's vertices so the player
+// can reshape it. Removes the current polygon, populates vertex markers, then
+// on confirm the polygon is rebuilt from the new coords.
+function startEditESNShape(esnId) {
+  const esn = esns.find(e => e.id === esnId);
+  if (!esn) return;
+  closeESNModal();
+  // Remove current polygon from map (kept in esn.coords for cancel restore)
+  esn.polygon?.remove();
+  esn.polygon = null;
+
+  _editingESNId = esnId;
+  drawingESN    = true;
+  drawCoords    = [];
+  _drawMarkers  = [];
+  setPlacing(null);
+  map.doubleClickZoom.disable();
+  map.getContainer().style.cursor = 'crosshair';
+  map.on('click', _onESNClick);
+  map.on('dblclick', _onESNDblClick);
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+
+  // Create draggable vertex markers for each existing coord
+  esn.coords.forEach(([lat, lng]) => _addVertex(L.latLng(lat, lng)));
+
+  // Suppress polygon clicks on all OTHER ESNs
+  esns.forEach(e => { if (e.id !== esnId && e.polygon) e.polygon.off('click'); });
+  _suppressESNClicks = true;
+
+  // Reference dots for all other ESN vertices
+  esns.forEach(e => {
+    if (e.id === esnId) return;
+    (e.coords || []).forEach(([lat, lng]) => {
+      const dot = L.circleMarker([lat, lng], {
+        radius: 4, color: '#888', fillColor: '#888', fillOpacity: .7,
+        weight: 1, interactive: false
+      }).addTo(map);
+      _refDots.push(dot);
+    });
+  });
+
+  _showDrawToolbar();
+  _updateDrawPreview();
+  setStatus(`Editing shape of "${esn.name}" — drag vertices · double-click or Enter to confirm · Escape to cancel`);
+}
+
+// =============================================================================
+// ESN MODAL (create / edit)
+// =============================================================================
+
+function openESNModal(esnId) {
+  const existing = esnId ? esns.find(e => e.id === esnId) : null;
+  document.getElementById('esn-modal-title').textContent = existing ? 'Edit ESN Zone' : 'New ESN Zone';
+  document.getElementById('esn-name-input').value = existing?.name || '';
+  document.getElementById('esn-modal').dataset.editId = esnId || '';
+
+  // Color
+  const color = existing?.color || '#f0a500';
+  _renderColorSwatches(color);
+  const colorInput = document.getElementById('esn-color-custom');
+  if (colorInput) colorInput.value = color;
+
+  // Label size
+  const lsEl = document.getElementById('esn-label-size');
+  if (lsEl) lsEl.value = existing?.labelSize || 'md';
+
+  _renderESNAssignUI(existing);
+  _renderESNBoxAlarms(esnId);
+  // Show "Edit Shape" button only when editing an existing ESN
+  const editShapeBtn = document.getElementById('esn-edit-shape-btn');
+  if (editShapeBtn) editShapeBtn.style.display = existing ? '' : 'none';
+  document.getElementById('esn-modal').classList.add('open');
+  setTimeout(() => document.getElementById('esn-name-input').focus(), 40);
+}
+
+function closeESNModal() {
+  const modal = document.getElementById('esn-modal');
+  modal.classList.remove('open');
+  if (!modal.dataset.editId) drawCoords = [];
+}
+
+// Renders color preset swatches in the ESN modal.
+function _renderColorSwatches(selectedColor) {
+  const container = document.getElementById('esn-color-swatches');
+  if (!container) return;
+  container.innerHTML = ESN_COLOR_PRESETS.map(c =>
+    `<div class="color-swatch${c.toLowerCase() === selectedColor.toLowerCase() ? ' selected' : ''}"
+      style="background:${c};"
+      onclick="_selectESNColor('${c}')"></div>`
+  ).join('');
+}
+
+// Called when a swatch is clicked — syncs the color input and highlights the swatch.
+function _selectESNColor(color) {
+  const input = document.getElementById('esn-color-custom');
+  if (input) input.value = color;
+  _renderColorSwatches(color);
+}
+
+// Builds the station assignment checkboxes grouped by service type.
+function _renderESNAssignUI(existing) {
+  const container = document.getElementById('esn-assignments');
+  const labels = { fire: 'Fire Coverage', ems: 'EMS Coverage', police: 'Law Enforcement' };
+  let html = '';
+
+  ['fire', 'ems', 'police'].forEach(type => {
+    const assigned = existing?.assignments[type] || [];
+    const serviceTags = BAM_CONFIG.serviceTags[type];
+    const eligible = stations.filter(s =>
+      s.units.some(u => BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => serviceTags.includes(t)))
+    );
+    html += `<div class="esn-assign-group">
+      <div class="esn-assign-label">${labels[type]}</div>`;
+    if (!eligible.length) {
+      html += `<div class="esn-assign-empty">No ${type} stations placed yet</div>`;
+    } else {
+      eligible.forEach(st => {
+        const chk = assigned.includes(st.id) ? 'checked' : '';
+        html += `<label class="esn-check-row">
+          <input type="checkbox" value="${st.id}" data-svctype="${type}" ${chk}/>
+          ${st.name}
+        </label>`;
+      });
+    }
+    html += `</div>`;
+  });
+  container.innerHTML = html;
+}
+
+// Shows existing box alarms for this ESN inside the modal.
+function _renderESNBoxAlarms(esnId) {
+  const section = document.getElementById('esn-ba-section');
+  if (!esnId) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  const alarms = boxAlarms.filter(b => b.esnId === esnId);
+  const list = document.getElementById('esn-ba-list');
+  if (!alarms.length) {
+    list.innerHTML = '<div class="esn-assign-empty">No box alarms for this ESN yet.</div>';
+  } else {
+    list.innerHTML = alarms.map(ba => {
+      const mTypes = ba.missionTypes.length
+        ? ba.missionTypes.map(k => BAM_CONFIG.missions[k]?.label || k).join(', ')
+        : 'All calls';
+      const reqs = ba.requirements.map(r => r.join('/')).join(' + ');
+      return `<div class="ba-row">
+        <div class="ba-info">
+          <div class="ba-name">${ba.name}</div>
+          <div class="ba-meta">${mTypes} · ${reqs}</div>
+        </div>
+        <div class="ba-actions">
+          <button class="btn-sm danger" onclick="deleteBoxAlarm('${ba.id}',this.closest('.ba-row'))">Del</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+}
+
+// Saves the ESN (create or update) when the modal confirm button is clicked.
+function confirmESNModal() {
+  const name = document.getElementById('esn-name-input').value.trim();
+  if (!name) { setStatus('⚠️ Enter a name for this ESN.'); return; }
+
+  const editId   = document.getElementById('esn-modal').dataset.editId;
+  const color    = document.getElementById('esn-color-custom')?.value || '#f0a500';
+  const labelSize = document.getElementById('esn-label-size')?.value || 'md';
+
+  const assignments = { fire: [], ems: [], police: [] };
+  document.querySelectorAll('#esn-assignments input[type=checkbox]:checked').forEach(cb => {
+    assignments[cb.dataset.svctype].push(cb.value);
+  });
+
+  if (editId) {
+    const esn = esns.find(e => e.id === editId);
+    if (esn) {
+      esn.name = name;
+      esn.color = color;
+      esn.labelSize = labelSize;
+      esn.assignments = assignments;
+      esn.polygon?.setStyle({ color, fillColor: color });
+      esn.polygon?.setTooltipContent(`<span style="color:${color};">${name}</span>`);
+      _applyTooltipStyle(esn.polygon, color, labelSize);
+    }
+  } else {
+    _createESN(name, [...drawCoords], assignments, color, labelSize);
+    drawCoords = [];
+  }
+
+  closeESNModal();
+  renderESNList();
+  setStatus(`✅ ESN "${name}" saved.`);
+}
+
+// Creates the Leaflet polygon and adds the ESN to the esns array.
+function _createESN(name, coords, assignments, color, labelSize) {
+  color     = color     || '#f0a500';
+  labelSize = labelSize || 'md';
+  const id  = 'esn_' + Date.now();
+
+  const polygon = L.polygon(coords, {
+    color, weight: 2, fillColor: color, fillOpacity: .07
+  }).addTo(map);
+  polygon.bindTooltip(`<span style="color:${color};">${name}</span>`, {
+    permanent: true, direction: 'center', className: 'esn-label'
+  });
+  _applyTooltipStyle(polygon, color, labelSize);
+  polygon.on('click', () => openESNModal(id));
+
+  const esn = { id, name, coords, assignments, inService: true, color, labelSize, polygon };
+  _initOSMCache(esn);
+  esns.push(esn);
+  return esn;
+}
+
+// Applies font-size and visibility to a tooltip element based on labelSize.
+// Uses setTimeout because Leaflet may not have attached the element yet.
+function _applyTooltipStyle(polygon, color, labelSize) {
+  setTimeout(() => {
+    const el = polygon.getTooltip()?.getElement();
+    if (!el) return;
+    const sizeMap = { hidden: '', sm: '9px', md: '11px', lg: '15px' };
+    el.style.display    = labelSize === 'hidden' ? 'none' : '';
+    el.style.fontSize   = sizeMap[labelSize] || '11px';
+    el.style.fontWeight = '700';
+  }, 60);
+}
+
+// Deletes an ESN after confirmation.
+function deleteESN(id) {
+  if (!confirm('Delete this ESN zone? Box alarms assigned to it will also be removed.')) return;
+  const esn = esns.find(e => e.id === id);
+  esn?.polygon?.remove();
+  esns = esns.filter(e => e.id !== id);
+  boxAlarms = boxAlarms.filter(b => b.esnId !== id);
+  renderESNList();
+  setStatus('🗑 ESN deleted.');
+}
+
+// Toggles the in/out of service state of an ESN.
+function toggleESNService(id) {
+  const esn = esns.find(e => e.id === id);
+  if (!esn) return;
+  esn.inService = !esn.inService;
+  esn.polygon?.setStyle({
+    opacity:     esn.inService ? 1   : .3,
+    fillOpacity: esn.inService ? .07 : .02
+  });
+  renderESNList();
+  setStatus(`ESN "${esn.name}" — ${esn.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
+}
+
+// =============================================================================
+// LAYER VISIBILITY
+// Called by the layer toggle control in index.html.
+// =============================================================================
+
+function setESNLayerVisible(visible) {
+  esns.forEach(e => {
+    if (visible) { try { e.polygon?.addTo(map); } catch(x){} }
+    else e.polygon?.remove();
+  });
+}
+
+function setDCLayerVisible(visible) {
+  dispatchCenters.forEach(d => {
+    if (visible) { try { d.marker?.addTo(map); } catch(x){} }
+    else d.marker?.remove();
+  });
+}
+
+// =============================================================================
+// ESN LIST (sidebar)
+// =============================================================================
+
+function renderESNList() {
+  renderDCList();  // always refresh DC section when ESN list refreshes
+  const searchEl = document.getElementById('esn-search');
+  const q = searchEl ? searchEl.value.trim().toLowerCase() : '';
+  // Typing in search clears the DC filter so they don't conflict
+  if (q && _selectedDCFilter !== null) {
+    _selectedDCFilter = null;
+    renderDCList();
+  }
+  _renderFilteredESNList();
+}
+
+// Renders the ESN list applying both the search term and the DC filter.
+function _renderFilteredESNList() {
+  const el = document.getElementById('esn-scroll');
+  if (!el) return;
+  const searchEl = document.getElementById('esn-search');
+  const q = searchEl ? searchEl.value.trim().toLowerCase() : '';
+
+  // Determine which ESN ids belong to the selected DC (if any)
+  let dcESNIds = null;
+  if (_selectedDCFilter) {
+    const dc = dispatchCenters.find(d => d.id === _selectedDCFilter);
+    dcESNIds = dc ? new Set(dc.assignedESNs) : new Set();
+  }
+
+  const filtered = esns.filter(e => {
+    if (q && !e.name.toLowerCase().includes(q)) return false;
+    if (dcESNIds !== null && !dcESNIds.has(e.id)) return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    if (!esns.length) {
+      el.innerHTML = '<div class="empty-msg">No ESN zones yet.<br>Click "Draw ESN Zone" and draw a polygon on the map.</div>';
+    } else if (_selectedDCFilter) {
+      const dc = dispatchCenters.find(d => d.id === _selectedDCFilter);
+      el.innerHTML = `<div class="empty-msg">No ESNs assigned to ${dc?.name || 'this DC'} yet.<br>Click the DC card again to show all ESNs.</div>`;
+    } else {
+      el.innerHTML = '<div class="empty-msg">No ESNs match search.</div>';
+    }
+    return;
+  }
+
+  // Show a filter hint banner when a DC is selected
+  const filterBanner = _selectedDCFilter
+    ? (() => {
+        const dc = dispatchCenters.find(d => d.id === _selectedDCFilter);
+        return `<div style="font-size:.65rem;color:var(--gold);padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:6px;">
+          Showing ESNs for: <b>${dc?.name || ''}</b> — <a href="#" style="color:var(--muted);" onclick="event.preventDefault();_selectDCFilter('${_selectedDCFilter}')">Clear filter</a>
+        </div>`;
+      })()
+    : '';
+
+  el.innerHTML = filterBanner + filtered.map(esn => {
+    const oos = !esn.inService;
+    const col = esn.color || '#f0a500';
+    const asmSummary = ['fire', 'ems', 'police'].map(t => {
+      const n = (esn.assignments[t] || []).length;
+      return n ? `<span class="tag-pill" style="border-color:var(--${t})">${t}: ${n}</span>` : null;
+    }).filter(Boolean).join('');
+    const baCount = boxAlarms.filter(b => b.esnId === esn.id).length;
+    return `<div class="scard${oos ? ' oos' : ''}">
+      <div class="sn" style="color:${col};">${esn.name}${oos ? ' <span class="oos-badge">OOS</span>' : ''}</div>
+      <div class="su" style="margin-top:4px;">${asmSummary || '<span style="color:var(--muted);font-size:.68rem;">No stations assigned</span>'}</div>
+      ${baCount ? `<div style="font-size:.65rem;color:var(--muted);margin-top:3px;">📋 ${baCount} box alarm${baCount > 1 ? 's' : ''}</div>` : ''}
+      <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">
+        <button class="btn-sm" onclick="openESNModal('${esn.id}')">Edit</button>
+        <button class="btn-sm" onclick="openBoxAlarmModal('${esn.id}')">+ Box Alarm</button>
+        <button class="btn-sm" onclick="toggleESNService('${esn.id}')">${oos ? 'In Svc' : 'OOS'}</button>
+        <button class="btn-sm danger" onclick="deleteESN('${esn.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// =============================================================================
+// OSM DATA CACHE — per-ESN building and road node cache fetched from Overpass.
+// =============================================================================
+
+// Initializes an empty OSM cache on an ESN object.
+function _initOSMCache(esn) {
+  esn._osmCache = {
+    fetched: false, fetching: false, fetchedAt: 0,
+    buildings: [],   // { lat, lng }
+    majorNodes: [],  // { lat, lng, intersectionCount }
+    minorNodes: []   // { lat, lng, intersectionCount }
+  };
+}
+
+// Fetches and caches buildings + road nodes for an ESN via Overpass API.
+// Called lazily the first time a spawn needs OSM data for this ESN.
+async function _fetchESNOSMData(esn) {
+  if (!esn._osmCache) _initOSMCache(esn);
+  const cache = esn._osmCache;
+  if (cache.fetching) return;
+  const ttl = BAM_CONFIG.spawn.osmCacheTTLMs || 0;
+  if (cache.fetched && ttl > 0 && Date.now() - cache.fetchedAt < ttl) return;
+
+  cache.fetching = true;
+  try {
+    const polyStr = esn.coords.map(c => `${c[0]} ${c[1]}`).join(' ');
+    const hw = [
+      ...BAM_CONFIG.spawn.majorHighways,
+      ...BAM_CONFIG.spawn.minorHighways
+    ].join('|');
+    const query = `[out:json][timeout:25];
+(
+  way["building"](poly:"${polyStr}");
+  way["highway"~"^(${hw})$"](poly:"${polyStr}");
+);
+(._;>;);
+out center;`;
+
+    const resp = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(query)
+    });
+    const data = await resp.json();
+
+    // Count how many ways reference each node (intersection detection)
+    const nodeWayCount = {};
+    data.elements.filter(el => el.type === 'way').forEach(way => {
+      (way.nodes || []).forEach(nid => {
+        nodeWayCount[nid] = (nodeWayCount[nid] || 0) + 1;
+      });
+    });
+    const nodeById = {};
+    data.elements.filter(el => el.type === 'node').forEach(n => { nodeById[n.id] = n; });
+
+    const major = new Set(BAM_CONFIG.spawn.majorHighways);
+    cache.buildings = [];
+    cache.majorNodes = [];
+    cache.minorNodes = [];
+
+    data.elements.filter(el => el.type === 'way').forEach(way => {
+      if (way.tags?.building) {
+        // Use Overpass-supplied center or average nodes
+        const clat = way.center?.lat;
+        const clng = way.center?.lon;
+        if (clat && clng) cache.buildings.push({ lat: clat, lng: clng });
+      } else if (way.tags?.highway) {
+        const isMajor = major.has(way.tags.highway);
+        (way.nodes || []).forEach(nid => {
+          const n = nodeById[nid];
+          if (!n) return;
+          const entry = { lat: n.lat, lng: n.lon, intersectionCount: nodeWayCount[nid] || 1 };
+          if (isMajor) cache.majorNodes.push(entry);
+          else cache.minorNodes.push(entry);
+        });
+      }
+    });
+
+    cache.fetched  = true;
+    cache.fetchedAt = Date.now();
+    console.log(`OSM cache for "${esn.name}": ${cache.buildings.length} buildings, ${cache.majorNodes.length} major nodes, ${cache.minorNodes.length} minor nodes`);
+  } catch (e) {
+    console.warn(`OSM fetch failed for ESN "${esn.name}":`, e);
+  } finally {
+    cache.fetching = false;
+  }
+}
+
+// =============================================================================
+// ESN-AWARE SPAWN LOCATION
+// Called from spawnIncident() in index.html when ESNs exist.
+// Returns { lat, lng, esnId } or null if no ESN is eligible for this call type.
+// Respects per-DC call cap and uses OSM cache for accurate location placement.
+// =============================================================================
+
+function getESNSpawnLocation(mCfg) {
+  const callType   = mCfg.category;
+  const neededTags = new Set(mCfg.requirements.flat());
+  const spawnMode  = mCfg.spawnMode || 'random';
+  const w = BAM_CONFIG.spawn;
+
+  const eligible = esns.filter(esn => {
+    if (!esn.inService) return false;
+    // Must have an assigned station for this call type
+    const hasStation = (esn.assignments[callType] || []).some(sid => {
+      const st = stations.find(s => s.id === sid);
+      if (!st || st.inService === false) return false;
+      return st.units.some(u =>
+        BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => neededTags.has(t))
+      );
+    });
+    if (!hasStation) return false;
+
+    // Must be covered by an active DC — check DC cap
+    const dc = dispatchCenters.find(d =>
+      d.inService !== false && d.assignedESNs.includes(esn.id)
+    );
+    if (!dc) return false;
+
+    // Count unique stations in this DC's assigned ESNs for cap calculation
+    const dcStations = new Set();
+    dc.assignedESNs.forEach(eid => {
+      const e = esns.find(x => x.id === eid);
+      ['fire', 'ems', 'police'].forEach(t =>
+        (e?.assignments[t] || []).forEach(sid => dcStations.add(sid))
+      );
+    });
+    const cap = dcStations.size + 1;
+    const activeInDC = (typeof incidents !== 'undefined' ? incidents : []).filter(i =>
+      i.status !== 'resolved' && dc.assignedESNs.includes(i.esnId)
+    ).length;
+    return activeInDC < cap;
+  });
+
+  if (!eligible.length) return null;
+
+  // Pick a random eligible ESN
+  const esn = eligible[Math.floor(Math.random() * eligible.length)];
+
+  // Ensure OSM cache is populated (trigger async fetch if needed)
+  if (!esn._osmCache) _initOSMCache(esn);
+  const cache = esn._osmCache;
+  if (!cache.fetched && !cache.fetching) _fetchESNOSMData(esn);
+
+  // ── Building spawn
+  if (spawnMode === 'building' && cache.buildings.length > 0) {
+    const b = cache.buildings[Math.floor(Math.random() * cache.buildings.length)];
+    return { lat: b.lat, lng: b.lng, esnId: esn.id };
+  }
+
+  // ── Road node spawn (major or any)
+  const hasMajor = cache.majorNodes.length > 0;
+  const hasMinor = cache.minorNodes.length > 0;
+  if ((spawnMode === 'road_major' || spawnMode === 'road_any') && (hasMajor || hasMinor)) {
+    const pool = [];
+    cache.majorNodes.forEach(n => {
+      const wt = w.majorRoadWeight * (1 + (n.intersectionCount - 1) * w.intersectionWeight);
+      pool.push({ n, wt });
+    });
+    if (spawnMode === 'road_any') {
+      cache.minorNodes.forEach(n => {
+        const wt = 1 + (n.intersectionCount - 1) * w.intersectionWeight;
+        pool.push({ n, wt });
+      });
+    }
+    if (pool.length > 0) {
+      const totalW = pool.reduce((s, x) => s + x.wt, 0);
+      let r = Math.random() * totalW;
+      for (const { n, wt } of pool) { r -= wt; if (r <= 0) return { lat: n.lat, lng: n.lng, esnId: esn.id }; }
+      const last = pool[pool.length - 1];
+      return { lat: last.n.lat, lng: last.n.lng, esnId: esn.id };
+    }
+  }
+
+  // ── Fallback: random point in polygon (caller will OSRM-snap it)
+  const [lat, lng] = _randomPointInPolygon(esn.coords);
+  return { lat, lng, esnId: esn.id };
+}
+
+// =============================================================================
+// GEOMETRY UTILITIES
+// =============================================================================
+
+function _randomPointInPolygon(coords) {
+  const lats = coords.map(c => c[0]);
+  const lngs = coords.map(c => c[1]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
+
+  for (let i = 0; i < 50; i++) {
+    const lat = minLat + Math.random() * (maxLat - minLat);
+    const lng = minLng + Math.random() * (maxLng - minLng);
+    if (_pointInPolygon([lat, lng], coords)) return [lat, lng];
+  }
+  return [
+    lats.reduce((a, b) => a + b, 0) / lats.length,
+    lngs.reduce((a, b) => a + b, 0) / lngs.length
+  ];
+}
+
+function _pointInPolygon(point, polygon) {
+  const [y, x] = point;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [yi, xi] = polygon[i];
+    const [yj, xj] = polygon[j];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// =============================================================================
+// DISPATCH CENTERS
+// =============================================================================
+
+function startPlaceDispatchCenter() {
+  setPlacing(null);
+  map.getContainer().style.cursor = 'crosshair';
+  document.getElementById('btn-dispatch-center')?.classList.add('active');
+  setStatus('Click map to place Dispatch Center.');
+  map.once('click', e => {
+    map.getContainer().style.cursor = '';
+    document.getElementById('btn-dispatch-center')?.classList.remove('active');
+    _openDCCreateModal(e.latlng);
+  });
+}
+
+function _openDCCreateModal(latlng) {
+  document.getElementById('dc-latlng').value = `${latlng.lat},${latlng.lng}`;
+  document.getElementById('dc-name-input').value = '';
+  document.getElementById('dc-modal').dataset.editId = '';
+  const titleEl = document.getElementById('dc-modal-title');
+  if (titleEl) titleEl.textContent = 'New Dispatch Center';
+  _renderDCESNList();
+  document.getElementById('dc-modal').classList.add('open');
+  setTimeout(() => document.getElementById('dc-name-input').focus(), 40);
+}
+
+function _renderDCESNList(preChecked = []) {
+  const el = document.getElementById('dc-esn-checkboxes');
+  if (!esns.length) {
+    el.innerHTML = '<div class="esn-assign-empty">No ESN zones exist yet.</div>';
+    return;
+  }
+  el.innerHTML = esns.map(e => {
+    const checked = preChecked.includes(e.id) ? 'checked' : '';
+    return `<label class="esn-check-row">
+      <input type="checkbox" value="${e.id}" ${checked}/>
+      ${e.name}
+    </label>`;
+  }).join('');
+}
+
+function confirmDCModal() {
+  const name = document.getElementById('dc-name-input').value.trim();
+  if (!name) { setStatus('⚠️ Enter a name for the Dispatch Center.'); return; }
+
+  const assignedESNs = [...document.querySelectorAll('#dc-esn-checkboxes input:checked')].map(cb => cb.value);
+  const editId = document.getElementById('dc-modal').dataset.editId;
+
+  if (editId) {
+    // Editing an existing DC
+    const dc = dispatchCenters.find(d => d.id === editId);
+    if (dc) {
+      dc.name         = name;
+      dc.assignedESNs = assignedESNs;
+      dc.marker?.setIcon(_buildDCIcon(name));
+      dc.marker?.bindTooltip(name + ' — Dispatch Center');
+    }
+    closeDCModal();
+    renderDCList();
+    setStatus(`✅ Dispatch Center "${name}" updated.`);
+  } else {
+    // Creating a new DC
+    const [lat, lng] = document.getElementById('dc-latlng').value.split(',').map(Number);
+    const id     = 'dc_' + Date.now();
+    const marker = _buildDCMarker(id, name, lat, lng);
+    dispatchCenters.push({ id, name, lat, lng, assignedESNs, inService: true, marker });
+    closeDCModal();
+    renderDCList();
+    setStatus(`✅ Dispatch Center "${name}" placed.`);
+  }
+}
+
+function closeDCModal() {
+  const modal = document.getElementById('dc-modal');
+  modal.classList.remove('open');
+  modal.dataset.editId = '';
+  // Reset title back to default for next new-DC creation
+  const titleEl = document.getElementById('dc-modal-title');
+  if (titleEl) titleEl.textContent = 'New Dispatch Center';
+}
+
+function _buildDCIcon(name) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="dc-marker-label">📡 ${name.toUpperCase()}</div>`,
+    iconAnchor: [0, 10]
+  });
+}
+
+function _buildDCMarker(id, name, lat, lng) {
+  const marker = L.marker([lat, lng], { icon: _buildDCIcon(name) }).addTo(map);
+  marker.bindTooltip(name + ' — Dispatch Center');
+  marker.on('click', () => openDCSummary(id));
+  return marker;
+}
+
+// Calculates the call cap for a DC: unique stations across all assigned ESNs + 1.
+function _getDCCap(dc) {
+  const stationIds = new Set();
+  dc.assignedESNs.forEach(eid => {
+    const esn = esns.find(e => e.id === eid);
+    if (!esn) return;
+    ['fire', 'ems', 'police'].forEach(t =>
+      (esn.assignments[t] || []).forEach(sid => stationIds.add(sid))
+    );
+  });
+  return stationIds.size + 1;
+}
+
+// Counts active incidents (not resolved) in the ESNs served by a DC.
+function _getDCActiveCallCount(dc) {
+  return (typeof incidents !== 'undefined' ? incidents : []).filter(i =>
+    i.status !== 'resolved' && dc.assignedESNs.includes(i.esnId)
+  ).length;
+}
+
+function openDCSummary(id) {
+  const dc = dispatchCenters.find(d => d.id === id);
+  if (!dc) return;
+
+  const cap     = _getDCCap(dc);
+  const active  = _getDCActiveCallCount(dc);
+  const capBase = cap - 1;  // number of unique stations
+  const assignedESNObjs = dc.assignedESNs.map(eid => esns.find(e => e.id === eid)).filter(Boolean);
+
+  let html = `<div class="dc-status-row">
+    <span>Status:</span>
+    <span style="font-weight:700;color:${dc.inService ? 'var(--green)' : 'var(--accent)'}">
+      ${dc.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}
+    </span>
+  </div>
+  <div class="dc-status-row" style="margin-top:6px;">
+    <span>Active calls:</span>
+    <span style="font-family:var(--mono);color:${active >= cap ? 'var(--accent)' : 'var(--gold)'}">
+      ${active} / ${cap}
+    </span>
+  </div>
+  <div style="font-size:.68rem;color:var(--muted);margin-top:2px;">
+    Call cap: ${cap} (${capBase} station${capBase !== 1 ? 's' : ''} + 1)
+  </div>`;
+
+  if (assignedESNObjs.length) {
+    html += `<div class="section-title" style="margin-top:10px;">Assigned ESN Zones</div>`;
+    assignedESNObjs.forEach(esn => {
+      const stLines = ['fire', 'ems', 'police'].flatMap(t =>
+        (esn.assignments[t] || []).map(sid => {
+          const st = stations.find(s => s.id === sid);
+          return st ? `${st.name} <span class="tag-pill" style="border-color:var(--${t})">${t}</span>` : null;
+        }).filter(Boolean)
+      ).join('  ');
+      html += `<div class="scard" style="margin-bottom:5px;">
+        <div class="sn">${esn.name}${!esn.inService ? ' <span class="oos-badge">OOS</span>' : ''}</div>
+        <div class="su" style="margin-top:3px;">${stLines || '<span style="color:var(--muted)">No stations assigned</span>'}</div>
+      </div>`;
+    });
+  } else {
+    html += '<div class="empty-msg" style="margin-top:8px;">No ESNs assigned to this center.</div>';
+  }
+
+  document.getElementById('dc-summary-name').textContent = dc.name;
+  document.getElementById('dc-summary-body').innerHTML = html;
+  document.getElementById('dc-summary-oos-btn').textContent = dc.inService ? 'Place Out of Service' : 'Return to Service';
+  document.getElementById('dc-summary-oos-btn').onclick = () => { _toggleDCService(id); openDCSummary(id); };
+  document.getElementById('dc-summary-edit-btn').onclick = () => { closeDCSummary(); openDCEditModal(id); };
+  document.getElementById('dc-summary-modal').classList.add('open');
+}
+
+// Opens the DC create/edit modal pre-filled for editing an existing DC.
+function openDCEditModal(id) {
+  const dc = dispatchCenters.find(d => d.id === id);
+  if (!dc) return;
+  // Reuse the create modal but pre-fill it and tag the edit id
+  document.getElementById('dc-modal').dataset.editId = id;
+  document.getElementById('dc-modal-title').textContent = 'Edit Dispatch Center';
+  document.getElementById('dc-name-input').value = dc.name;
+  document.getElementById('dc-latlng').value = `${dc.lat},${dc.lng}`;
+  _renderDCESNList(dc.assignedESNs);
+  document.getElementById('dc-modal').classList.add('open');
+  setTimeout(() => document.getElementById('dc-name-input').focus(), 40);
+}
+
+// Renders the DC sidebar section showing all dispatch centers.
+// DC cards are clickable: clicking one filters the ESN list to that DC's ESNs only.
+// Clicking the same DC again clears the filter (show all ESNs).
+function renderDCList() {
+  const el = document.getElementById('dc-list');
+  if (!el) return;
+  if (!dispatchCenters.length) {
+    el.innerHTML = '<div class="empty-msg">No dispatch centers placed yet.</div>';
+    return;
+  }
+  el.innerHTML = dispatchCenters.map(dc => {
+    const cap      = _getDCCap(dc);
+    const active   = _getDCActiveCallCount(dc);
+    const oos      = !dc.inService;
+    const selected = _selectedDCFilter === dc.id;
+    return `<div class="scard dc-filter-card${oos ? ' oos' : ''}${selected ? ' active' : ''}"
+        onclick="_selectDCFilter('${dc.id}')" title="Click to filter ESN list to this DC">
+      <div class="sn">📡 ${dc.name}${oos ? ' <span class="oos-badge">OOS</span>' : ''}</div>
+      <div class="su" style="margin-top:3px;">
+        ${dc.assignedESNs.length} ESN${dc.assignedESNs.length !== 1 ? 's' : ''}
+        &nbsp;·&nbsp;
+        <span style="font-family:var(--mono);color:${active >= cap ? 'var(--accent)' : 'var(--gold)'}">
+          ${active}/${cap} calls
+        </span>
+      </div>
+      <div class="scard-actions" style="margin-top:5px;" onclick="event.stopPropagation()">
+        <button class="btn-sm" onclick="openDCEditModal('${dc.id}')">Edit</button>
+        <button class="btn-sm" onclick="_toggleDCService('${dc.id}');renderDCList()">${oos ? 'In Svc' : 'OOS'}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Toggles the DC filter: clicking a DC shows only its ESNs; clicking it again clears the filter.
+function _selectDCFilter(dcId) {
+  _selectedDCFilter = (_selectedDCFilter === dcId) ? null : dcId;
+  renderDCList();
+  // Clear the search bar when a DC filter is selected, so both don't fight each other
+  const searchEl = document.getElementById('esn-search');
+  if(searchEl && _selectedDCFilter !== null) searchEl.value = '';
+  _renderFilteredESNList();
+}
+
+function closeDCSummary() {
+  document.getElementById('dc-summary-modal').classList.remove('open');
+}
+
+function _toggleDCService(id) {
+  const dc = dispatchCenters.find(d => d.id === id);
+  if (!dc) return;
+  dc.inService = !dc.inService;
+  setStatus(`Dispatch Center "${dc.name}" — ${dc.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
+}
+
+// =============================================================================
+// BOX ALARMS
+// =============================================================================
+
+function openBoxAlarmModal(esnId) {
+  const esn = esns.find(e => e.id === esnId);
+  if (!esn) return;
+
+  document.getElementById('ba-esn-id').value = esnId;
+  document.getElementById('ba-esn-label').textContent = esn.name;
+  document.getElementById('ba-name-input').value = '';
+
+  const missionEl = document.getElementById('ba-mission-types');
+  missionEl.innerHTML = Object.entries(BAM_CONFIG.missions)
+    .filter(([, m]) => m.spawnWeight >= 0)
+    .map(([k, m]) => `<label class="esn-check-row">
+      <input type="checkbox" value="${k}"/>
+      ${m.label}
+    </label>`).join('');
+
+  document.getElementById('ba-req-rows').innerHTML = '';
+  _addBAReqRow();
+  document.getElementById('ba-modal').classList.add('open');
+  setTimeout(() => document.getElementById('ba-name-input').focus(), 40);
+}
+
+function closeBoxAlarmModal() {
+  document.getElementById('ba-modal').classList.remove('open');
+}
+
+function _addBAReqRow() {
+  const container = document.getElementById('ba-req-rows');
+  const allTags = [...new Set(Object.values(BAM_CONFIG.unitTypes).flatMap(u => u.tags))].sort();
+  const row = document.createElement('div');
+  row.className = 'ba-req-row';
+  row.innerHTML = `<select class="ba-req-select">
+    ${allTags.map(t => `<option value="${t}">${t}</option>`).join('')}
+  </select>
+  <button class="btn-sm danger" onclick="this.closest('.ba-req-row').remove()" style="flex-shrink:0;">✕</button>`;
+  container.appendChild(row);
+}
+
+function confirmBoxAlarm() {
+  const name  = document.getElementById('ba-name-input').value.trim();
+  const esnId = document.getElementById('ba-esn-id').value;
+  if (!name) { setStatus('⚠️ Enter a name for this box alarm.'); return; }
+
+  const missionTypes = [...document.querySelectorAll('#ba-mission-types input:checked')].map(cb => cb.value);
+  const requirements = [...document.querySelectorAll('.ba-req-select')].map(sel => [sel.value]);
+  if (!requirements.length) { setStatus('⚠️ Add at least one unit requirement.'); return; }
+
+  boxAlarms.push({ id: 'ba_' + Date.now(), name, esnId, missionTypes, requirements });
+  closeBoxAlarmModal();
+  renderESNList();
+  renderBoxAlarmList();
+  setStatus(`✅ Box alarm "${name}" saved.`);
+}
+
+function deleteBoxAlarm(id, row) {
+  if (!confirm('Delete this box alarm?')) return;
+  boxAlarms = boxAlarms.filter(b => b.id !== id);
+  row?.remove();
+  renderBoxAlarmList();
+  renderESNList();
+}
+
+function getApplicableBoxAlarms(esnId, missionKey) {
+  if (!esnId) return [];
+  return boxAlarms.filter(b =>
+    b.esnId === esnId &&
+    (b.missionTypes.length === 0 || b.missionTypes.includes(missionKey))
+  );
+}
+
+function renderBoxAlarmList() {
+  const el = document.getElementById('ba-list');
+  if (!el) return;
+  if (!boxAlarms.length) {
+    el.innerHTML = '<div class="empty-msg" style="margin-top:4px;">No box alarms yet.<br>Open an ESN in the ESN tab and click "+ Box Alarm".</div>';
+    return;
+  }
+  el.innerHTML = boxAlarms.map(ba => {
+    const esnName = esns.find(e => e.id === ba.esnId)?.name || 'Unknown ESN';
+    const mTypes  = ba.missionTypes.length
+      ? ba.missionTypes.map(k => BAM_CONFIG.missions[k]?.label || k).join(', ')
+      : 'All calls';
+    const reqs = ba.requirements.map(r => r.join('/')).join(' + ');
+    return `<div class="plan-card">
+      <div class="plan-name">${ba.name}</div>
+      <div class="plan-meta">${esnName} · ${mTypes}</div>
+      <div class="plan-meta">${reqs}</div>
+      <button class="btn-sm danger" style="margin-top:6px;" onclick="deleteBoxAlarm('${ba.id}',this.closest('.plan-card'))">Delete</button>
+    </div>`;
+  }).join('');
+}
+
+// =============================================================================
+// SAVE / LOAD HELPERS
+// =============================================================================
+
+function getESNSaveData() {
+  return esns.map(e => ({
+    id: e.id, name: e.name, coords: e.coords,
+    assignments: e.assignments, inService: e.inService,
+    color: e.color, labelSize: e.labelSize
+  }));
+}
+
+function getDCSaveData() {
+  return dispatchCenters.map(d => ({
+    id: d.id, name: d.name, lat: d.lat, lng: d.lng,
+    assignedESNs: d.assignedESNs, inService: d.inService
+  }));
+}
+
+function getBoxAlarmSaveData() {
+  return boxAlarms.map(b => ({ ...b }));
+}
+
+function loadESNData(data) {
+  (data || []).forEach(e => {
+    const color     = e.color     || '#f0a500';
+    const labelSize = e.labelSize || 'md';
+    const polygon   = L.polygon(e.coords, {
+      color, weight: 2, fillColor: color,
+      fillOpacity: e.inService !== false ? .07 : .02,
+      opacity:     e.inService !== false ? 1   : .3
+    }).addTo(map);
+    polygon.bindTooltip(`<span style="color:${color};">${e.name}</span>`, {
+      permanent: true, direction: 'center', className: 'esn-label'
+    });
+    _applyTooltipStyle(polygon, color, labelSize);
+    polygon.on('click', () => openESNModal(e.id));
+    const esn = { ...e, inService: e.inService !== false, color, labelSize, polygon };
+    _initOSMCache(esn);
+    esns.push(esn);
+  });
+  renderESNList();
+}
+
+function loadDCData(data) {
+  (data || []).forEach(d => {
+    const marker = _buildDCMarker(d.id, d.name, d.lat, d.lng);
+    dispatchCenters.push({ ...d, inService: d.inService !== false, marker });
+  });
+  renderDCList();
+}
+
+function loadBoxAlarmData(data) {
+  boxAlarms = (data || []).map(b => ({ ...b }));
+  renderBoxAlarmList();
+}
+
+function clearESNState() {
+  esns.forEach(e => e.polygon?.remove());
+  dispatchCenters.forEach(d => d.marker?.remove());
+  esns = []; dispatchCenters = []; boxAlarms = [];
+  _selectedDCFilter = null;
+}
