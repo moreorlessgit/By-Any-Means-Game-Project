@@ -402,18 +402,24 @@ function _renderHospitalModal(){
   const h = hospitals.find(x => x.id === _activeHospitalId);
   if(!h){ closeHospitalModal(); return; }
 
-  // Determine active tab — default to first installed dept
+  // Determine active tab — default to first installed dept.
+  // '__purchase__' and '__offloading__' are valid active tabs with no entry in h.departments.
   const installedDepts  = Object.keys(h.departments);
-  if(!_activeHospitalTab || !h.departments[_activeHospitalTab]){
+  const specialTabs = ['__purchase__','__offloading__'];
+  if(!_activeHospitalTab
+     || (!specialTabs.includes(_activeHospitalTab) && !h.departments[_activeHospitalTab])){
     _activeHospitalTab = installedDepts[0] || null;
   }
 
-  // Count total beds / occupied
+  // Count total beds / occupied and offloading units
   let totalBeds = 0, totalOccupied = 0;
   installedDepts.forEach(k => {
     totalBeds     += h.departments[k].beds;
     totalOccupied += h.departments[k].occupiedBeds;
   });
+  const offloadingUnits = getAllUnits().filter(({unit}) =>
+    unit.status === 'offloading' && unit.lastHospitalId === h.id
+  );
 
   // Purchaseable departments (in config but not yet installed)
   const typeCfg    = BAM_CONFIG.hospitalTypes[h.type];
@@ -421,10 +427,10 @@ function _renderHospitalModal(){
 
   // ── Header ──────────────────────────────────────────────────────────────────
   const divStatus = h.onDiversion
-    ? '<span style="color:var(--accent);font-weight:700;font-size:.72rem;letter-spacing:1px;">🔴 ON DIVERSION</span>'
+    ? '<span style="color:var(--accent);font-weight:700;font-size:.8rem;letter-spacing:1px;">🔴 ON DIVERSION</span>'
     : (h.inService
-        ? '<span style="color:var(--green);font-size:.72rem;">● IN SERVICE</span>'
-        : '<span style="color:var(--muted);font-size:.72rem;">● OUT OF SERVICE</span>');
+        ? '<span style="color:var(--green);font-size:.8rem;">● IN SERVICE</span>'
+        : '<span style="color:var(--muted);font-size:.8rem;">● OUT OF SERVICE</span>');
 
   const renameSection = _hospRenameActive
     ? `<div style="display:flex;gap:6px;margin-top:8px;">
@@ -436,13 +442,24 @@ function _renderHospitalModal(){
        </div>`
     : '';
 
+  // ── Offloading tab (leftmost) ────────────────────────────────────────────────
+  const offloadTabActive = _activeHospitalTab === '__offloading__';
+  const offloadTabHtml = `<div class="sb-tab ${offloadTabActive ? 'active' : ''}"
+      onclick="switchHospitalTab('__offloading__')"
+      style="font-size:.8rem;color:${offloadingUnits.length ? 'var(--ems)' : 'var(--muted)'};">
+    🏥 Offloading<br>
+    <span style="font-size:.72rem;color:${offloadingUnits.length ? 'var(--ems)' : 'var(--muted)'};">
+      ${offloadingUnits.length} unit${offloadingUnits.length!==1?'s':''}
+    </span>
+  </div>`;
+
   // ── Department tab bar ───────────────────────────────────────────────────────
   const tabsHtml = installedDepts.map(k => {
     const dCfg  = BAM_CONFIG.hospitalDepartments[k];
     const dept  = h.departments[k];
     const pct   = dept.beds ? Math.round((dept.occupiedBeds / dept.beds) * 100) : 0;
     const active = k === _activeHospitalTab ? 'active' : '';
-    return `<div class="sb-tab ${active}" onclick="switchHospitalTab('${k}')" style="font-size:.62rem;">
+    return `<div class="sb-tab ${active}" onclick="switchHospitalTab('${k}')" style="font-size:.8rem;">
               ${dCfg?.label || k}<br>
               <span style="font-size:.58rem;color:${pct >= 100 ? 'var(--accent)' : 'var(--muted)'};">
                 ${dept.occupiedBeds}/${dept.beds}
@@ -454,12 +471,14 @@ function _renderHospitalModal(){
   const purchaseTabHtml = available.length
     ? `<div class="sb-tab ${_activeHospitalTab === '__purchase__' ? 'active' : ''}"
             onclick="switchHospitalTab('__purchase__')"
-            style="font-size:.62rem;color:var(--gold);">+ Purchase<br>&nbsp;</div>`
+            style="font-size:.8rem;color:var(--gold);">+ Purchase<br>&nbsp;</div>`
     : '';
 
   // ── Tab content ──────────────────────────────────────────────────────────────
   let tabContent = '';
-  if(_activeHospitalTab === '__purchase__'){
+  if(_activeHospitalTab === '__offloading__'){
+    tabContent = _renderOffloadingTab(h, offloadingUnits);
+  } else if(_activeHospitalTab === '__purchase__'){
     tabContent = _renderPurchaseTab(h, available);
   } else if(_activeHospitalTab && h.departments[_activeHospitalTab]){
     tabContent = _renderDeptTab(h, _activeHospitalTab);
@@ -471,7 +490,10 @@ function _renderHospitalModal(){
         <div style="flex:1;min-width:0;">
           <h2 class="gold" style="cursor:pointer;" onclick="_toggleHospitalRename('${h.id}')"
               title="Click to rename">🏥 ${_escHtml(h.name)}</h2>
-          <div class="modal-sub">${divStatus} &nbsp;|&nbsp; ${totalOccupied}/${totalBeds} beds occupied</div>
+          <div class="modal-sub">
+            ${divStatus} &nbsp;|&nbsp; ${totalOccupied}/${totalBeds} beds occupied
+            ${offloadingUnits.length ? `&nbsp;|&nbsp; <span style="color:var(--ems);">🏥 ${offloadingUnits.length} unit${offloadingUnits.length>1?'s':''} offloading</span>` : ''}
+          </div>
           ${renameSection}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
@@ -487,6 +509,7 @@ function _renderHospitalModal(){
 
       <!-- Tab bar -->
       <div class="sb-tabs" style="flex-shrink:0;">
+        ${offloadTabHtml}
         ${tabsHtml}
         ${purchaseTabHtml}
       </div>
@@ -517,7 +540,7 @@ function _renderDeptTab(hospital, deptKey){
   const bedGrid = `
     <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:14px;">
       ${bedBlocks.join('')}
-      <span style="margin-left:8px;font-size:.72rem;color:var(--muted);align-self:center;">
+      <span style="margin-left:8px;font-size:.8rem;color:var(--muted);align-self:center;">
         ${dept.occupiedBeds} / ${dept.beds} beds occupied
       </span>
     </div>`;
@@ -548,29 +571,32 @@ function _renderDeptTab(hospital, deptKey){
             <span style="font-weight:700;font-size:.9rem;color:var(--text);">
               ${_escHtml(injCfg.label || pt.injuryType)}
             </span>
-            <span style="margin-left:8px;font-size:.65rem;font-family:var(--mono);
+            <span style="margin-left:8px;font-size:.8rem;font-family:var(--mono);
                          border:1px solid ${tierColor};color:${tierColor};
                          border-radius:10px;padding:1px 6px;text-transform:uppercase;">
               ${pt.tier}
             </span>
           </div>
-          <div style="font-size:.65rem;color:var(--muted);font-family:var(--mono);">
+          <div style="font-size:.8rem;color:var(--muted);font-family:var(--mono);">
             In hospital: ${formatETA(timeInHosp)}
           </div>
         </div>
-        <div style="font-size:.72rem;color:var(--muted);margin-bottom:5px;">
+        <div style="font-size:.8rem;color:var(--muted);margin-bottom:5px;">
           Stage: <span style="color:var(--text);">${dptLabel}</span>
           ${pt.stageQueue.length ? `→ ${pt.stageQueue.map(k => BAM_CONFIG.hospitalDepartments[k]?.label || k).join(' → ')}` : ''}
         </div>
-        <!-- Stage progress bar -->
+        <!-- Stage progress bar — IDs allow _updateHospitalProgressBars() to update in-place -->
         <div style="display:flex;align-items:center;gap:8px;">
           <div class="res-bar-track" style="flex:1;">
-            <div class="res-bar-fill" style="width:${pct}%;background:${stageColor};transition:width 1s linear;"></div>
+            <div class="res-bar-fill" id="pt-stage-fill-${pt.id}"
+                 style="width:${pct}%;background:${stageColor};"></div>
           </div>
-          <span style="font-size:.68rem;font-family:var(--mono);color:${stageColor};min-width:40px;">
+          <span id="pt-stage-pct-${pt.id}"
+                style="font-size:.8rem;font-family:var(--mono);color:${stageColor};min-width:40px;">
             ${pct}%
           </span>
-          <span style="font-size:.65rem;color:var(--muted);font-family:var(--mono);">
+          <span id="pt-stage-rem-${pt.id}"
+                style="font-size:.8rem;color:var(--muted);font-family:var(--mono);">
             ${remaining > 0 ? formatETA(remaining) + ' left' : 'complete'}
           </span>
         </div>
@@ -578,11 +604,83 @@ function _renderDeptTab(hospital, deptKey){
     }).join('');
   }
 
+  // Add Beds section
+  const costPerBed = deptCfg?.costPerBed || 2000;
+  const bedCountOpts = [1,2,5,10].map(n =>
+    `<option value="${n}">${n} bed${n>1?'s':''} — $${(n*costPerBed).toLocaleString()}</option>`
+  ).join('');
+
   return `
     <div class="section-title">${deptCfg?.label || deptKey} — Bed Status</div>
     ${bedGrid}
     <div class="section-title">Patients</div>
-    ${patientRows}`;
+    ${patientRows}
+    <div class="section-title" style="margin-top:16px;">Add Beds</div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+      <select id="hm-bed-count-${deptKey}" style="font-size:.82rem;padding:5px 8px;"
+              onchange="_onBedCountChange('${hospital.id}','${deptKey}')">
+        ${bedCountOpts}
+        <option value="custom">Custom…</option>
+      </select>
+      <button class="btn-sm" onclick="_buyHospitalBeds('${hospital.id}','${deptKey}')">Purchase</button>
+      <span style="font-size:.8rem;color:var(--muted);">$${costPerBed.toLocaleString()} per bed</span>
+    </div>
+    <div id="hm-custom-bed-row-${deptKey}" style="display:none;margin-bottom:6px;">
+      <input id="hm-custom-bed-count-${deptKey}" type="number" min="1" placeholder="Number of beds"
+             style="width:160px;padding:5px 8px;font-size:.82rem;"/>
+      <button class="btn-sm" style="margin-left:6px;"
+              onclick="_buyHospitalBedsCustom('${hospital.id}','${deptKey}')">Buy</button>
+    </div>`;
+}
+
+// Renders the Offloading tab — shows units currently offloading at this hospital.
+function _renderOffloadingTab(hospital, offloadingUnits){
+  if(!offloadingUnits.length){
+    return '<div class="empty-msg">No units currently offloading.</div>';
+  }
+  const rows = offloadingUnits.map(({unit, station}) => {
+    const remSec = unit.offloadEndSec ? Math.max(0, unit.offloadEndSec - gameSeconds) : 0;
+    const uCfg = BAM_CONFIG.unitTypes[unit.typeKey] || {};
+    // Find the patient this unit delivered (matched by transportUnitId)
+    let patientDisplay = '—';
+    for(const dept of Object.values(hospital.departments)){
+      const pt = dept.patients.find(p => p.transportUnitId === unit.id);
+      if(pt){
+        const injCfg = BAM_CONFIG.injuryTypes[pt.injuryType] || {};
+        const tierColors = { minor:'var(--green)', serious:'var(--gold)', critical:'var(--accent)' };
+        const tierColor  = tierColors[pt.tier] || 'var(--muted)';
+        patientDisplay = `<span style="color:var(--text);">${_escHtml(injCfg.label||pt.injuryType)}</span>
+          <span style="font-size:.8rem;color:${tierColor};margin-left:4px;">${pt.tier}</span>`;
+        break;
+      }
+    }
+    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;
+                        padding:10px 12px;margin-bottom:6px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <div>
+          <span style="font-weight:700;font-size:.9rem;color:var(--ems);">${_escHtml(unit.name)}</span>
+          <span style="font-size:.8rem;color:var(--muted);margin-left:8px;">${uCfg.label||unit.typeKey}</span>
+        </div>
+        <span id="offload-rem-${unit.id}"
+              style="font-size:.8rem;font-family:var(--mono);color:var(--ems);">
+          ${formatETA(remSec)} until clear
+        </span>
+      </div>
+      <div style="font-size:.8rem;color:var(--muted);">
+        Patient: ${patientDisplay}
+        &nbsp;·&nbsp; Returns to: <span style="color:var(--text);">${_escHtml(station.name)}</span>
+      </div>
+      <!-- Offload progress bar -->
+      <div class="res-bar-track" style="margin-top:6px;">
+        <div class="res-bar-fill" style="width:${
+          (unit.offloadEndSec && unit.offloadStartSec && unit.offloadEndSec > unit.offloadStartSec)
+            ? Math.min(100, Math.round(((gameSeconds - unit.offloadStartSec) / (unit.offloadEndSec - unit.offloadStartSec)) * 100))
+            : 0
+        }%;background:var(--ems);"></div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="section-title">Units Offloading</div>${rows}`;
 }
 
 // Renders the "Purchase Department" tab content.
@@ -597,7 +695,7 @@ function _renderPurchaseTab(hospital, availableDepts){
                         padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;gap:12px;">
       <div style="flex:1;">
         <div style="font-weight:700;font-size:.9rem;color:var(--gold);">${cfg.label}</div>
-        <div style="font-size:.72rem;color:var(--muted);margin-top:2px;">
+        <div style="font-size:.8rem;color:var(--muted);margin-top:2px;">
           ${cfg.baseBeds} beds &nbsp;·&nbsp;
           Stage: ${formatETA(cfg.stageDurationMinSec)}–${formatETA(cfg.stageDurationMaxSec)}
         </div>
@@ -610,6 +708,53 @@ function _renderPurchaseTab(hospital, availableDepts){
     </div>`;
   }).join('');
   return `<div class="section-title">Available Departments</div>${rows}`;
+}
+
+// ── ADD BEDS HELPERS ──────────────────────────────────────────────────────────
+
+// Toggles the custom bed count input visible when "Custom…" is selected.
+function _onBedCountChange(hospitalId, deptKey){
+  const sel = document.getElementById('hm-bed-count-'+deptKey);
+  const row = document.getElementById('hm-custom-bed-row-'+deptKey);
+  if(!sel||!row) return;
+  row.style.display = sel.value === 'custom' ? 'block' : 'none';
+}
+
+// Purchases a preset number of beds for the given hospital department.
+function _buyHospitalBeds(hospitalId, deptKey){
+  const sel = document.getElementById('hm-bed-count-'+deptKey);
+  if(!sel) return;
+  if(sel.value === 'custom'){
+    document.getElementById('hm-custom-bed-row-'+deptKey)?.style && (document.getElementById('hm-custom-bed-row-'+deptKey).style.display='block');
+    return;
+  }
+  const count = parseInt(sel.value);
+  if(!count || count < 1) return;
+  _addBedsToHospital(hospitalId, deptKey, count);
+}
+
+// Purchases a custom number of beds entered in the text input.
+function _buyHospitalBedsCustom(hospitalId, deptKey){
+  const input = document.getElementById('hm-custom-bed-count-'+deptKey);
+  if(!input) return;
+  const count = parseInt(input.value);
+  if(!count || count < 1){ setStatus('⚠️ Enter a valid number of beds.'); return; }
+  _addBedsToHospital(hospitalId, deptKey, count);
+}
+
+// Core logic: deducts cost and adds beds to the department.
+function _addBedsToHospital(hospitalId, deptKey, count){
+  const h = hospitals.find(x => x.id === hospitalId);
+  if(!h || !h.departments[deptKey]) return;
+  const deptCfg = BAM_CONFIG.hospitalDepartments[deptKey];
+  const costPerBed = deptCfg?.costPerBed || 2000;
+  const totalCost = count * costPerBed;
+  if(money < totalCost){ setStatus(`⚠️ Need $${totalCost.toLocaleString()} — only $${Math.floor(money).toLocaleString()} available.`); return; }
+  updateMoney(-totalCost);
+  logCashflow(-totalCost, `[HOSPITAL] Added ${count} bed${count>1?'s':''} to ${h.name} — ${deptCfg?.label||deptKey}`);
+  h.departments[deptKey].beds += count;
+  setStatus(`✅ Added ${count} bed${count>1?'s':''} to ${deptCfg?.label||deptKey}. ($${totalCost.toLocaleString()})`);
+  _renderHospitalModal();
 }
 
 // ── RENAME HELPERS ─────────────────────────────────────────────────────────────

@@ -395,19 +395,19 @@ function _renderJailModal(){
                ).join('')}
              </select>
              <button class="btn-sm" onclick="_doTransfer('${j.id}','${susId}')">Transfer</button>`
-          : '<span style="font-size:.68rem;color:var(--muted);">No facilities available</span>';
+          : '<span style="font-size:.8rem;color:var(--muted);">No facilities available</span>';
 
         return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:2px;
                             padding:9px 12px;margin-bottom:6px;">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;">
             <div>
               <span style="font-size:.78rem;font-weight:700;color:var(--text);">${_escJailHtml(susId.slice(-8))}</span>
-              <span style="margin-left:8px;font-size:.62rem;border:1px solid ${tierColor};
+              <span style="margin-left:8px;font-size:.72rem;border:1px solid ${tierColor};
                            color:${tierColor};border-radius:10px;padding:1px 6px;text-transform:uppercase;">
                 ${tierCfg.label || sus.chargeTier}
               </span>
             </div>
-            <div style="font-size:.65rem;color:var(--muted);">
+            <div style="font-size:.8rem;color:var(--muted);">
               ${remaining > 0 ? formatETA(remaining) + ' left' : '⏳ processing'}
             </div>
           </div>
@@ -417,7 +417,7 @@ function _renderJailModal(){
           </div>
           <!-- Transfer row -->
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <span style="font-size:.65rem;color:var(--muted);">Transfer to:</span>
+            <span style="font-size:.8rem;color:var(--muted);">Transfer to:</span>
             ${transferOptions}
           </div>
         </div>`;
@@ -473,7 +473,7 @@ function _renderJailModal(){
                   onclick="_buyJailCells('${j.id}')">
             Purchase
           </button>
-          <span style="font-size:.68rem;color:var(--muted);">
+          <span style="font-size:.8rem;color:var(--muted);">
             $${typeCfg.costPerCell.toLocaleString()} per cell
           </span>
         </div>

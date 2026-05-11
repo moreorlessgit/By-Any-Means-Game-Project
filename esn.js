@@ -581,7 +581,7 @@ function _renderFilteredESNList() {
   const filterBanner = _selectedDCFilter
     ? (() => {
         const dc = dispatchCenters.find(d => d.id === _selectedDCFilter);
-        return `<div style="font-size:.65rem;color:var(--gold);padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:6px;">
+        return `<div style="font-size:.8rem;color:var(--gold);padding:4px 0 6px;border-bottom:1px solid var(--border);margin-bottom:6px;">
           Showing ESNs for: <b>${dc?.name || ''}</b> — <a href="#" style="color:var(--muted);" onclick="event.preventDefault();_selectDCFilter('${_selectedDCFilter}')">Clear filter</a>
         </div>`;
       })()
@@ -597,8 +597,8 @@ function _renderFilteredESNList() {
     const baCount = boxAlarms.filter(b => b.esnId === esn.id).length;
     return `<div class="scard${oos ? ' oos' : ''}">
       <div class="sn" style="color:${col};">${esn.name}${oos ? ' <span class="oos-badge">OOS</span>' : ''}</div>
-      <div class="su" style="margin-top:4px;">${asmSummary || '<span style="color:var(--muted);font-size:.68rem;">No stations assigned</span>'}</div>
-      ${baCount ? `<div style="font-size:.65rem;color:var(--muted);margin-top:3px;">📋 ${baCount} box alarm${baCount > 1 ? 's' : ''}</div>` : ''}
+      <div class="su" style="margin-top:4px;">${asmSummary || '<span style="color:var(--muted);font-size:.8rem;">No stations assigned</span>'}</div>
+      ${baCount ? `<div style="font-size:.8rem;color:var(--muted);margin-top:3px;">📋 ${baCount} box alarm${baCount > 1 ? 's' : ''}</div>` : ''}
       <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">
         <button class="btn-sm" onclick="openESNModal('${esn.id}')">Edit</button>
         <button class="btn-sm" onclick="openBoxAlarmModal('${esn.id}')">+ Box Alarm</button>
@@ -960,7 +960,7 @@ function openDCSummary(id) {
       ${active} / ${cap}
     </span>
   </div>
-  <div style="font-size:.68rem;color:var(--muted);margin-top:2px;">
+  <div style="font-size:.8rem;color:var(--muted);margin-top:2px;">
     Call cap: ${cap} (${capBase} station${capBase !== 1 ? 's' : ''} + 1)
   </div>`;
 

@@ -108,13 +108,24 @@ function renderStationList(){
       let pillTxt = u.name;
       if(isRet)   pillTxt = `${u.name} ↩${formatETA(u._returnRemSec)}`;
       if(isTrans) pillTxt = `${u.name} 🚑→`;
-      if(isOff)   pillTxt = `${u.name} 🏥`;
+      if(isOff){
+        const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
+        pillTxt = remSec > 0 ? `${u.name} 🏥 ${formatETA(remSec)}` : `${u.name} 🏥`;
+      }
       const cls = uOOS ? 'oos' : (isTrans||isOff ? 'transporting' : u.status);
       // Tooltip text
       let ttip = uOOS ? 'Out of service' : u.status;
       if(isRet)   ttip = `Returning — ${formatETA(u._returnRemSec)} to ST`;
-      if(isTrans) ttip = `Transporting patient/prisoner`;
-      if(isOff)   ttip = `Offloading at facility`;
+      if(isTrans){
+        const destName = u.transportDestination?.id
+          ? (hospitals.find(h => h.id === u.transportDestination.id)?.name || 'facility')
+          : 'facility';
+        ttip = `Transporting → ${destName}`;
+      }
+      if(isOff){
+        const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
+        ttip = remSec > 0 ? `Offloading — ${formatETA(remSec)} until clear` : 'Offloading at facility';
+      }
       return `<span class="unit-pill ${cls}" title="${ttip}"
                onclick="toggleUnitService('${s.id}','${u.id}');event.stopPropagation();">${pillTxt}</span>`;
     }).join('');
@@ -330,7 +341,7 @@ function _renderManageBody(){
         html += `<div class="upgrade-row installed">
           <div>
             <div style="font-weight:700;font-size:.82rem;">${upg.icon} ${upg.label}</div>
-            <div style="font-size:.68rem;color:var(--muted);">${cells} cells — ${occupied} occupied</div>
+            <div style="font-size:.8rem;color:var(--muted);">${cells} cells — ${occupied} occupied</div>
           </div>
           <button class="btn-sm" onclick="openHoldingCellManage('${s.id}')">Manage Cells</button>
         </div>`;
@@ -338,10 +349,10 @@ function _renderManageBody(){
         html += `<div class="upgrade-row${installed?' installed':''}">
           <div>
             <div style="font-weight:700;font-size:.82rem;">${upg.icon} ${upg.label}</div>
-            <div style="font-size:.68rem;color:var(--muted);">${upg.desc}</div>
+            <div style="font-size:.8rem;color:var(--muted);">${upg.desc}</div>
           </div>
           ${installed
-            ? '<span style="font-size:.72rem;color:var(--green);">✓ Installed</span>'
+            ? '<span style="font-size:.8rem;color:var(--green);">✓ Installed</span>'
             : `<button class="btn-sm" onclick="purchaseUpgrade('${s.id}','${key}')">
                 Purchase $${upg.cost.toLocaleString()}
               </button>`}
