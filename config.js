@@ -901,6 +901,45 @@ const BAM_CONFIG = {
   },
 
   // ---------------------------------------------------------------------------
+  // EMERGENCY SPEED SYSTEM
+  // ---------------------------------------------------------------------------
+  // Applied to OSRM per-segment speeds during emergency dispatch and transport.
+  // bonusMph: added to each road segment's OSRM predicted speed.
+  // floorMph: minimum per-segment speed (prevents stop-and-go map walking).
+  // maxSpeedByType: hard cap per unit type (0 = no cap).
+  // alsCriticalBonusMph: total speed bonus when ALS unit transports a critical patient.
+  // blsCriticalBonusMph: total speed bonus when BLS unit transports a critical patient.
+  // ---------------------------------------------------------------------------
+  emergencySpeed: {
+    bonusMph:           15,   // added to OSRM speed on every road segment during emergency response
+    floorMph:           40,   // minimum speed floor per segment during emergency response
+    alsCriticalBonusMph: 20,  // replaces bonusMph for ALS units carrying a critical patient
+    blsCriticalBonusMph: 10,  // replaces bonusMph for BLS units carrying a critical patient
+    // Hard speed caps (mph) per unit typeKey. 0 = uncapped.
+    maxSpeedByType: {
+      // Fire apparatus — limited by vehicle weight and apparatus safety
+      engine:            75,
+      pumper_tanker:     75,
+      tanker:            75,
+      ladder:            75,
+      brush_truck:       75,
+      rescue:            75,
+      rescue_engine:     75,
+      // EMS — ambulances are built for speed but governed for safety
+      als_ambulance:     90,
+      bls_ambulance:     90,
+      fly_car:           90,
+      // Police — pursuit-capable vehicles
+      patrol:            110,
+      supervisor:        110,
+      k9:                110,
+      // Heavy transport van — slower than patrol cars
+      sheriff_transport: 75,
+      // Helicopter uses speedMph directly (straight-line, not segment-based)
+    },
+  },
+
+  // ---------------------------------------------------------------------------
   // CHARGE TIER DEFINITIONS
   // ---------------------------------------------------------------------------
   // releaseChanceScene: 0–1 probability suspect is cited and released at the scene

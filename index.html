@@ -50,7 +50,7 @@
     #sidebar{
       width:250px;flex-shrink:0;
       background:var(--panel);border-right:1px solid var(--border);
-      display:flex;flex-direction:column;overflow:hidden;
+      display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
     }
     .sb-section{padding:10px 12px;border-bottom:1px solid var(--border);}
     .sb-title{font-size:.8rem;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
@@ -1180,10 +1180,10 @@ async function spawnIncident(manual=false){
     if(!result) return; // no eligible ESN / DC at cap — skip this spawn cycle
     ({lat, lng, esnId} = result);
 
-    // For 'random' spawnMode (or OSM cache miss), snap to nearest driveable road
-    // via OSRM and store the road name as inc.address.
+    // For any non-building spawn mode, snap to nearest driveable road via OSRM.
+    // This ensures road_major/road_any fallbacks (empty OSM cache) still land on roads.
     const spawnMode = mCfg.spawnMode || 'random';
-    if(spawnMode === 'random' && BAM_CONFIG.spawn.snapToRoad){
+    if(spawnMode !== 'building' && BAM_CONFIG.spawn.snapToRoad){
       try{
         const snapUrl=`https://router.project-osrm.org/nearest/v1/driving/${lng},${lat}?number=1`;
         const snapResp=await fetch(snapUrl);
@@ -1488,7 +1488,10 @@ function renderDispatchBody(inc, mCfg){
   html += `<div class="section-title">Available Units — closest first</div>`;
   const sorted = getAllUnits().map(({station,unit}) => {
     const dist = haversineKm(station.lat,station.lng,inc.lat,inc.lng);
-    return {station,unit,etaMin:(dist/60)*60};
+    const uCfgS = BAM_CONFIG.unitTypes[unit.typeKey];
+    // Aircraft use straight-line distance at their configured speed; ground units assume ~60 km/h road average
+    const speedKmh = uCfgS?.straightLine ? (uCfgS.speedMph || 150) * 1.60934 : 60;
+    return {station, unit, etaMin: (dist / speedKmh) * 60};
   }).sort((a,b)=>a.etaMin-b.etaMin);
 
   sorted.forEach(({station,unit,etaMin}) => {
@@ -1667,25 +1670,30 @@ async function routeAndAnimate(unit, station, inc, fromLatLng=null){
     if(data.code!=='Ok'||!data.routes.length) throw new Error('No route');
 
     const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
-    // Enforce minimum 30 MPH (48.28 km/h) — OSRM can return very slow rural estimates.
     const rawDuration=data.routes[0].duration;
     const distKm=data.routes[0].distance/1000;
-    const minSpeedDuration=(distKm/48.28)*3600;  // time at exactly 30 MPH
-    const durationSec=Math.min(rawDuration, minSpeedDuration);
-    // Build normalized cumulative time array from OSRM per-segment annotations
     const segDurs=data.routes[0].legs[0].annotation?.duration||[];
-    const cumTimes=[0];
-    for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
-    const totalT=cumTimes[cumTimes.length-1];
-    if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
-    else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
+    // Apply per-segment emergency speed boost (config emergencySpeed block)
+    const sCfg=BAM_CONFIG.emergencySpeed||{};
+    const maxMph=sCfg.maxSpeedByType?.[unit.typeKey]||0;
+    const adjSpeed=_applyEmergencySpeed(segDurs,coords,sCfg.bonusMph||0,sCfg.floorMph||40,maxMph);
+    let durationSec;
+    if(adjSpeed){
+      durationSec=adjSpeed.durationSec;
+      unit.routeCumTimes=(adjSpeed.cumTimes.length===coords.length)?adjSpeed.cumTimes:null;
+    } else {
+      durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
+      const ct=[0]; for(let i=0;i<segDurs.length;i++) ct.push(ct[i]+segDurs[i]);
+      const tot=ct[ct.length-1];
+      if(tot>0) for(let i=1;i<ct.length;i++) ct[i]/=tot; else for(let i=1;i<ct.length;i++) ct[i]=i/(ct.length-1);
+      unit.routeCumTimes=(ct.length===coords.length)?ct:null;
+    }
     const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
     const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.7,dashArray:'6,4'}).addTo(map);
     unit.routeLine=line;
     const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
     animMarker.bindTooltip(`${unit.name} → ${inc.label}`);
     unit.animMarker=animMarker; unit.routeCoords=coords;
-    unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
     animateUnit(unit,inc,coords,durationSec);
   } catch(e){
     console.warn('OSRM failed, straight line',e);
@@ -1899,12 +1907,21 @@ function renderTransportTab(inc){
 
   if(readyPatients.length){
     html += `<div class="section-title" style="margin-top:12px;">Transport Assignments</div>`;
-    const transportUnits = getAllUnits().filter(({unit}) => {
+    // Prefer on-scene units for THIS incident — show them first, then available units from stations
+    const isTransportCapable = ({unit}) => {
       const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
       return (tags.includes('transport')||tags.includes('bls')||tags.includes('als')||tags.includes('air_als'))
-        && (unit.status==='available'||unit.status==='on_scene')
         && unit.inService !== false;
-    });
+    };
+    const sceneTransportUnits = getAllUnits().filter(({unit}) =>
+      isTransportCapable({unit}) && unit.status === 'on_scene' && inc.units.includes(unit.id)
+    );
+    const availTransportUnits = getAllUnits().filter(({unit}) =>
+      isTransportCapable({unit}) && unit.status === 'available' && !inc.units.includes(unit.id)
+    );
+    const transportUnits = sceneTransportUnits.length
+      ? sceneTransportUnits   // if there's a transport unit already on scene, only show those
+      : availTransportUnits;  // otherwise fall back to all available transport units
 
     if(!transportUnits.length){
       html += `<div class="empty-msg">No transport units available.</div>`;
@@ -2056,20 +2073,117 @@ function _beginTransport(patientId, incId){
   renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
 }
 
-// Books a suspect from the Transport tab into the selected police station holding cell.
-// For simplicity, the booking is immediate (the arresting officer is already on scene).
+// Dispatches a patrol unit from the scene to transport a suspect to a holding station.
+// Picks the arresting officer on-scene first; falls back to nearest available patrol.
 function _beginSuspectTransport(suspectId, incId){
   const stationId = document.getElementById('sus-st-'+suspectId)?.value;
   if(!stationId){ setStatus('⚠️ Select a station with holding cells.'); return; }
   const suspect = suspects.find(s => s.id === suspectId);
   if(!suspect || suspect.status !== 'detained'){ setStatus('⚠️ Suspect is not available for booking.'); return; }
-  const ok = bookSuspectAtStation(suspect, stationId);
-  if(ok){
-    const station = stations.find(s => s.id === stationId);
-    setStatus(`🔒 Suspect booked at ${station?.name || 'station'}.`);
-    const inc = incidents.find(i => i.id === incId);
-    if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  const inc = incidents.find(i => i.id === incId);
+  const destStation = stations.find(s => s.id === stationId);
+  if(!destStation){ setStatus('⚠️ Destination station not found.'); return; }
+
+  // Prefer the arresting officer (patrol unit on scene for this incident)
+  const isPatrol = ({unit}) => {
+    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
+    return tags.includes('patrol') || tags.includes('supervisor') || tags.includes('k9');
+  };
+  let transporterFound = null;
+  if(inc){
+    transporterFound = getAllUnits().find(({unit}) =>
+      isPatrol({unit}) && unit.status === 'on_scene' && inc.units.includes(unit.id)
+    );
   }
+  // Fallback: nearest available patrol unit from any station
+  if(!transporterFound){
+    const fromLat = inc?.lat ?? destStation.lat;
+    const fromLng = inc?.lng ?? destStation.lng;
+    transporterFound = getAllUnits()
+      .filter(({unit}) => isPatrol({unit}) && unit.status === 'available' && unit.inService !== false)
+      .map(x => ({...x, dist: haversineKm(x.station.lat, x.station.lng, fromLat, fromLng)}))
+      .sort((a,b) => a.dist - b.dist)[0];
+  }
+  if(!transporterFound){ setStatus('⚠️ No patrol unit available to transport suspect.'); return; }
+
+  const {unit: tUnit, station: tStation} = transporterFound;
+  transportSuspectToStation(tUnit, tStation, suspect, destStation, inc);
+  if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
+// Animates a patrol unit from its current position (scene or station) to a holding station.
+// On arrival, books the suspect into the holding cell and routes the unit home.
+async function transportSuspectToStation(unit, homeStation, suspect, destStation, inc){
+  // Remove unit from incident's unit list so it doesn't get re-dispatched
+  if(inc) inc.units = inc.units.filter(uid => uid !== unit.id);
+  const fromLat = inc?.lat ?? homeStation.lat;
+  const fromLng = inc?.lng ?? homeStation.lng;
+  suspect.status = 'in_transport';
+  suspect._transportUnitId = unit.id;
+  unit._transportSuspectRef = suspect;
+  unit.status = 'transporting';
+  unit.transportDestination = { type: 'station', id: destStation.id };
+  unit.homeStationId = homeStation.id;
+  // Cancel current animation
+  unit._animGen = (unit._animGen || 0) + 1;
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine = null; }
+  if(unit.returnLine){ unit.returnLine.remove(); unit.returnLine = null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker = null; }
+  renderStationList();
+  setStatus(`🚔 ${unit.name} transporting suspect to ${destStation.name}`);
+
+  const dotColor = BAM_CONFIG.unitTypes[unit.typeKey]?.color || '#aaaaaa';
+  unit._animGen = (unit._animGen || 0) + 1;
+  const myGen = unit._animGen;
+  try{
+    const url = `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${destStation.lng},${destStation.lat}?overview=full&geometries=geojson&annotations=duration`;
+    const resp = await fetch(url); const data = await resp.json();
+    if(data.code !== 'Ok' || !data.routes.length) throw new Error('No route');
+    if(unit._animGen !== myGen) return;
+    const coords = data.routes[0].geometry.coordinates.map(([lng,lat]) => [lat,lng]);
+    const rawDur  = data.routes[0].duration;
+    const distKm  = data.routes[0].distance / 1000;
+    const durationSec = Math.min(rawDur, (distKm / 48.28) * 3600);
+    const segDurs = data.routes[0].legs[0].annotation?.duration || [];
+    const cumTimes = [0];
+    for(let i = 0; i < segDurs.length; i++) cumTimes.push(cumTimes[i] + segDurs[i]);
+    const totalT = cumTimes[cumTimes.length - 1];
+    if(totalT > 0) for(let i = 1; i < cumTimes.length; i++) cumTimes[i] /= totalT;
+    else for(let i = 1; i < cumTimes.length; i++) cumTimes[i] = i / (cumTimes.length - 1);
+    unit.routeCumTimes = (cumTimes.length === coords.length) ? cumTimes : null;
+    const line = L.polyline(coords, {color: dotColor, weight: 3, opacity: .6, dashArray: '3,3'}).addTo(map);
+    unit.routeLine = line;
+    const animMarker = L.marker(coords[0], {icon: _buildUnitDotIcon(unit, dotColor), zIndexOffset: 1000}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → ${destStation.name}`);
+    unit.animMarker = animMarker; unit.routeCoords = coords;
+    _animateWithCallback(unit, coords, durationSec, () => onSuspectTransportToStationArrived(unit, destStation));
+  } catch(e){
+    if(unit._animGen !== myGen) return;
+    const dist = haversineKm(fromLat, fromLng, destStation.lat, destStation.lng);
+    const coords = [[fromLat, fromLng], [destStation.lat, destStation.lng]];
+    const line = L.polyline(coords, {color: dotColor, weight: 2, opacity: .4, dashArray: '3,3'}).addTo(map);
+    unit.routeLine = line;
+    const animMarker = L.marker([fromLat, fromLng], {icon: _buildUnitDotIcon(unit, dotColor), zIndexOffset: 900}).addTo(map);
+    unit.animMarker = animMarker; unit.routeCoords = coords; unit.routeCumTimes = [0, 1];
+    _animateWithCallback(unit, coords, (dist / 48.28) * 3600, () => onSuspectTransportToStationArrived(unit, destStation));
+  }
+}
+
+// Called when a patrol unit arrives at the holding station with a suspect.
+function onSuspectTransportToStationArrived(unit, destStation){
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine = null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker = null; }
+  const suspect = unit._transportSuspectRef || suspects.find(s => s._transportUnitId === unit.id);
+  unit._transportSuspectRef = null;
+  if(suspect){
+    const ok = bookSuspectAtStation(suspect, destStation.id);
+    if(!ok) setStatus(`⚠️ Could not book suspect — holding cells may be full.`);
+  }
+  unit.transportDestination = null;
+  const homeStation = stations.find(s => s.id === unit.homeStationId);
+  unit.status = 'returning';
+  if(homeStation) routeAndAnimateReturn(unit, homeStation, destStation.lat, destStation.lng);
+  else { unit.status = 'available'; renderStationList(); }
 }
 
 // Releases a suspect from the Transport tab with no charges filed.
@@ -2152,14 +2266,28 @@ async function routeToHospital(unit, fromPos, hospital){
       coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
       const rawDuration=data.routes[0].duration;
       const distKm=data.routes[0].distance/1000;
-      durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
       const segDurs=data.routes[0].legs[0].annotation?.duration||[];
-      const cumTimes=[0];
-      for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
-      const totalT=cumTimes[cumTimes.length-1];
-      if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
-      else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
-      unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+      // Critical patient transport bonus — ALS/BLS get an extra speed boost
+      const sCfg=BAM_CONFIG.emergencySpeed||{};
+      const tags=BAM_CONFIG.unitTypes[unit.typeKey]?.tags||[];
+      const isCritical=(unit._transportPatientRef?.tier||'minor')==='critical';
+      let bonusMph=sCfg.bonusMph||0;
+      if(isCritical){
+        if(tags.includes('als')) bonusMph=sCfg.alsCriticalBonusMph||20;
+        else if(tags.includes('bls')) bonusMph=sCfg.blsCriticalBonusMph||10;
+      }
+      const maxMph=sCfg.maxSpeedByType?.[unit.typeKey]||0;
+      const adjSpeed=_applyEmergencySpeed(segDurs,coords,bonusMph,sCfg.floorMph||40,maxMph);
+      if(adjSpeed){
+        durationSec=adjSpeed.durationSec;
+        unit.routeCumTimes=(adjSpeed.cumTimes.length===coords.length)?adjSpeed.cumTimes:null;
+      } else {
+        durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
+        const ct=[0]; for(let i=0;i<segDurs.length;i++) ct.push(ct[i]+segDurs[i]);
+        const tot=ct[ct.length-1];
+        if(tot>0) for(let i=1;i<ct.length;i++) ct[i]/=tot; else for(let i=1;i<ct.length;i++) ct[i]=i/(ct.length-1);
+        unit.routeCumTimes=(ct.length===coords.length)?ct:null;
+      }
     }
     if(unit._animGen!==myGen) return;
     const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.7,dashArray:'6,4'}).addTo(map);
@@ -2272,14 +2400,22 @@ async function routeToPrison(unit, station, facility, suspect){
     const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
     const rawDuration=data.routes[0].duration;
     const distKm=data.routes[0].distance/1000;
-    const durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
     const segDurs=data.routes[0].legs[0].annotation?.duration||[];
-    const cumTimes=[0];
-    for(let i=0;i<segDurs.length;i++) cumTimes.push(cumTimes[i]+segDurs[i]);
-    const totalT=cumTimes[cumTimes.length-1];
-    if(totalT>0) for(let i=1;i<cumTimes.length;i++) cumTimes[i]/=totalT;
-    else for(let i=1;i<cumTimes.length;i++) cumTimes[i]=i/(cumTimes.length-1);
-    unit.routeCumTimes=(cumTimes.length===coords.length)?cumTimes:null;
+    // Police prisoner transport — apply standard emergency speed boost
+    const sCfg=BAM_CONFIG.emergencySpeed||{};
+    const maxMph=sCfg.maxSpeedByType?.[unit.typeKey]||0;
+    const adjSpeed=_applyEmergencySpeed(segDurs,coords,sCfg.bonusMph||0,sCfg.floorMph||40,maxMph);
+    let durationSec;
+    if(adjSpeed){
+      durationSec=adjSpeed.durationSec;
+      unit.routeCumTimes=(adjSpeed.cumTimes.length===coords.length)?adjSpeed.cumTimes:null;
+    } else {
+      durationSec=Math.min(rawDuration,(distKm/48.28)*3600);
+      const ct=[0]; for(let i=0;i<segDurs.length;i++) ct.push(ct[i]+segDurs[i]);
+      const tot=ct[ct.length-1];
+      if(tot>0) for(let i=1;i<ct.length;i++) ct[i]/=tot; else for(let i=1;i<ct.length;i++) ct[i]=i/(ct.length-1);
+      unit.routeCumTimes=(ct.length===coords.length)?ct:null;
+    }
     const line=L.polyline(coords,{color:dotColor,weight:3,opacity:.6,dashArray:'3,3'}).addTo(map);
     unit.routeLine=line;
     const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
@@ -2986,6 +3122,35 @@ function _updateUnitTooltips(){
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
+
+// Adjusts per-segment OSRM route durations for emergency speed.
+// segDurs: array of per-segment travel times in seconds (length = coords.length - 1).
+// coords:  array of [lat, lng] coordinate pairs.
+// bonusMph: speed boost in mph added to each segment's OSRM-predicted speed.
+// floorMph: minimum speed in mph per segment (prevents crawl on congested segments).
+// maxMph:   hard unit cap in mph (0 = uncapped).
+// Returns { durationSec, cumTimes } with the new total time and normalized cumtime array,
+// or null if the segment data is empty / unusable (caller falls back to raw OSRM duration).
+function _applyEmergencySpeed(segDurs, coords, bonusMph, floorMph, maxMph){
+  if(!segDurs || segDurs.length === 0 || coords.length < segDurs.length + 1) return null;
+  const adjDurs = [];
+  for(let i = 0; i < segDurs.length; i++){
+    const distKm = haversineKm(coords[i][0], coords[i][1], coords[i+1][0], coords[i+1][1]);
+    const distMi = distKm * 0.621371;
+    const osrmMph = (segDurs[i] > 0 && distMi > 0) ? distMi / (segDurs[i] / 3600) : 30;
+    let adjMph = osrmMph + bonusMph;
+    if(floorMph > 0) adjMph = Math.max(adjMph, floorMph);
+    if(maxMph  > 0) adjMph = Math.min(adjMph, maxMph);
+    adjDurs.push(distMi > 0 ? (distMi / adjMph) * 3600 : segDurs[i]);
+  }
+  const totalSec = adjDurs.reduce((s, d) => s + d, 0);
+  if(totalSec <= 0) return null;
+  const cumTimes = [0];
+  let running = 0;
+  for(const d of adjDurs){ running += d; cumTimes.push(running / totalSec); }
+  return { durationSec: totalSec, cumTimes };
+}
+
 function haversineKm(lat1,lon1,lat2,lon2){
   const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
   const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;

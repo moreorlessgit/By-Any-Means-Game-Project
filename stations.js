@@ -573,6 +573,248 @@ function recreateStation(s){
   stations.push(station);
 }
 
+// ── HOLDING CELL MANAGEMENT MODAL ────────────────────────────────────────────
+
+let _activeHoldingCellStationId = null;  // station whose holding-cell modal is currently open
+
+// Opens the holding cell management modal for a police station.
+// Called from the "Manage Cells" button in _renderManageBody().
+function openHoldingCellManage(stationId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s || !s._holdingCells?.installed){
+    setStatus('⚠️ No holding cells installed at this station.');
+    return;
+  }
+  _activeHoldingCellStationId = stationId;
+  let modal = document.getElementById('holding-cell-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'holding-cell-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) _closeHoldingCellModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderHoldingCellModal();
+  modal.classList.add('open');
+}
+
+// Closes the holding cell modal.
+function _closeHoldingCellModal(){
+  _activeHoldingCellStationId = null;
+  const modal = document.getElementById('holding-cell-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+// Rebuilds the holding cell modal HTML.
+function _renderHoldingCellModal(){
+  const modal = document.getElementById('holding-cell-modal');
+  if(!modal || !_activeHoldingCellStationId) return;
+  const s = stations.find(x => x.id === _activeHoldingCellStationId);
+  if(!s || !s._holdingCells){ _closeHoldingCellModal(); return; }
+
+  const hc = s._holdingCells;
+  const pct = hc.cells ? Math.round((hc.occupied / hc.cells) * 100) : 0;
+  const capColor = pct >= 90 ? 'var(--accent)' : pct >= 70 ? 'var(--gold)' : 'var(--green)';
+
+  // Cell grid — green = empty, slate = occupied
+  const cellBlocks = [];
+  for(let i = 0; i < hc.cells; i++){
+    const occ = i < hc.occupied;
+    cellBlocks.push(`<div style="width:16px;height:16px;border-radius:2px;
+                       background:${occ ? '#64748b' : 'var(--green)'};opacity:${occ ? 1 : 0.35};
+                       border:1px solid rgba(255,255,255,.15);" title="${occ ? 'Occupied' : 'Empty'}"></div>`);
+  }
+
+  // Build suspect rows for all suspects currently held here
+  const holdingSuspects = (hc.suspects || [])
+    .map(id => suspects.find(x => x.id === id))
+    .filter(Boolean);
+
+  // Facility dropdowns — only in-service, non-full facilities
+  const countyJails      = jails.filter(j => j.inService && j.type === 'county_jail'         && j.occupied < j.cells);
+  const stateCorrectional = jails.filter(j => j.inService && j.type === 'state_correctional' && j.occupied < j.cells);
+
+  const tierColors = {
+    summary_offense: 'var(--muted)',
+    misdemeanor:     'var(--gold)',
+    felony:          'var(--accent)',
+    violent_felony:  '#ff4444',
+  };
+
+  const suspectRows = holdingSuspects.length === 0
+    ? '<div class="empty-msg">No suspects currently held.</div>'
+    : holdingSuspects.map(sus => {
+        const tierCfg   = BAM_CONFIG.chargeTiers[sus.chargeTier] || {};
+        const tierColor = tierColors[sus.chargeTier] || 'var(--muted)';
+        const elapsed   = sus.processingStartSec ? Math.max(0, gameSeconds - sus.processingStartSec) : 0;
+        const pctDone   = sus.processingDurationSec
+          ? Math.min(100, Math.round((elapsed / sus.processingDurationSec) * 100)) : 0;
+        const remaining = sus.processingDurationSec
+          ? Math.max(0, sus.processingDurationSec - elapsed) : 0;
+        const barColor  = pctDone >= 90 ? 'var(--green)' : pctDone >= 50 ? 'var(--gold)' : 'var(--muted)';
+
+        const jailOpts = countyJails.length
+          ? countyJails.map(j =>
+              `<option value="${_escHoldingHtml(j.id)}">${_escHoldingHtml(j.name)} (${j.occupied}/${j.cells})</option>`
+            ).join('')
+          : '<option value="">No jails available</option>';
+        const prisonOpts = stateCorrectional.length
+          ? stateCorrectional.map(j =>
+              `<option value="${_escHoldingHtml(j.id)}">${_escHoldingHtml(j.name)} (${j.occupied}/${j.cells})</option>`
+            ).join('')
+          : '<option value="">No prisons available</option>';
+
+        return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:10px 12px;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;">
+            <div>
+              <span style="font-size:.82rem;font-weight:700;">${_escHoldingHtml(sus.id.slice(-8))}</span>
+              <span style="margin-left:8px;font-size:.78rem;border:1px solid ${tierColor};color:${tierColor};
+                           border-radius:10px;padding:1px 7px;text-transform:uppercase;">${tierCfg.label || sus.chargeTier}</span>
+            </div>
+            <span style="font-size:.8rem;color:var(--muted);">${remaining > 0 ? formatETA(remaining) + ' left' : '⏳ processing'}</span>
+          </div>
+          <div class="res-bar-track" style="margin-bottom:9px;">
+            <div class="res-bar-fill" style="width:${pctDone}%;background:${barColor};transition:width 1s linear;"></div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <button class="btn-sm" onclick="_holdingRelease('${sus.id}')">Release</button>
+            <button class="btn-sm" onclick="_holdingCitation('${sus.id}')">📋 Citation</button>
+            <span style="font-size:.78rem;color:var(--muted);margin:0 2px;">Transfer →</span>
+            <select id="hc-jail-${sus.id}" style="font-size:.8rem;padding:3px 6px;"
+                    ${!countyJails.length ? 'disabled' : ''}>${jailOpts}</select>
+            <button class="btn-sm" onclick="_holdingTransfer('${sus.id}','jail')"
+                    ${!countyJails.length ? 'disabled' : ''}>Jail</button>
+            <select id="hc-prison-${sus.id}" style="font-size:.8rem;padding:3px 6px;"
+                    ${!stateCorrectional.length ? 'disabled' : ''}>${prisonOpts}</select>
+            <button class="btn-sm" onclick="_holdingTransfer('${sus.id}','prison')"
+                    ${!stateCorrectional.length ? 'disabled' : ''}>Prison</button>
+          </div>
+        </div>`;
+      }).join('');
+
+  // Add cells section
+  const costPerCell = BAM_CONFIG.holdingCellUpgrade.costPerCell;
+  const cellCountOpts = [1,2,5,10].map(n =>
+    `<option value="${n}">${n} cell${n>1?'s':''} — $${(n * costPerCell).toLocaleString()}</option>`
+  ).join('') + '<option value="custom">Custom…</option>';
+
+  modal.innerHTML = `
+    <div class="modal-box gold-top" style="width:620px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+      <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div>
+          <h2 class="gold">🔒 ${_escHoldingHtml(s.name)}</h2>
+          <div class="modal-sub">
+            <span style="color:${capColor};">${hc.occupied}/${hc.cells} cells</span>
+            &nbsp;·&nbsp; Holding Cells
+          </div>
+        </div>
+        <button class="btn-sm danger" onclick="_closeHoldingCellModal()">✕</button>
+      </div>
+      <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+        <div class="section-title">Cells</div>
+        <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:14px;">${cellBlocks.join('')}</div>
+        <div class="section-title">Suspects (${holdingSuspects.length} held)</div>
+        ${suspectRows}
+        <div class="section-title" style="margin-top:16px;">Add Cells</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <select id="hcm-cell-count" style="font-size:.82rem;padding:5px 8px;">${cellCountOpts}</select>
+          <button class="btn-sm" onclick="_buyHoldingCellsFromModal('${s.id}')">Purchase</button>
+          <span style="font-size:.8rem;color:var(--muted);">$${costPerCell.toLocaleString()} per cell</span>
+        </div>
+        <div id="hcm-custom-cell-row" style="display:none;margin-top:6px;align-items:center;gap:6px;">
+          <input id="hcm-custom-count" type="number" min="1" placeholder="Number of cells"
+                 style="width:150px;padding:5px 8px;font-size:.82rem;"/>
+          <button class="btn-sm" onclick="_buyHoldingCellsCustom('${s.id}')">Buy</button>
+        </div>
+      </div>
+    </div>`;
+
+  // Wire custom-count toggle
+  setTimeout(() => {
+    const sel = document.getElementById('hcm-cell-count');
+    if(sel) sel.addEventListener('change', () => {
+      const row = document.getElementById('hcm-custom-cell-row');
+      if(row) row.style.display = sel.value === 'custom' ? 'flex' : 'none';
+    });
+  }, 0);
+}
+
+// Releases a suspect from holding with no charges. Pays station processing revenue.
+function _holdingRelease(suspectId){
+  const sus = suspects.find(x => x.id === suspectId);
+  const s   = stations.find(x => x.id === _activeHoldingCellStationId);
+  if(!sus || !s) return;
+  _freeStationCell(s, suspectId);
+  releaseSuspect(sus, 'station');
+  setStatus(`Released suspect from ${s.name}.`);
+  _renderHoldingCellModal();
+}
+
+// Issues a citation to a suspect and releases them, marking disposition as 'cited'.
+function _holdingCitation(suspectId){
+  const sus = suspects.find(x => x.id === suspectId);
+  const s   = stations.find(x => x.id === _activeHoldingCellStationId);
+  if(!sus || !s) return;
+  sus.disposition = 'cited';
+  _freeStationCell(s, suspectId);
+  releaseSuspect(sus, 'station');
+  setStatus(`📋 Citation issued — suspect released from ${s.name}.`);
+  _renderHoldingCellModal();
+}
+
+// Dispatches a transport unit to transfer a suspect from holding to a jail or prison.
+// jailOrPrison: 'jail' (county_jail) | 'prison' (state_correctional)
+function _holdingTransfer(suspectId, jailOrPrison){
+  const sus = suspects.find(x => x.id === suspectId);
+  const s   = stations.find(x => x.id === _activeHoldingCellStationId);
+  if(!sus || !s) return;
+
+  const selEl = jailOrPrison === 'jail'
+    ? document.getElementById(`hc-jail-${suspectId}`)
+    : document.getElementById(`hc-prison-${suspectId}`);
+  const facility = jails.find(j => j.id === selEl?.value);
+  if(!facility){
+    setStatus('⚠️ Select a destination facility first.');
+    return;
+  }
+  if(facility.occupied >= facility.cells){
+    setStatus(`⚠️ ${facility.name} is at capacity.`);
+    return;
+  }
+
+  // Free the holding cell, then dispatch a transport unit to the facility.
+  // dispatchPrisonerTransport() finds the nearest available patrol/transport unit
+  // and animates the route from that unit's home station to the jail/prison.
+  _freeStationCell(s, suspectId);
+  sus.status     = 'awaiting_transport';
+  sus.facilityId = facility.id;
+  dispatchPrisonerTransport(sus, facility);
+  _renderHoldingCellModal();
+}
+
+// Purchases holding cells from the modal dropdown.
+function _buyHoldingCellsFromModal(stationId){
+  const sel = document.getElementById('hcm-cell-count');
+  if(!sel || sel.value === 'custom') return;
+  purchaseHoldingCells(stationId, parseInt(sel.value, 10));
+  _renderHoldingCellModal();
+}
+
+// Purchases a custom number of holding cells.
+function _buyHoldingCellsCustom(stationId){
+  const input = document.getElementById('hcm-custom-count');
+  if(!input || !input.value) return;
+  purchaseHoldingCells(stationId, parseInt(input.value, 10));
+  _renderHoldingCellModal();
+}
+
+// HTML escape helper for holding cell modal strings.
+function _escHoldingHtml(str){
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // ── SEED TEST STATIONS ────────────────────────────────────────────────────────
 
 // Places the seed stations from config if no stations exist.

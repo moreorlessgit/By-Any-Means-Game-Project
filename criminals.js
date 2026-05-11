@@ -127,6 +127,7 @@ function bookSuspectAtStation(suspect, stationId){
 // Called every game clock tick from _tickGameClock() in index.html.
 // Handles processing timers for suspects currently held at police station holding cells.
 function tickSuspectProcessing(deltaGameSec){
+  let modalNeedsUpdate = false;
   suspects.forEach(suspect => {
     if(suspect.status !== 'at_station') return;
     if(!suspect.processingStartSec || !suspect.processingDurationSec) return;
@@ -146,7 +147,10 @@ function tickSuspectProcessing(deltaGameSec){
       suspect.status = 'awaiting_transfer';
       _requestJailTransport(suspect);
     }
+    modalNeedsUpdate = true;
   });
+  // Re-render the holding cell modal if it's open and something changed
+  if(modalNeedsUpdate && typeof _renderHoldingCellModal === 'function') _renderHoldingCellModal();
 }
 
 // Removes a suspect from a station holding cell.
