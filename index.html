@@ -32,7 +32,7 @@
     #header{
       display:flex;align-items:center;gap:16px;padding:6px 16px;height:46px;
       background:var(--panel);border-bottom:2px solid var(--accent);
-      flex-shrink:0;z-index:900;position:relative;
+      flex-shrink:0;position:sticky;top:0;z-index:10001;
     }
     .logo{font-family:var(--mono);font-size:1.1rem;letter-spacing:3px;color:var(--accent);}
     .logo span{color:var(--gold);}
@@ -67,15 +67,38 @@
     .tool-btn.esn-btn:hover,.tool-btn.esn-btn.active{border-color:var(--gold);background:rgba(240,165,0,.08);}
     .tool-btn .cost{float:right;font-family:var(--mono);font-size:.8rem;color:var(--muted);}
 
-    /* ── SIDEBAR TABS ── */
-    .sb-tabs{display:flex;border-bottom:1px solid var(--border);}
-    .sb-tab{
-      flex:1;padding:7px 4px;text-align:center;font-size:.8rem;
+    /* ── BUILD PANEL ── */
+    .sb-build-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;margin-bottom:6px;}
+    .sb-build-header:hover .sb-title{color:var(--text);}
+    .build-cat{margin-bottom:2px;}
+    .build-cat-hdr{
+      display:flex;align-items:center;justify-content:space-between;
+      font-size:.78rem;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+      color:var(--muted);cursor:pointer;padding:4px 2px;border-radius:2px;
+      transition:color .15s;
+    }
+    .build-cat-hdr:hover{color:var(--text);}
+    .build-cat-body{padding-left:4px;margin-top:2px;}
+
+    /* ── OPS MODAL TABS ── */
+    .ops-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--panel);}
+    .ops-tab{
+      flex:1;padding:9px 6px;text-align:center;font-size:.8rem;
       letter-spacing:1px;text-transform:uppercase;color:var(--muted);
+      cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;
+      transition:color .15s,border-color .15s;
+    }
+    .ops-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+    .ops-pane{display:flex;flex-direction:column;flex:1;overflow:hidden;}
+    .ops-subtabs{display:flex;border-bottom:1px solid var(--border);}
+    .ops-subtab{
+      flex:1;padding:7px 4px;text-align:center;font-size:.75rem;
+      letter-spacing:.5px;text-transform:uppercase;color:var(--muted);
       cursor:pointer;border-bottom:2px solid transparent;
       transition:color .15s,border-color .15s;
     }
-    .sb-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+    .ops-subtab.active{color:var(--gold);border-bottom-color:var(--gold);}
+    .ops-sub-pane{display:none;flex-direction:column;flex:1;overflow:hidden;}
 
     /* search bar */
     .sb-search{
@@ -204,6 +227,7 @@
     .icard.police{border-left-color:var(--police);}
     .icard.escalated{border-left-color:#ff0;animation:flash .8s infinite alternate;}
     @keyframes flash{from{opacity:1}to{opacity:.6}}
+    @keyframes pulse-btn{0%,100%{opacity:1}50%{opacity:.65}}
     .icard .ihead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:3px;}
     .icard .iname{font-weight:700;font-size:.9rem;}
     .icard .itime{font-family:var(--mono);font-size:.8rem;color:var(--muted);}
@@ -533,59 +557,127 @@
 
   <!-- SIDEBAR -->
   <div id="sidebar">
+    <!-- Cancel Placement button — only active during map placement mode -->
     <div class="sb-section">
-      <div class="sb-title">Build — Stations</div>
-      <button class="tool-btn" id="btn-fire"   onclick="setPlacing('fire')">
-        🔴 Fire Station <span class="cost" id="cost-fire"></span>
-      </button>
-      <button class="tool-btn" id="btn-ems"    onclick="setPlacing('ems')">
-        🔵 EMS Station <span class="cost" id="cost-ems"></span>
-      </button>
-      <button class="tool-btn" id="btn-police" onclick="setPlacing('police')">
-        🟣 Police Station <span class="cost" id="cost-police"></span>
-      </button>
-      <button class="tool-btn" id="btn-helipad_building" onclick="setPlacing('helipad_building')">
-        🚁 Helipad <span class="cost" id="cost-helipad_building"></span>
-      </button>
-      <button class="tool-btn" id="btn-airport_building" onclick="setPlacing('airport_building')">
-        ✈️ Airport / Airfield <span class="cost" id="cost-airport_building"></span>
+      <button id="btn-cancel-placement" class="tool-btn" onclick="setPlacing(null)"
+              style="opacity:.4;pointer-events:none;">
+        ✖ Cancel Placement
       </button>
     </div>
+
+    <!-- BUILD panel — collapsible, one category per station/facility type -->
+    <div class="sb-section" id="build-panel-section">
+      <div class="sb-build-header" onclick="toggleBuildPanel()">
+        <span class="sb-title" style="margin-bottom:0;">Build</span>
+        <span id="build-panel-arrow" style="font-size:.75rem;color:var(--muted);">▼</span>
+      </div>
+      <div id="build-panel-body">
+        <!-- Fire -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('fire')">
+            🔴 Fire <span class="build-cat-arrow" id="bca-fire">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-fire">
+            <button class="tool-btn" id="btn-fire" onclick="setPlacing('fire')">
+              Place Fire Station <span class="cost" id="cost-fire"></span>
+            </button>
+          </div>
+        </div>
+        <!-- EMS -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('ems')">
+            🔵 EMS <span class="build-cat-arrow" id="bca-ems">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-ems">
+            <button class="tool-btn" id="btn-ems" onclick="setPlacing('ems')">
+              Place EMS Station <span class="cost" id="cost-ems"></span>
+            </button>
+          </div>
+        </div>
+        <!-- Police -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('police')">
+            🟣 Police <span class="build-cat-arrow" id="bca-police">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-police">
+            <button class="tool-btn" id="btn-police" onclick="setPlacing('police')">
+              Place Police Station <span class="cost" id="cost-police"></span>
+            </button>
+          </div>
+        </div>
+        <!-- Air -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('air')">
+            🚁 Air <span class="build-cat-arrow" id="bca-air">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-air">
+            <button class="tool-btn" id="btn-helipad_building" onclick="setPlacing('helipad_building')">
+              Place Helipad <span class="cost" id="cost-helipad_building"></span>
+            </button>
+            <button class="tool-btn" id="btn-airport_building" onclick="setPlacing('airport_building')">
+              Place Airport <span class="cost" id="cost-airport_building"></span>
+            </button>
+          </div>
+        </div>
+        <!-- Facilities -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('facilities')">
+            🏥 Facilities <span class="build-cat-arrow" id="bca-facilities">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-facilities">
+            <button class="tool-btn" onclick="setPlacing('hospital')">
+              Place Hospital <span class="cost" id="cost-hospital"></span>
+            </button>
+            <button class="tool-btn" onclick="setPlacing('county_jail')">
+              Place County Jail <span class="cost" id="cost-county_jail"></span>
+            </button>
+            <button class="tool-btn" onclick="setPlacing('state_correctional')">
+              Place State Correctional <span class="cost" id="cost-state_correctional"></span>
+            </button>
+          </div>
+        </div>
+        <!-- Coverage -->
+        <div class="build-cat">
+          <div class="build-cat-hdr" onclick="toggleBuildCat('coverage')">
+            📡 Coverage <span class="build-cat-arrow" id="bca-coverage">▼</span>
+          </div>
+          <div class="build-cat-body" id="bcb-coverage">
+            <button class="tool-btn esn-btn" id="btn-draw-esn" onclick="startDrawESN()">
+              Draw ESN Zone
+            </button>
+            <button class="tool-btn esn-btn" id="btn-dispatch-center" onclick="startPlaceDispatchCenter()">
+              Dispatch Center
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OPERATIONS button -->
     <div class="sb-section">
-      <div class="sb-title">Build — Facilities</div>
-      <button class="tool-btn esn-btn" onclick="setPlacing('hospital')">
-        🏥 Hospital <span class="cost" id="cost-hospital"></span>
-      </button>
-      <button class="tool-btn esn-btn" onclick="setPlacing('county_jail')">
-        🔒 County Jail <span class="cost" id="cost-county_jail"></span>
-      </button>
-      <button class="tool-btn esn-btn" onclick="setPlacing('state_correctional')">
-        ⛓️ State Correctional <span class="cost" id="cost-state_correctional"></span>
-      </button>
-      <button class="tool-btn esn-btn" onclick="openFacilitiesModal()">
-        📋 Facilities List
+      <button class="tool-btn" onclick="openOpsModal()" style="text-align:center;font-weight:700;">
+        📋 Operations
       </button>
     </div>
-    <div class="sb-section">
-      <div class="sb-title">Build — Coverage</div>
-      <button class="tool-btn esn-btn" id="btn-draw-esn" onclick="startDrawESN()">
-        🗺 Draw ESN Zone
-      </button>
-      <button class="tool-btn esn-btn" id="btn-dispatch-center" onclick="startPlaceDispatchCenter()">
-        📡 Dispatch Center
-      </button>
-    </div>
-    <div class="sb-section">
-      <button class="tool-btn active" id="btn-pan" onclick="setPlacing(null)">
-        ✋ Pan / Select
+
+    <!-- TRANSPORT QUEUE button — hidden when queue is empty -->
+    <div class="sb-section" style="padding:6px 12px;">
+      <button id="transport-queue-btn" class="tool-btn" onclick="_openTransportQueueModal()"
+              style="display:none;background:rgba(232,67,26,.12);border-color:var(--accent);color:var(--accent);font-weight:700;animation:pulse-btn 1.5s infinite;">
+        🚔 Transport Queue <span id="transport-queue-badge" style="background:var(--accent);color:#fff;
+          border-radius:10px;padding:1px 8px;margin-left:6px;font-size:.8rem;">0</span>
       </button>
     </div>
+
+    <!-- Actions -->
     <div class="sb-section">
       <div class="sb-title">Actions</div>
       <button class="tool-btn" onclick="openSaveModal()">💾 Save / Load <span style="float:right;font-size:.8rem;color:var(--muted)">Ctrl+S</span></button>
       <button class="tool-btn" onclick="spawnIncident(true)">🚨 Spawn Test Call</button>
       <button class="tool-btn" onclick="newGame()" style="color:var(--muted);border-color:rgba(90,100,120,.5);">🆕 New Game</button>
     </div>
+
+    <!-- Dev Tools -->
     <div class="sb-section">
       <div class="sb-title">Dev Tools</div>
       <div style="display:flex;gap:5px;">
@@ -600,54 +692,97 @@
         <button class="btn-sm" style="flex:1;" onclick="updateMoney(100000)">+$100k</button>
       </div>
     </div>
+  </div>
 
-    <!-- SIDEBAR TABS -->
-    <div class="sb-tabs">
-      <div class="sb-tab active" id="sbtab-stations" onclick="switchSBTab('stations')">Stations</div>
-      <div class="sb-tab" id="sbtab-esns"     onclick="switchSBTab('esns')">DCs &amp; ESNs</div>
-      <div class="sb-tab" id="sbtab-plans"    onclick="switchSBTab('plans')">Plans</div>
-    </div>
-
-    <!-- STATIONS TAB -->
-    <div id="sb-stations-pane">
-      <div class="sb-search">
-        <input type="text" id="station-search" placeholder="Search stations…"
-               oninput="renderStationList()"/>
+  <!-- ═══════ OPERATIONS MODAL ══════════════════════════════════════════════════ -->
+  <!-- All station, facility, DC/ESN/plan lists live here; render functions target -->
+  <!-- the same element IDs as before — they work whether the modal is open or not. -->
+  <div id="ops-modal" class="modal-overlay" onclick="if(event.target===this)closeOpsModal()">
+    <div class="modal-box" style="width:700px;max-width:96vw;max-height:90vh;display:flex;flex-direction:column;">
+      <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+        <h2>Operations</h2>
+        <button class="btn-sm danger" onclick="closeOpsModal()">✕</button>
       </div>
-      <div class="sb-scroll" id="station-scroll">
-        <div class="empty-msg">No stations yet.<br>Select a type above and click the map.</div>
+      <!-- Top-level tab bar -->
+      <div class="ops-tabs" style="flex-shrink:0;">
+        <div class="ops-tab active" id="opstab-stations"    onclick="switchOpsTab('stations')">Stations</div>
+        <div class="ops-tab"        id="opstab-facilities"  onclick="switchOpsTab('facilities')">Facilities</div>
+        <div class="ops-tab"        id="opstab-operations"  onclick="switchOpsTab('operations')">Operations</div>
       </div>
-    </div>
-
-    <!-- ESNs TAB -->
-    <div id="sb-esns-pane" style="display:none;flex:1;display:none;flex-direction:column;overflow:hidden;">
-      <!-- DC section at top of ESN tab — collapsible, click a DC card to filter ESN list -->
-      <div style="border-bottom:1px solid var(--border);">
-        <div style="padding:6px 12px 4px;display:flex;align-items:center;justify-content:space-between;">
-          <div class="sb-title" style="margin-bottom:0;">Dispatch Centers</div>
-          <button class="dc-collapse-btn" id="dc-collapse-btn" onclick="toggleDCSection()" title="Collapse/expand">▲</button>
+      <!-- ── Stations pane ── -->
+      <div id="ops-pane-stations" class="ops-pane" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+        <div class="sb-search" style="flex-shrink:0;">
+          <input type="text" id="station-search" placeholder="Search stations…" oninput="renderStationList()"/>
         </div>
-        <div id="dc-section-body" style="padding:0 12px 8px;">
-          <div id="dc-list"><div class="empty-msg">No dispatch centers placed yet.</div></div>
+        <div class="sb-scroll" id="station-scroll">
+          <div class="empty-msg">No stations yet. Use the Build panel to place your first station.</div>
         </div>
       </div>
-      <div class="sb-search">
-        <input type="text" id="esn-search" placeholder="Search ESN zones…"
-               oninput="renderESNList()"/>
+      <!-- ── Facilities pane ── -->
+      <div id="ops-pane-facilities" class="ops-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+        <div style="padding:10px 14px;flex-shrink:0;display:flex;gap:8px;border-bottom:1px solid var(--border);">
+          <button class="btn-sm" onclick="openFacilitiesModal()">📋 Manage All Facilities</button>
+        </div>
+        <div class="sb-scroll" id="ops-facilities-scroll">
+          <div class="empty-msg">Open Manage All Facilities to see hospitals and jails.</div>
+        </div>
       </div>
-      <div class="sb-scroll" id="esn-scroll">
-        <div class="empty-msg">No ESN zones yet.<br>Click "Draw ESN Zone" and draw on the map.</div>
-      </div>
-    </div>
-
-    <!-- PLANS TAB -->
-    <div id="sb-plans-pane" style="display:none;flex:1;flex-direction:column;overflow:hidden;">
-      <div class="sb-scroll" id="plans-scroll">
-        <div class="plans-section-title">Response Plans</div>
-        <button class="btn-sm" style="width:100%;margin-bottom:8px;" onclick="openResponsePlanModal()">+ New Response Plan</button>
-        <div id="rp-list"><div class="empty-msg">No response plans yet.</div></div>
-        <div class="plans-section-title" style="margin-top:14px;">Box Alarms</div>
-        <div id="ba-list"><div class="empty-msg">No box alarms yet.<br>Open an ESN and click "+ Box Alarm".</div></div>
+      <!-- ── Operations pane ── -->
+      <div id="ops-pane-operations" class="ops-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+        <!-- Sub-tab bar -->
+        <div class="ops-subtabs" style="flex-shrink:0;">
+          <div class="ops-subtab active" id="ops-stab-dcs"       onclick="switchOpsSubTab('dcs')">Dispatch Centers</div>
+          <div class="ops-subtab"        id="ops-stab-esns"      onclick="switchOpsSubTab('esns')">ESN Zones</div>
+          <div class="ops-subtab"        id="ops-stab-plans"     onclick="switchOpsSubTab('plans')">Response Plans</div>
+          <div class="ops-subtab"        id="ops-stab-boxalarms" onclick="switchOpsSubTab('boxalarms')">Box Alarms</div>
+        </div>
+        <!-- DC sub-pane -->
+        <div id="ops-sub-dcs" class="ops-sub-pane" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+          <div style="padding:6px 12px 4px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid var(--border);">
+            <div class="sb-title" style="margin-bottom:0;">Dispatch Centers</div>
+            <button class="dc-collapse-btn" id="dc-collapse-btn" onclick="toggleDCSection()" title="Collapse/expand">▲</button>
+          </div>
+          <div id="dc-section-body" style="padding:0 12px 8px;flex-shrink:0;border-bottom:1px solid var(--border);">
+            <div id="dc-list"><div class="empty-msg">No dispatch centers placed yet.</div></div>
+          </div>
+          <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);">
+            <input type="text" id="esn-search" placeholder="Search ESN zones…" style="width:100%;" oninput="renderESNList()"/>
+          </div>
+          <div class="sb-scroll" id="esn-scroll">
+            <div class="empty-msg">No ESN zones yet.</div>
+          </div>
+        </div>
+        <!-- ESNs sub-pane (alias — same list visible in DC sub-pane via filter; this just focuses ESN list) -->
+        <div id="ops-sub-esns" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+          <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);">
+            <input type="text" id="esn-search-2" placeholder="Search ESN zones…" style="width:100%;"
+                   oninput="document.getElementById('esn-search').value=this.value;renderESNList()"/>
+          </div>
+          <div class="sb-scroll" id="esn-scroll-2" style="flex:1;overflow-y:auto;padding:8px 12px;">
+            <!-- mirrors #esn-scroll via renderESNList2 -->
+          </div>
+        </div>
+        <!-- Plans sub-pane -->
+        <div id="ops-sub-plans" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+          <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);display:flex;gap:6px;">
+            <input type="text" id="rp-search" placeholder="Search response plans…" style="flex:1;"
+                   oninput="_filterRPSearch(this.value)"/>
+            <button class="btn-sm" onclick="openResponsePlanModal()">+ New Plan</button>
+          </div>
+          <div class="sb-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
+            <div id="rp-list"><div class="empty-msg">No response plans yet.</div></div>
+          </div>
+        </div>
+        <!-- Box Alarms sub-pane -->
+        <div id="ops-sub-boxalarms" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+          <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);">
+            <input type="text" id="ba-search" placeholder="Search box alarms…" style="width:100%;"
+                   oninput="_filterBASearch(this.value)"/>
+          </div>
+          <div class="sb-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
+            <div id="ba-list"><div class="empty-msg">No box alarms yet.</div></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -849,7 +984,9 @@
       <input type="text" id="dc-name-input" placeholder="e.g. Susquehanna Co. 911"
              onkeydown="if(event.key==='Enter') confirmDCModal()"/>
       <div class="section-title" style="margin-top:14px;">Assign ESN Zones</div>
-      <div id="dc-esn-checkboxes"></div>
+      <input type="text" id="dc-esn-search" placeholder="Search ESNs…" style="margin-bottom:6px;width:100%;"
+             oninput="_filterDCESNSearch(this.value)"/>
+      <div id="dc-esn-checkboxes" style="max-height:200px;overflow-y:auto;"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeDCModal()">Cancel</button>
@@ -914,7 +1051,7 @@
 
       <div class="section-title" style="margin-top:14px;">Unit Requirements</div>
       <div id="ba-req-rows"></div>
-      <button class="btn-sm" style="margin-top:4px;" onclick="_addBAReqRow()">+ Add Unit</button>
+      <button class="btn-sm" style="margin-top:6px;" onclick="_addBASlot()">+ Add Slot</button>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeBoxAlarmModal()">Cancel</button>
@@ -1027,6 +1164,7 @@ let selectedUnitsForDispatch = new Set();
 let responsePlans = [];  // { id, name, requirements: [['engine'], ...] }
 let _activeTransportRows = [];  // per-row assignments in Transport tab
 let _activeDMTab = 'dispatch';  // 'dispatch' | 'transport' — active tab in dispatch modal
+let pendingTransports = [];     // [{id, suspect, facility, queuedAt}] — awaiting player dispatch assignment
 
 // ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
 let gameSpeed   = 1;            // 0 = paused, 1 = real-time, 60 = 1 game-min per real-sec
@@ -1089,18 +1227,78 @@ function logCashflow(amount, label){
   if(cfModal?.classList.contains('open')) renderCashflowModal();
 }
 
-// ── SIDEBAR TABS ──────────────────────────────────────────────────────────────
-function switchSBTab(tab){
-  ['stations','esns','plans'].forEach(t => {
-    document.getElementById('sbtab-'+t).classList.toggle('active', t===tab);
-    const pane = document.getElementById('sb-'+t+'-pane');
+// ── BUILD PANEL ───────────────────────────────────────────────────────────────
+
+let _buildPanelCollapsed = false;
+
+function toggleBuildPanel(){
+  _buildPanelCollapsed = !_buildPanelCollapsed;
+  document.getElementById('build-panel-body').style.display = _buildPanelCollapsed ? 'none' : '';
+  document.getElementById('build-panel-arrow').textContent = _buildPanelCollapsed ? '▶' : '▼';
+}
+
+const _buildCatCollapsed = {};  // category id → boolean
+
+function toggleBuildCat(cat){
+  _buildCatCollapsed[cat] = !_buildCatCollapsed[cat];
+  document.getElementById('bcb-'+cat).style.display = _buildCatCollapsed[cat] ? 'none' : '';
+  document.getElementById('bca-'+cat).textContent   = _buildCatCollapsed[cat] ? '▶' : '▼';
+}
+
+// ── OPERATIONS MODAL ──────────────────────────────────────────────────────────
+
+let _activeOpsTab    = 'stations';
+let _activeOpsSubTab = 'dcs';
+
+function openOpsModal(tab, subTab){
+  document.getElementById('ops-modal').classList.add('open');
+  switchOpsTab(tab || _activeOpsTab || 'stations');
+}
+
+function closeOpsModal(){
+  document.getElementById('ops-modal').classList.remove('open');
+}
+
+function switchOpsTab(tab){
+  _activeOpsTab = tab;
+  ['stations','facilities','operations'].forEach(t => {
+    document.getElementById('opstab-'+t).classList.toggle('active', t===tab);
+    const pane = document.getElementById('ops-pane-'+t);
     if(pane) pane.style.display = t===tab ? 'flex' : 'none';
   });
-  // Ensure the active pane shows as flex column
-  const active = document.getElementById('sb-'+tab+'-pane');
-  if(active) active.style.flexDirection = 'column';
-  if(tab === 'plans') { renderResponsePlanList(); renderBoxAlarmList(); }
-  if(tab === 'esns')  renderESNList();
+  if(tab === 'stations')   renderStationList();
+  if(tab === 'operations'){ renderDCList(); renderESNList(); }
+}
+
+function switchOpsSubTab(sub){
+  _activeOpsSubTab = sub;
+  ['dcs','esns','plans','boxalarms'].forEach(s => {
+    document.getElementById('ops-stab-'+s).classList.toggle('active', s===sub);
+    const pane = document.getElementById('ops-sub-'+s);
+    if(pane) pane.style.display = s===sub ? 'flex' : 'none';
+  });
+  if(sub === 'dcs')       { renderDCList(); renderESNList(); }
+  if(sub === 'esns')      renderESNList();
+  if(sub === 'plans')     renderResponsePlanList();
+  if(sub === 'boxalarms') renderBoxAlarmList();
+}
+
+// Response plan and box alarm search filters for the ops modal
+function _filterRPSearch(q){
+  const lq = q.toLowerCase();
+  document.querySelectorAll('#rp-list .plan-card').forEach(card => {
+    const name = card.querySelector('.plan-name')?.textContent.toLowerCase() || '';
+    card.style.display = name.includes(lq) ? '' : 'none';
+  });
+}
+
+function _filterBASearch(q){
+  const lq = q.toLowerCase();
+  document.querySelectorAll('#ba-list .plan-card').forEach(card => {
+    const name = card.querySelector('.plan-name')?.textContent.toLowerCase() || '';
+    const meta = card.querySelector('.plan-meta')?.textContent.toLowerCase() || '';
+    card.style.display = (name+meta).includes(lq) ? '' : 'none';
+  });
 }
 
 // ── PLACING MODE ──────────────────────────────────────────────────────────────
@@ -1109,8 +1307,22 @@ function switchSBTab(tab){
 function setPlacing(type){
   placingType = type;
   document.querySelectorAll('.tool-btn:not(.esn-btn)').forEach(b => b.classList.remove('active'));
-  const key = type ? 'btn-'+type : 'btn-pan';
-  document.getElementById(key)?.classList.add('active');
+  if(type){
+    document.getElementById('btn-'+type)?.classList.add('active');
+  }
+  // Cancel Placement button: active (clickable, full opacity) when placing; inactive otherwise
+  const cancelBtn = document.getElementById('btn-cancel-placement');
+  if(cancelBtn){
+    if(type){
+      cancelBtn.style.opacity = '1';
+      cancelBtn.style.pointerEvents = 'auto';
+      cancelBtn.classList.add('active');
+    } else {
+      cancelBtn.style.opacity = '.4';
+      cancelBtn.style.pointerEvents = 'none';
+      cancelBtn.classList.remove('active');
+    }
+  }
   map.getContainer().style.cursor = type ? 'crosshair' : '';
   if(type){
     const isFacility = !!BAM_CONFIG.facilityPlacementCost?.[type];
@@ -1456,7 +1668,9 @@ function renderDispatchBody(inc, mCfg){
   if(applicableAlarms.length){
     html += `<div class="section-title">Box Alarms</div>`;
     applicableAlarms.forEach(ba => {
-      const reqs = ba.requirements.map(r=>r.join('/')).join(' + ');
+      const reqs = typeof _baReqsLabel === 'function'
+        ? _baReqsLabel(ba.requirements)
+        : ba.requirements.map(r => Array.isArray(r) ? r.join('/') : (r.prefs?.map(p=>p.tag||p.name).join('→')||'?')).join(' + ');
       html += `<div class="dm-ba-card">
         <div class="dm-ba-name">${ba.name}</div>
         <div class="dm-ba-reqs">${reqs}</div>
@@ -1536,8 +1750,10 @@ function renderDispatchBody(inc, mCfg){
   body.innerHTML = html;
 }
 
-// Applies a set of tag requirements to the dispatch selection,
-// picking the closest available unit for each requirement group.
+// Applies a set of requirements to the dispatch selection.
+// Handles both old format ([['engine'], ['als']]) and new ordered-preference format
+// ([{ prefs: [{type:'unit', id, name}, {type:'tag', tag}] }]).
+// For each slot, iterates prefs in order and selects the first available match.
 function applyAutoDispatch(requirements){
   const inc = incidents.find(x=>x.id===activeDispatchId);
   if(!inc) return;
@@ -1550,15 +1766,30 @@ function applyAutoDispatch(requirements){
     }))
     .sort((a,b)=>a.dist-b.dist);
 
-  const used = new Set(); // track units already selected in this pass
-  requirements.forEach(reqGroup => {
-    const match = sorted.find(({unit}) =>
-      !used.has(unit.id) &&
-      reqGroup.some(tag => BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(tag))
-    );
-    if(match){
-      selectedUnitsForDispatch.add(match.unit.id);
-      used.add(match.unit.id);
+  const used = new Set();
+  requirements.forEach(slot => {
+    // Normalize slot: old format ['tag1','tag2'] → {prefs:[{type:'tag',tag:'tag1'},…]}
+    const prefs = slot?.prefs
+      ? slot.prefs
+      : (Array.isArray(slot) ? slot.map(tag => ({type:'tag', tag})) : []);
+
+    for(const pref of prefs){
+      let match;
+      if(pref.type === 'unit'){
+        // Specific unit preference
+        match = sorted.find(({unit}) => unit.id === pref.id && !used.has(unit.id));
+      } else {
+        // Tag fallback
+        match = sorted.find(({unit}) =>
+          !used.has(unit.id) &&
+          BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(pref.tag)
+        );
+      }
+      if(match){
+        selectedUnitsForDispatch.add(match.unit.id);
+        used.add(match.unit.id);
+        break; // found a match for this slot — stop trying prefs
+      }
     }
   });
 
@@ -2356,24 +2587,30 @@ function onTransportArrived(unit, hospital){
   setStatus(`🏥 ${unit.name} offloading at ${hospital.name}`);
 }
 
-// Dispatches a prisoner transport unit to a jail/prison. Called from criminals.js.
-function dispatchPrisonerTransport(suspect, facility){
-  const station = stations.find(s => s.id === suspect.holdingStationId);
-  const fromLat = station?.lat || 0;
-  const fromLng = station?.lng || 0;
-  const transportUnits = getAllUnits().filter(({unit}) => {
-    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
-    return (tags.includes('transport_prisoner')||tags.includes('patrol'))
-      && unit.status === 'available' && unit.inService !== false;
-  }).sort((a,b) =>
-    haversineKm(a.station.lat,a.station.lng,fromLat,fromLng) -
-    haversineKm(b.station.lat,b.station.lng,fromLat,fromLng)
-  );
-  if(!transportUnits.length){
-    setStatus(`⚠️ No transport unit available — suspect held pending transfer`);
-    return;
+// Dispatches a prisoner transport unit to a jail/prison.
+// preferredUnit: optional {unit, station} from the transport dispatch modal.
+// If omitted, the nearest available patrol/transport unit is used (legacy behavior).
+function dispatchPrisonerTransport(suspect, facility, preferredUnit=null){
+  let unitEntry = preferredUnit;
+  if(!unitEntry){
+    const station = stations.find(s => s.id === suspect.holdingStationId);
+    const fromLat = station?.lat || facility.lat;
+    const fromLng = station?.lng || facility.lng;
+    const transportUnits = getAllUnits().filter(({unit}) => {
+      const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
+      return (tags.includes('transport_prisoner')||tags.includes('patrol'))
+        && unit.status === 'available' && unit.inService !== false;
+    }).sort((a,b) =>
+      haversineKm(a.station.lat,a.station.lng,fromLat,fromLng) -
+      haversineKm(b.station.lat,b.station.lng,fromLat,fromLng)
+    );
+    if(!transportUnits.length){
+      setStatus(`⚠️ No transport unit available — suspect held pending transfer`);
+      return;
+    }
+    unitEntry = transportUnits[0];
   }
-  const {unit, station:unitStation} = transportUnits[0];
+  const {unit, station:unitStation} = unitEntry;
   const distKm = haversineKm(unitStation.lat, unitStation.lng, facility.lat, facility.lng);
   unit.transportDistanceMi = distKm * 0.621371;
   unit.transportSuspect = suspect.id;
@@ -2384,6 +2621,211 @@ function dispatchPrisonerTransport(suspect, facility){
   suspect.status = 'in_transport';
   routeToPrison(unit, unitStation, facility, suspect);
   setStatus(`🚔 ${unit.name} transporting prisoner to ${facility.name}`);
+}
+
+// ── TRANSPORT DISPATCH QUEUE ──────────────────────────────────────────────────
+
+// Adds a suspect/prisoner to the pending transport queue and updates the badge.
+// Called by criminals.js (_requestJailTransport) and prisons.js (transferPrisoner)
+// instead of immediately dispatching a unit.
+function queuePrisonerTransport(suspect, facility){
+  suspect.status = 'needs_transport';
+  pendingTransports.push({
+    id:        'pt_' + Date.now() + '_' + Math.random().toString(36).slice(2,5),
+    suspect,
+    facility,
+    queuedAt:  gameSeconds,
+  });
+  renderPendingTransportBadge();
+  setStatus(`⚠️ Prisoner needs transport to ${facility.name} — check Transport Queue`);
+}
+
+// Updates the transport queue button badge count and visibility.
+function renderPendingTransportBadge(){
+  const btn  = document.getElementById('transport-queue-btn');
+  const badge= document.getElementById('transport-queue-badge');
+  if(!btn) return;
+  const count = pendingTransports.length;
+  btn.style.display = count > 0 ? '' : 'none';
+  if(badge) badge.textContent = count;
+}
+
+// Opens the unit-selection modal for a single pending transport entry.
+// Called from the transport queue modal's "Assign Unit" button per row,
+// and directly from stations.js (_holdingTransfer) for manual transfers.
+function _openTransportDispatchModal(suspect, facility){
+  // Remove from queue if present (modal opened directly for manual transfers too)
+  pendingTransports = pendingTransports.filter(pt => pt.suspect.id !== suspect.id);
+  renderPendingTransportBadge();
+
+  // Find the holding/source location for distance sorting
+  const srcStation = stations.find(s => s.id === (suspect.holdingStationId || suspect.facilityId));
+  const fromLat = srcStation?.lat ?? facility.lat;
+  const fromLng = srcStation?.lng ?? facility.lng;
+
+  const available = getAllUnits().filter(({unit}) => {
+    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
+    return (tags.includes('transport_prisoner') || tags.includes('patrol'))
+      && unit.status === 'available' && unit.inService !== false;
+  }).sort((a,b) =>
+    haversineKm(a.station.lat, a.station.lng, fromLat, fromLng) -
+    haversineKm(b.station.lat, b.station.lng, fromLat, fromLng)
+  );
+
+  const tierCfg   = BAM_CONFIG.chargeTiers[suspect.chargeTier] || {};
+  const tierColors = {
+    summary_offense:'var(--muted)', misdemeanor:'var(--gold)',
+    felony:'var(--accent)', violent_felony:'#ff4444',
+  };
+  const tierColor = tierColors[suspect.chargeTier] || 'var(--muted)';
+
+  const unitRows = available.length === 0
+    ? '<div class="empty-msg" style="padding:12px 0;">No transport or patrol units available.</div>'
+    : available.map(({unit, station:us}) => {
+        const distKm  = haversineKm(us.lat, us.lng, facility.lat, facility.lng);
+        const distMi  = (distKm * 0.621371).toFixed(1);
+        const uTypeCfg = BAM_CONFIG.unitTypes[unit.typeKey] || {};
+        const speedMph = uTypeCfg.speedMph || 60;
+        const etaSec  = (distKm / (speedMph * 1.60934)) * 3600;
+        return `<div style="display:flex;align-items:center;justify-content:space-between;
+                             padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:6px;gap:8px;">
+          <div>
+            <div style="font-weight:700;font-size:.85rem;">${unit.name}</div>
+            <div style="font-size:.77rem;color:var(--muted);">${us.name} · ${distMi} mi · ETA ${formatETA(Math.round(etaSec))}</div>
+          </div>
+          <button class="btn-sm" onclick="_dispatchTransportUnit('${unit.id}','${us.id}','${suspect.id}','${facility.id}')">
+            Dispatch
+          </button>
+        </div>`;
+      }).join('');
+
+  let modal = document.getElementById('transport-dispatch-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'transport-dispatch-modal';
+    modal.className = 'modal-overlay';
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="modal-box" style="width:520px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;">
+      <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div>
+          <h2>🚔 Assign Transport Unit</h2>
+          <div class="modal-sub">
+            Suspect <b>${suspect.id.slice(-8)}</b>
+            <span style="margin-left:8px;font-size:.75rem;border:1px solid ${tierColor};color:${tierColor};
+                         border-radius:10px;padding:1px 6px;text-transform:uppercase;">${tierCfg.label||suspect.chargeTier}</span>
+            ${suspect.incidentLabel ? `<span style="margin-left:6px;color:var(--muted);font-size:.77rem;">${suspect.incidentLabel}</span>` : ''}
+            &nbsp;→&nbsp; <b>${facility.name}</b>
+          </div>
+        </div>
+        <button class="btn-sm danger" onclick="_dismissTransportDispatch('${suspect.id}','${facility.id}')">Dismiss</button>
+      </div>
+      <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+        <div class="section-title" style="margin-bottom:10px;">Available Units (${available.length})</div>
+        ${unitRows}
+      </div>
+    </div>`;
+  modal.classList.add('open');
+  // Close on backdrop click
+  modal.onclick = e => { if(e.target === modal) _dismissTransportDispatch(suspect.id, facility.id); };
+}
+
+// Called by the "Dispatch" button in the transport dispatch modal.
+function _dispatchTransportUnit(unitId, stationId, suspectId, facilityId){
+  const unitEntry = getAllUnits().find(({unit}) => unit.id === unitId);
+  const suspect   = suspects.find(x => x.id === suspectId);
+  const facility  = jails.find(x => x.id === facilityId);
+  if(!unitEntry || !suspect || !facility){ setStatus('⚠️ Dispatch failed — unit or facility missing.'); return; }
+  document.getElementById('transport-dispatch-modal')?.classList.remove('open');
+  dispatchPrisonerTransport(suspect, facility, unitEntry);
+  // If transport queue modal is open, refresh it
+  const qModal = document.getElementById('transport-queue-modal');
+  if(qModal?.classList.contains('open')) _openTransportQueueModal();
+}
+
+// Called by the "Dismiss" button — returns suspect to queue without dispatching.
+function _dismissTransportDispatch(suspectId, facilityId){
+  const suspect  = suspects.find(x => x.id === suspectId);
+  const facility = jails.find(x => x.id === facilityId);
+  document.getElementById('transport-dispatch-modal')?.classList.remove('open');
+  // Re-add to queue if suspect still needs transport
+  if(suspect && facility && suspect.status === 'needs_transport'){
+    if(!pendingTransports.find(pt => pt.suspect.id === suspectId)){
+      pendingTransports.push({ id:'pt_'+Date.now(), suspect, facility, queuedAt:gameSeconds });
+    }
+    renderPendingTransportBadge();
+  }
+  // Re-open queue modal if it was open
+  const qModal = document.getElementById('transport-queue-modal');
+  if(qModal?.classList.contains('open')) _openTransportQueueModal();
+}
+
+// Opens the transport queue modal listing all pending transports.
+function _openTransportQueueModal(){
+  let modal = document.getElementById('transport-queue-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'transport-queue-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) modal.classList.remove('open'); });
+    document.body.appendChild(modal);
+  }
+
+  const tierColors = {
+    summary_offense:'var(--muted)', misdemeanor:'var(--gold)',
+    felony:'var(--accent)', violent_felony:'#ff4444',
+  };
+
+  const rows = pendingTransports.length === 0
+    ? '<div class="empty-msg">No pending transports.</div>'
+    : pendingTransports.map(pt => {
+        const sus = pt.suspect;
+        const tierCfg  = BAM_CONFIG.chargeTiers[sus.chargeTier] || {};
+        const tierColor = tierColors[sus.chargeTier] || 'var(--muted)';
+        const srcSt = stations.find(s => s.id === sus.holdingStationId);
+        const waitSec = Math.max(0, gameSeconds - (pt.queuedAt || gameSeconds));
+        return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;
+                             padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;
+                             justify-content:space-between;gap:10px;">
+          <div>
+            <div style="font-weight:700;font-size:.84rem;">
+              ${sus.id.slice(-8)}
+              <span style="margin-left:7px;font-size:.75rem;border:1px solid ${tierColor};color:${tierColor};
+                           border-radius:10px;padding:1px 6px;text-transform:uppercase;">${tierCfg.label||sus.chargeTier}</span>
+            </div>
+            ${sus.incidentLabel ? `<div style="font-size:.77rem;color:var(--muted);margin-top:1px;">${sus.incidentLabel}</div>` : ''}
+            <div style="font-size:.77rem;color:var(--muted);margin-top:2px;">
+              ${srcSt ? srcSt.name + ' →' : ''} <b>${pt.facility.name}</b>
+              &nbsp;·&nbsp; waiting ${formatETA(waitSec)}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button class="btn-sm" onclick="modal.classList.remove('open');_openTransportDispatchModal(pendingTransports.find(p=>p.id==='${pt.id}')?.suspect||suspects.find(x=>x.id==='${sus.id}'),jails.find(x=>x.id==='${pt.facility.id}'))">
+              Assign Unit
+            </button>
+            <button class="btn-sm danger" onclick="_removeFromTransportQueue('${pt.id}')">Dismiss</button>
+          </div>
+        </div>`;
+      }).join('');
+
+  modal.innerHTML = `
+    <div class="modal-box" style="width:560px;max-width:95vw;max-height:85vh;display:flex;flex-direction:column;">
+      <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;">
+        <h2>🚔 Transport Queue <span style="font-size:.9rem;font-weight:400;color:var(--muted);">(${pendingTransports.length})</span></h2>
+        <button class="btn-sm danger" onclick="document.getElementById('transport-queue-modal').classList.remove('open')">✕</button>
+      </div>
+      <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">${rows}</div>
+    </div>`;
+  modal.classList.add('open');
+}
+
+// Removes a transport entry from the queue without dispatching.
+// The suspect stays in 'needs_transport' status — effectively on hold.
+function _removeFromTransportQueue(ptId){
+  pendingTransports = pendingTransports.filter(pt => pt.id !== ptId);
+  renderPendingTransportBadge();
+  _openTransportQueueModal();
 }
 
 // Routes a police/transport unit to a jail/prison with a prisoner.
@@ -2667,6 +3109,7 @@ function onSceneCleared(incId){
   if(mCfg.chargeTiers){
     const suspect = createSuspect(inc.id, mCfg);
     if(suspect){
+      suspect.incidentLabel = inc.label;
       const arrestUnit = inc.units.map(uid => getAllUnits().find(u => u.unit.id === uid))
         .filter(Boolean)
         .find(({unit}) => BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes('patrol'));
@@ -2937,7 +3380,7 @@ function loadSettings(){
   }catch(e){}
 }
 
-// Collapses or expands the DC section in the DCs & ESNs sidebar tab.
+// Collapses or expands the DC section in the Operations modal (Dispatch Centers sub-tab).
 function toggleDCSection(){
   const body = document.getElementById('dc-section-body');
   const btn  = document.getElementById('dc-collapse-btn');
@@ -3113,6 +3556,26 @@ function _buildUnitTooltipText(unit){
   }
 }
 
+// Updates holding-cell modal progress bars and remaining time text in-place each tick.
+// IDs are set by _renderHoldingCellModal() in stations.js.
+function _updateHoldingCellModal(){
+  if(typeof _activeHoldingCellStationId === 'undefined' || !_activeHoldingCellStationId) return;
+  const modal = document.getElementById('holding-cell-modal');
+  if(!modal?.classList.contains('open')) return;
+  (suspects||[]).forEach(sus => {
+    if(sus.status !== 'at_station') return;
+    const elapsed = Math.max(0, gameSeconds - (sus.processingStartSec||0));
+    const pct = sus.processingDurationSec
+      ? Math.min(100, Math.round((elapsed / sus.processingDurationSec) * 100)) : 0;
+    const rem = sus.processingDurationSec ? Math.max(0, sus.processingDurationSec - elapsed) : 0;
+    const barColor = pct >= 90 ? 'var(--green)' : pct >= 50 ? 'var(--gold)' : 'var(--muted)';
+    const barEl = document.getElementById('hcm-bar-' + sus.id);
+    const remEl = document.getElementById('hcm-rem-' + sus.id);
+    if(barEl){ barEl.style.width = pct + '%'; barEl.style.background = barColor; }
+    if(remEl) remEl.textContent = rem > 0 ? formatETA(rem) + ' left' : '⏳ processing';
+  });
+}
+
 // Updates Leaflet tooltip content for all units with active markers.
 function _updateUnitTooltips(){
   getAllUnits().forEach(({unit})=>{
@@ -3258,6 +3721,7 @@ function _tickGameClock(){
   // Live UI updates — run every tick regardless of pause state
   _updateDispatchStabBars();
   _updateHospitalProgressBars();
+  _updateHoldingCellModal();
   _updateUnitTooltips();
 }
 
@@ -3304,7 +3768,8 @@ function newGame(){
   jails.forEach(j=>j.marker?.remove()); jails=[];
   // Reset all state including Phase 3
   stations=[]; incidents=[]; callLog=[]; responsePlans=[];
-  cashflowLog=[]; suspects=[];
+  cashflowLog=[]; suspects=[]; pendingTransports=[];
+  renderPendingTransportBadge();
   money=BAM_CONFIG.economy.startingMoney;
   resolvedCount=0; gameDay=1; gameSeconds=8*3600;
   // Refresh UI
@@ -3566,6 +4031,17 @@ function loadFromSlot(name){
     loadJailData(data.jails||[]);
     loadSuspectData(data.suspects||[]);
 
+    // Rebuild pending transport queue from suspects left in needs_transport status
+    pendingTransports = [];
+    suspects.filter(s => s.status === 'needs_transport').forEach(sus => {
+      const facility = jails.find(j => j.id === sus.facilityId);
+      if(facility) pendingTransports.push({
+        id: 'pt_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),
+        suspect: sus, facility, queuedAt: gameSeconds,
+      });
+    });
+    renderPendingTransportBadge();
+
     localStorage.setItem(LAST_SLOT_KEY,name);
     updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
     renderResponsePlanList(); renderBoxAlarmList(); _tickGameClock();
@@ -3693,9 +4169,6 @@ if(!loaded) seedTestData();
 updateMoney(0);
 renderIncidentList(); renderStats();
 _tickGameClock();
-// Show stations pane by default (flex layout)
-document.getElementById('sb-stations-pane').style.display = 'flex';
-document.getElementById('sb-stations-pane').style.flexDirection = 'column';
 setPlacing(null);
 scheduleNextSpawn();
 setStatus('SYSTEM READY — Draw ESN zones for call spawning · Ctrl+S to save');

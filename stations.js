@@ -304,7 +304,12 @@ function _renderManageBody(){
     const utCfg = BAM_CONFIG.unitTypes[u.typeKey];
     const statusBadge = u.status !== 'available'
       ? `<span style="font-size:.6rem;color:var(--gold);">${u.status.replace('_',' ').toUpperCase()}</span>` : '';
-    html += `<div class="manage-unit-row">
+    html += `<div class="manage-unit-row" draggable="true" data-unit-id="${u.id}"
+               ondragstart="_unitDragStart(event)"
+               ondragover="_unitDragOver(event)"
+               ondrop="_unitDrop(event,'${s.id}')"
+               style="cursor:grab;">
+      <span style="font-size:.9rem;color:var(--muted);margin-right:4px;cursor:grab;" title="Drag to reorder">⠿</span>
       <div class="manage-unit-name">
         <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
       </div>
@@ -670,11 +675,12 @@ function _renderHoldingCellModal(){
               <span style="font-size:.82rem;font-weight:700;">${_escHoldingHtml(sus.id.slice(-8))}</span>
               <span style="margin-left:8px;font-size:.78rem;border:1px solid ${tierColor};color:${tierColor};
                            border-radius:10px;padding:1px 7px;text-transform:uppercase;">${tierCfg.label || sus.chargeTier}</span>
+              ${sus.incidentLabel ? `<span style="margin-left:8px;font-size:.76rem;color:var(--muted);">${_escHoldingHtml(sus.incidentLabel)}</span>` : ''}
             </div>
-            <span style="font-size:.8rem;color:var(--muted);">${remaining > 0 ? formatETA(remaining) + ' left' : '⏳ processing'}</span>
+            <span id="hcm-rem-${sus.id}" style="font-size:.8rem;color:var(--muted);">${remaining > 0 ? formatETA(remaining) + ' left' : '⏳ processing'}</span>
           </div>
           <div class="res-bar-track" style="margin-bottom:9px;">
-            <div class="res-bar-fill" style="width:${pctDone}%;background:${barColor};transition:width 1s linear;"></div>
+            <div id="hcm-bar-${sus.id}" class="res-bar-fill" style="width:${pctDone}%;background:${barColor};transition:width 1s linear;"></div>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
             <button class="btn-sm" onclick="_holdingRelease('${sus.id}')">Release</button>
@@ -782,13 +788,15 @@ function _holdingTransfer(suspectId, jailOrPrison){
     return;
   }
 
-  // Free the holding cell, then dispatch a transport unit to the facility.
-  // dispatchPrisonerTransport() finds the nearest available patrol/transport unit
-  // and animates the route from that unit's home station to the jail/prison.
+  // Free the holding cell, then open unit-selection modal for player to assign transport.
   _freeStationCell(s, suspectId);
-  sus.status     = 'awaiting_transport';
+  sus.status     = 'needs_transport';
   sus.facilityId = facility.id;
-  dispatchPrisonerTransport(sus, facility);
+  if(typeof _openTransportDispatchModal === 'function'){
+    _openTransportDispatchModal(sus, facility);
+  } else if(typeof queuePrisonerTransport === 'function'){
+    queuePrisonerTransport(sus, facility);
+  }
   _renderHoldingCellModal();
 }
 
@@ -813,6 +821,41 @@ function _escHoldingHtml(str){
   return String(str)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ── UNIT DRAG-AND-DROP REORDER ───────────────────────────────────────────────
+
+let _dragUnitId = null;   // id of the unit being dragged
+
+function _unitDragStart(event){
+  _dragUnitId = event.currentTarget.dataset.unitId;
+  event.dataTransfer.effectAllowed = 'move';
+}
+
+function _unitDragOver(event){
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  // Visual feedback: highlight target row
+  document.querySelectorAll('.manage-unit-row').forEach(r => r.style.outline = '');
+  event.currentTarget.style.outline = '1px dashed var(--gold)';
+}
+
+function _unitDrop(event, stationId){
+  event.preventDefault();
+  document.querySelectorAll('.manage-unit-row').forEach(r => r.style.outline = '');
+  const targetId = event.currentTarget.dataset.unitId;
+  if(!_dragUnitId || _dragUnitId === targetId) return;
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return;
+  const fromIdx = s.units.findIndex(u => u.id === _dragUnitId);
+  const toIdx   = s.units.findIndex(u => u.id === targetId);
+  if(fromIdx === -1 || toIdx === -1) return;
+  // Reorder in-place
+  const [moved] = s.units.splice(fromIdx, 1);
+  s.units.splice(toIdx, 0, moved);
+  _dragUnitId = null;
+  _renderManageBody();
+  renderStationList();
 }
 
 // ── SEED TEST STATIONS ────────────────────────────────────────────────────────

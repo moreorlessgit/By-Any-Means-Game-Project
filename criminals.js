@@ -48,6 +48,7 @@ function createSuspect(incidentId, mission){
   const suspect = {
     id:                   _susId(),
     incidentId,
+    incidentLabel:        null,          // human-readable call label; set by caller in index.html
     chargeTier:           tier,
     status:               'detained',    // detained → at_scene | at_station | at_jail | at_prison | released
     arrestUnitId:         null,          // set by the dispatching unit in index.html
@@ -171,12 +172,13 @@ function _requestJailTransport(suspect){
     setStatus(`⚠️ No county jail available — suspect ${suspect.id} held pending transfer.`);
     return;
   }
-  // Mark the transfer — actual dispatch routing is handled in index.html dispatchPrisonerTransport()
-  suspect.status     = 'awaiting_transport';
-  suspect.facilityId = jail.id;
-  // Notify index.html to dispatch a transport unit
-  if(typeof dispatchPrisonerTransport === 'function'){
-    dispatchPrisonerTransport(suspect, jail);
+  // Queue for player-dispatched transport rather than auto-dispatching immediately.
+  // queuePrisonerTransport() is defined in index.html and adds to pendingTransports[].
+  if(typeof queuePrisonerTransport === 'function'){
+    queuePrisonerTransport(suspect, jail);
+  } else {
+    suspect.status     = 'needs_transport';
+    suspect.facilityId = jail.id;
   }
 }
 
@@ -215,6 +217,7 @@ function getSuspectSaveData(){
   return suspects.map(s => ({
     id:                    s.id,
     incidentId:            s.incidentId,
+    incidentLabel:         s.incidentLabel,
     chargeTier:            s.chargeTier,
     status:                s.status,
     arrestUnitId:          s.arrestUnitId,

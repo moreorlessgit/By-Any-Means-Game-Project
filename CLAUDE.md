@@ -386,6 +386,12 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 - **Never delete or overwrite player save data** without explicit confirmation.
 - **Prefer editing existing files** over creating new ones unless separation is clearly justified. Explain reasoning if a new file is proposed.
 
+### Live UI update pattern
+DOM elements inside modals that display countdown timers or progress bars must receive an `id` attribute (e.g. `id="hcm-bar-${item.id}"`) so they can be updated in-place each game tick by a dedicated `_update*()` helper called from `_tickGameClock()`. Never fully re-render a modal every tick — it destroys dropdown state. Pattern established in `_updateDispatchStabBars()`, `_updateHospitalProgressBars()`, `_updateHoldingCellModal()`.
+
+### US units only
+All game distances, speeds, and measurements displayed to the player must use US customary units: miles (mi), miles per hour (mph). Never display kilometers or km/h to the player. Internal OSRM data (which returns meters/km) is converted before display. Config values are in mph.
+
 ---
 
 ## 11. Session Behavior for Claude
@@ -400,4 +406,4 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 
 ---
 
-*Last updated: Phase 2+ bug fix batches complete. Phase 3 (hospitals, prisons, patient transport) is the next planned phase.*
+*Last updated: Phase 3 complete. Major QOL/UI batch complete — sidebar redesign (Operations modal), transport dispatch queue, holding cell live timers, ESN/DC search fields, box alarm ordered preferences, drag-and-drop unit reorder. Phase 4 (volunteer system, personnel) is next.*

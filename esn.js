@@ -25,8 +25,14 @@ let _dcSectionCollapsed = false;  // whether the DC section header is collapsed
 
 // ── ESN COLOR PRESETS ─────────────────────────────────────────────────────────
 const ESN_COLOR_PRESETS = [
-  '#f0a500', '#34c96a', '#2ea8ff', '#e8431a',
-  '#a855f7', '#ec4899', '#14b8a6', '#ffffff'
+  '#f0a500','#f59e0b','#fbbf24',   // ambers / yellows
+  '#34c96a','#22c55e','#16a34a',   // greens
+  '#2ea8ff','#3b82f6','#1d4ed8',   // blues
+  '#e8431a','#ef4444','#b91c1c',   // reds
+  '#a855f7','#9333ea','#6d28d9',   // purples
+  '#ec4899','#db2777',             // pinks
+  '#14b8a6','#0d9488',             // teals
+  '#64748b','#ffffff',             // gray, white
 ];
 
 // =============================================================================
@@ -359,7 +365,8 @@ function _selectESNColor(color) {
   _renderColorSwatches(color);
 }
 
-// Builds the station assignment checkboxes grouped by service type.
+// Builds the station assignment checkboxes grouped by service type,
+// with per-group search bars (D3) and a DC assignment dropdown at the bottom (D2).
 function _renderESNAssignUI(existing) {
   const container = document.getElementById('esn-assignments');
   const labels = { fire: 'Fire Coverage', ems: 'EMS Coverage', police: 'Law Enforcement' };
@@ -371,22 +378,51 @@ function _renderESNAssignUI(existing) {
     const eligible = stations.filter(s =>
       s.units.some(u => BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => serviceTags.includes(t)))
     );
+    // Unique group id so multiple search inputs don't conflict
+    const groupId = `esn-assign-${type}`;
     html += `<div class="esn-assign-group">
-      <div class="esn-assign-label">${labels[type]}</div>`;
+      <div class="esn-assign-label">${labels[type]}</div>
+      <input type="text" placeholder="Search ${type} stations…"
+             style="width:100%;font-size:.78rem;padding:3px 7px;margin-bottom:4px;"
+             oninput="_filterESNStationSearch(this,'${groupId}')"/>
+      <div id="${groupId}">`;
     if (!eligible.length) {
       html += `<div class="esn-assign-empty">No ${type} stations placed yet</div>`;
     } else {
       eligible.forEach(st => {
         const chk = assigned.includes(st.id) ? 'checked' : '';
-        html += `<label class="esn-check-row">
+        html += `<label class="esn-check-row" data-st-name="${st.name.toLowerCase()}">
           <input type="checkbox" value="${st.id}" data-svctype="${type}" ${chk}/>
           ${st.name}
         </label>`;
       });
     }
-    html += `</div>`;
+    html += `</div></div>`;
   });
+
+  // D2 — Dispatch Center assignment dropdown
+  const currentDCId = existing
+    ? (dispatchCenters.find(dc => dc.assignedESNs.includes(existing.id))?.id || '')
+    : '';
+  html += `<div class="esn-assign-group" style="margin-top:10px;">
+    <div class="esn-assign-label">Dispatch Center</div>
+    <select id="esn-dc-assign" style="width:100%;padding:5px 8px;font-size:.82rem;">
+      <option value="">— None —</option>
+      ${dispatchCenters.map(dc =>
+        `<option value="${dc.id}"${dc.id === currentDCId ? ' selected' : ''}>${dc.name}</option>`
+      ).join('')}
+    </select>
+  </div>`;
+
   container.innerHTML = html;
+}
+
+// Filters station checkboxes within a specific assignment group by name.
+function _filterESNStationSearch(inputEl, groupId){
+  const q = inputEl.value.toLowerCase();
+  document.querySelectorAll(`#${groupId} .esn-check-row`).forEach(row => {
+    row.style.display = row.dataset.stName?.includes(q) ? '' : 'none';
+  });
 }
 
 // Shows existing box alarms for this ESN inside the modal.
@@ -403,7 +439,7 @@ function _renderESNBoxAlarms(esnId) {
       const mTypes = ba.missionTypes.length
         ? ba.missionTypes.map(k => BAM_CONFIG.missions[k]?.label || k).join(', ')
         : 'All calls';
-      const reqs = ba.requirements.map(r => r.join('/')).join(' + ');
+      const reqs = _baReqsLabel(ba.requirements);
       return `<div class="ba-row">
         <div class="ba-info">
           <div class="ba-name">${ba.name}</div>
@@ -431,6 +467,9 @@ function confirmESNModal() {
     assignments[cb.dataset.svctype].push(cb.value);
   });
 
+  // D2 — persist DC assignment: remove this ESN from all DCs, then re-add to selected
+  const selectedDCId = document.getElementById('esn-dc-assign')?.value || '';
+
   if (editId) {
     const esn = esns.find(e => e.id === editId);
     if (esn) {
@@ -442,13 +481,27 @@ function confirmESNModal() {
       esn.polygon?.setTooltipContent(`<span style="color:${color};">${name}</span>`);
       _applyTooltipStyle(esn.polygon, color, labelSize);
     }
+    // Update DC assignment
+    dispatchCenters.forEach(dc => {
+      dc.assignedESNs = dc.assignedESNs.filter(eid => eid !== editId);
+    });
+    if(selectedDCId){
+      const dc = dispatchCenters.find(d => d.id === selectedDCId);
+      if(dc && !dc.assignedESNs.includes(editId)) dc.assignedESNs.push(editId);
+    }
   } else {
-    _createESN(name, [...drawCoords], assignments, color, labelSize);
+    const newESN = _createESN(name, [...drawCoords], assignments, color, labelSize);
     drawCoords = [];
+    // Assign to selected DC
+    if(selectedDCId && newESN){
+      const dc = dispatchCenters.find(d => d.id === selectedDCId);
+      if(dc && !dc.assignedESNs.includes(newESN.id)) dc.assignedESNs.push(newESN.id);
+    }
   }
 
   closeESNModal();
   renderESNList();
+  renderDCList();
   setStatus(`✅ ESN "${name}" saved.`);
 }
 
@@ -850,6 +903,9 @@ function _openDCCreateModal(latlng) {
 }
 
 function _renderDCESNList(preChecked = []) {
+  // Clear search input when re-rendering
+  const searchEl = document.getElementById('dc-esn-search');
+  if(searchEl) searchEl.value = '';
   const el = document.getElementById('dc-esn-checkboxes');
   if (!esns.length) {
     el.innerHTML = '<div class="esn-assign-empty">No ESN zones exist yet.</div>';
@@ -857,11 +913,19 @@ function _renderDCESNList(preChecked = []) {
   }
   el.innerHTML = esns.map(e => {
     const checked = preChecked.includes(e.id) ? 'checked' : '';
-    return `<label class="esn-check-row">
+    return `<label class="esn-check-row" data-esn-name="${e.name.toLowerCase()}">
       <input type="checkbox" value="${e.id}" ${checked}/>
       ${e.name}
     </label>`;
   }).join('');
+}
+
+// Filters the DC ESN checkbox list in real-time by name.
+function _filterDCESNSearch(query){
+  const q = query.toLowerCase();
+  document.querySelectorAll('#dc-esn-checkboxes .esn-check-row').forEach(row => {
+    row.style.display = row.dataset.esnName?.includes(q) ? '' : 'none';
+  });
 }
 
 function confirmDCModal() {
@@ -966,16 +1030,26 @@ function openDCSummary(id) {
 
   if (assignedESNObjs.length) {
     html += `<div class="section-title" style="margin-top:10px;">Assigned ESN Zones</div>`;
+    const colDefs = [
+      { type:'fire',   icon:'🔴', color:'var(--fire)'   },
+      { type:'ems',    icon:'🔵', color:'var(--ems)'    },
+      { type:'police', icon:'🟣', color:'var(--police)' },
+    ];
     assignedESNObjs.forEach(esn => {
-      const stLines = ['fire', 'ems', 'police'].flatMap(t =>
-        (esn.assignments[t] || []).map(sid => {
-          const st = stations.find(s => s.id === sid);
-          return st ? `${st.name} <span class="tag-pill" style="border-color:var(--${t})">${t}</span>` : null;
-        }).filter(Boolean)
-      ).join('  ');
-      html += `<div class="scard" style="margin-bottom:5px;">
-        <div class="sn">${esn.name}${!esn.inService ? ' <span class="oos-badge">OOS</span>' : ''}</div>
-        <div class="su" style="margin-top:3px;">${stLines || '<span style="color:var(--muted)">No stations assigned</span>'}</div>
+      const cols = colDefs.map(({type, icon, color}) => {
+        const names = (esn.assignments[type] || [])
+          .map(sid => stations.find(s => s.id === sid)?.name)
+          .filter(Boolean);
+        return `<div>
+          <div style="font-size:.72rem;font-weight:700;color:${color};margin-bottom:3px;">${icon} ${type.toUpperCase()}</div>
+          ${names.length
+            ? names.map(n => `<div style="font-size:.75rem;color:var(--text);">${n}</div>`).join('')
+            : `<div style="font-size:.74rem;color:var(--muted);">—</div>`}
+        </div>`;
+      }).join('');
+      html += `<div class="scard" style="margin-bottom:6px;">
+        <div class="sn" style="margin-bottom:6px;">${esn.name}${!esn.inService ? ' <span class="oos-badge">OOS</span>' : ''}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">${cols}</div>
       </div>`;
     });
   } else {
@@ -1079,7 +1153,7 @@ function openBoxAlarmModal(esnId) {
     </label>`).join('');
 
   document.getElementById('ba-req-rows').innerHTML = '';
-  _addBAReqRow();
+  _addBASlot();
   document.getElementById('ba-modal').classList.add('open');
   setTimeout(() => document.getElementById('ba-name-input').focus(), 40);
 }
@@ -1088,16 +1162,76 @@ function closeBoxAlarmModal() {
   document.getElementById('ba-modal').classList.remove('open');
 }
 
-function _addBAReqRow() {
+// Adds a new requirement slot to the box alarm modal.
+// Each slot = one resource position; prefs = ordered list of unit or tag fallbacks.
+function _addBASlot() {
   const container = document.getElementById('ba-req-rows');
-  const allTags = [...new Set(Object.values(BAM_CONFIG.unitTypes).flatMap(u => u.tags))].sort();
+  const slotNum   = container.children.length + 1;
+  const slot = document.createElement('div');
+  slot.className = 'ba-slot';
+  slot.style.cssText = 'background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:8px;';
+  slot.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <span style="font-size:.78rem;font-weight:700;color:var(--gold);">Slot ${slotNum}</span>
+      <button class="btn-sm danger" onclick="this.closest('.ba-slot').remove();_renumberBASlots()" style="padding:2px 7px;font-size:.75rem;">Remove Slot</button>
+    </div>
+    <div class="ba-pref-list" style="display:flex;flex-direction:column;gap:4px;margin-bottom:6px;"></div>
+    <div style="display:flex;gap:5px;">
+      <button class="btn-sm" onclick="_baAddTagPref(this)" style="font-size:.75rem;">+ Tag Fallback</button>
+      <button class="btn-sm" onclick="_baAddUnitPref(this)" style="font-size:.75rem;">+ Specific Unit</button>
+    </div>`;
+  container.appendChild(slot);
+  // Add one default tag pref to the new slot
+  _baAddTagPref(slot.querySelector('.btn-sm'));
+}
+
+// Re-numbers slot headers after a slot is removed.
+function _renumberBASlots(){
+  document.querySelectorAll('#ba-req-rows .ba-slot').forEach((slot, i) => {
+    const label = slot.querySelector('.ba-slot-label');
+    if(label) label.textContent = `Slot ${i + 1}`;
+  });
+}
+
+// Appends a tag-selector preference row to the slot containing the clicked button.
+function _baAddTagPref(btn){
+  const prefList = btn.closest('.ba-slot').querySelector('.ba-pref-list');
+  const allTags  = [...new Set(Object.values(BAM_CONFIG.unitTypes).flatMap(u => u.tags))].sort();
   const row = document.createElement('div');
-  row.className = 'ba-req-row';
-  row.innerHTML = `<select class="ba-req-select">
-    ${allTags.map(t => `<option value="${t}">${t}</option>`).join('')}
-  </select>
-  <button class="btn-sm danger" onclick="this.closest('.ba-req-row').remove()" style="flex-shrink:0;">✕</button>`;
-  container.appendChild(row);
+  row.className = 'ba-pref-row';
+  row.dataset.prefType = 'tag';
+  row.style.cssText = 'display:flex;align-items:center;gap:5px;';
+  row.innerHTML = `
+    <span style="font-size:.78rem;color:var(--muted);min-width:32px;">🏷</span>
+    <select class="ba-pref-tag" style="flex:1;font-size:.8rem;padding:3px 6px;">
+      ${allTags.map(t => `<option value="${t}">${t}</option>`).join('')}
+    </select>
+    <button class="btn-sm" onclick="const p=this.closest('.ba-pref-row');p.previousElementSibling&&p.parentNode.insertBefore(p,p.previousElementSibling);" style="padding:2px 5px;" title="Move up">▲</button>
+    <button class="btn-sm" onclick="const p=this.closest('.ba-pref-row');p.nextElementSibling&&p.parentNode.insertBefore(p.nextElementSibling,p);" style="padding:2px 5px;" title="Move down">▼</button>
+    <button class="btn-sm danger" onclick="this.closest('.ba-pref-row').remove()" style="padding:2px 6px;">✕</button>`;
+  prefList.appendChild(row);
+}
+
+// Appends a specific-unit selector preference row to the slot.
+function _baAddUnitPref(btn){
+  const prefList = btn.closest('.ba-slot').querySelector('.ba-pref-list');
+  const allUnits = typeof getAllUnits === 'function' ? getAllUnits() : [];
+  const row = document.createElement('div');
+  row.className = 'ba-pref-row';
+  row.dataset.prefType = 'unit';
+  row.style.cssText = 'display:flex;align-items:center;gap:5px;';
+  const unitOpts = allUnits.length
+    ? allUnits.map(({station,unit}) =>
+        `<option value="${unit.id}" data-name="${unit.name}">${unit.name} (${station.name})</option>`
+      ).join('')
+    : '<option value="">No units placed yet</option>';
+  row.innerHTML = `
+    <span style="font-size:.78rem;color:var(--muted);min-width:32px;">🚒</span>
+    <select class="ba-pref-unit" style="flex:1;font-size:.8rem;padding:3px 6px;">${unitOpts}</select>
+    <button class="btn-sm" onclick="const p=this.closest('.ba-pref-row');p.previousElementSibling&&p.parentNode.insertBefore(p,p.previousElementSibling);" style="padding:2px 5px;" title="Move up">▲</button>
+    <button class="btn-sm" onclick="const p=this.closest('.ba-pref-row');p.nextElementSibling&&p.parentNode.insertBefore(p.nextElementSibling,p);" style="padding:2px 5px;" title="Move down">▼</button>
+    <button class="btn-sm danger" onclick="this.closest('.ba-pref-row').remove()" style="padding:2px 6px;">✕</button>`;
+  prefList.appendChild(row);
 }
 
 function confirmBoxAlarm() {
@@ -1106,8 +1240,22 @@ function confirmBoxAlarm() {
   if (!name) { setStatus('⚠️ Enter a name for this box alarm.'); return; }
 
   const missionTypes = [...document.querySelectorAll('#ba-mission-types input:checked')].map(cb => cb.value);
-  const requirements = [...document.querySelectorAll('.ba-req-select')].map(sel => [sel.value]);
-  if (!requirements.length) { setStatus('⚠️ Add at least one unit requirement.'); return; }
+
+  // Build new ordered-preference requirements structure
+  const requirements = [...document.querySelectorAll('#ba-req-rows .ba-slot')].map(slot => {
+    const prefs = [...slot.querySelectorAll('.ba-pref-row')].map(row => {
+      if(row.dataset.prefType === 'unit'){
+        const sel = row.querySelector('.ba-pref-unit');
+        const opt = sel?.selectedOptions?.[0];
+        return { type: 'unit', id: sel?.value || '', name: opt?.dataset.name || opt?.text || '' };
+      } else {
+        const sel = row.querySelector('.ba-pref-tag');
+        return { type: 'tag', tag: sel?.value || '' };
+      }
+    }).filter(p => p.type === 'unit' ? p.id : p.tag);
+    return { prefs };
+  });
+  if (!requirements.length) { setStatus('⚠️ Add at least one requirement slot.'); return; }
 
   boxAlarms.push({ id: 'ba_' + Date.now(), name, esnId, missionTypes, requirements });
   closeBoxAlarmModal();
@@ -1132,6 +1280,22 @@ function getApplicableBoxAlarms(esnId, missionKey) {
   );
 }
 
+// Returns a human-readable string for a box alarm's requirements (new or old format).
+function _baReqsLabel(requirements){
+  return requirements.map((slot, i) => {
+    // New format: { prefs: [...] }
+    if(slot && slot.prefs){
+      const prefLabels = slot.prefs.map(p =>
+        p.type === 'unit' ? (p.name || p.id) : p.tag
+      ).join(' → ');
+      return `[${prefLabels}]`;
+    }
+    // Old format: ['tag1', 'tag2']
+    if(Array.isArray(slot)) return slot.join('/');
+    return '?';
+  }).join(' + ');
+}
+
 function renderBoxAlarmList() {
   const el = document.getElementById('ba-list');
   if (!el) return;
@@ -1144,7 +1308,7 @@ function renderBoxAlarmList() {
     const mTypes  = ba.missionTypes.length
       ? ba.missionTypes.map(k => BAM_CONFIG.missions[k]?.label || k).join(', ')
       : 'All calls';
-    const reqs = ba.requirements.map(r => r.join('/')).join(' + ');
+    const reqs = _baReqsLabel(ba.requirements);
     return `<div class="plan-card">
       <div class="plan-name">${ba.name}</div>
       <div class="plan-meta">${esnName} · ${mTypes}</div>
@@ -1207,7 +1371,18 @@ function loadDCData(data) {
 }
 
 function loadBoxAlarmData(data) {
-  boxAlarms = (data || []).map(b => ({ ...b }));
+  boxAlarms = (data || []).map(b => {
+    // Convert old-format requirements [['engine'], ['als']] → new format [{ prefs: [{type:'tag', tag:'engine'}] }]
+    const reqs = b.requirements || [];
+    const converted = reqs.map(slot => {
+      if(slot && slot.prefs) return slot;  // already new format
+      if(Array.isArray(slot)){             // old format: ['tag1', 'tag2']
+        return { prefs: slot.map(tag => ({ type:'tag', tag })) };
+      }
+      return { prefs: [] };
+    });
+    return { ...b, requirements: converted };
+  });
   renderBoxAlarmList();
 }
 

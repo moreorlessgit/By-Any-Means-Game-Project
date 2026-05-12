@@ -248,15 +248,17 @@ function transferPrisoner(fromFacilityId, suspectId, toFacilityId){
   fromJail.prisoners = fromJail.prisoners.filter(id => id !== suspectId);
   fromJail.occupied  = Math.max(0, fromJail.occupied - 1);
 
-  // Mark suspect as in transit to new facility
-  suspect.status     = 'awaiting_transport';
-  suspect.facilityId = toFacilityId;
   // Reset processing timer — it will be restarted at intake
   suspect.processingStartSec    = null;
   suspect.processingDurationSec = null;
 
-  if(typeof dispatchPrisonerTransport === 'function'){
-    dispatchPrisonerTransport(suspect, toJail);
+  // Queue for player-dispatched transport.
+  // queuePrisonerTransport() is in index.html; adds to pendingTransports[].
+  if(typeof queuePrisonerTransport === 'function'){
+    queuePrisonerTransport(suspect, toJail);
+  } else {
+    suspect.status     = 'needs_transport';
+    suspect.facilityId = toFacilityId;
   }
   if(_activeJailId === fromFacilityId) _renderJailModal();
   setStatus(`${suspect.id} flagged for transfer to ${toJail.name}.`);
@@ -511,9 +513,30 @@ function _buyJailCellsCustom(jailId){
 }
 
 function _doTransfer(fromJailId, suspectId){
-  const sel = document.getElementById(`xfer-dest-${suspectId}`);
-  if(!sel) return;
-  transferPrisoner(fromJailId, suspectId, sel.value);
+  const sel      = document.getElementById(`xfer-dest-${suspectId}`);
+  const toJailId = sel?.value;
+  if(!toJailId){ setStatus('⚠️ Select a destination facility first.'); return; }
+  const fromJail = jails.find(x => x.id === fromJailId);
+  const toJail   = jails.find(x => x.id === toJailId);
+  const suspect  = suspects.find(x => x.id === suspectId);
+  if(!fromJail || !toJail || !suspect){ setStatus('⚠️ Transfer failed.'); return; }
+  if(toJail.occupied >= toJail.cells){ setStatus(`⚠️ ${toJail.name} is full.`); return; }
+
+  // Remove from source facility immediately
+  fromJail.prisoners = fromJail.prisoners.filter(id => id !== suspectId);
+  fromJail.occupied  = Math.max(0, fromJail.occupied - 1);
+  suspect.facilityId = toJailId;
+  suspect.processingStartSec    = null;
+  suspect.processingDurationSec = null;
+
+  // Open unit-selection dispatch modal immediately (player-initiated transfer)
+  if(typeof _openTransportDispatchModal === 'function'){
+    _openTransportDispatchModal(suspect, toJail);
+  } else {
+    // Fallback: queue if modal function not available
+    if(typeof queuePrisonerTransport === 'function') queuePrisonerTransport(suspect, toJail);
+  }
+  if(_activeJailId === fromJailId) _renderJailModal();
 }
 
 function _toggleJailService(id){
