@@ -16,13 +16,13 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 | Map | Leaflet.js |
 | Routing | OSRM (public API) |
 | OSM data | Overpass API |
-| Storage | localStorage → API calls (Phase 4 migration) |
+| Storage | localStorage (frontend) → PostgreSQL via API (Phase 4A migration in progress) |
 | Local server | Live Server (VSCode extension) |
-| Backend | Node.js + Express (Phase 4) |
-| Database | PostgreSQL (Phase 4) |
-| Auth | JWT — JSON Web Tokens (Phase 4) |
-| Real-time | Socket.IO (Phase 4) |
-| DB layer | Prisma ORM (Phase 4) |
+| Backend | Node.js + Express — **live, port 3001** |
+| Database | PostgreSQL 18 — **live, bam_dev** |
+| Auth | JWT — **live, auth endpoints operational** |
+| Real-time | Socket.IO (Phase 4B) |
+| DB layer | Prisma ORM v6 — **live, schema migrated** |
 
 ---
 
@@ -30,6 +30,8 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 
 ```
 index.html, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js, CLAUDE.md, docs/
+.gitignore
+server/ (Phase 4A backend — index.js, lib/db.js, middleware/auth.js, routes/auth.js, prisma/schema.prisma, prisma/migrations/)
 ```
 
 ---

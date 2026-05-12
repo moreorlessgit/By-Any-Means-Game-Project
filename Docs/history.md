@@ -164,4 +164,35 @@
 
 ---
 
-*Last updated: 2026-05-12. Phase 3.25 bugfix batch complete (two-leg prisoner transport routing, facilities sidebar list, ESN/DC tab split, ESN searchable multiselect). Remaining Phase 3.25 items: index.html housekeeping/file split, unit-type color settings tab, transport-pending incident flash, PT-to-hospital ETA on transport tab.*
+---
+
+## Phase 4A — Session 1: Backend Foundation ✅
+
+- **Node.js + Express server** initialized in `server/`; runs on port 3001
+- **Prisma v6 ORM** with PostgreSQL datasource; `bam_dev` database created locally
+- **Initial migration applied** — four Phase 4A tables live in PostgreSQL:
+  - `users` — registered player accounts (id, username, password_hash, created_at, last_login)
+  - `private_worlds` — save world containers per player (id, owner_user_id, name, created_at)
+  - `private_world_saves` — named save slots within a world (id, world_id, slot_name, state_json, saved_at); UNIQUE(world_id, slot_name)
+  - `settings` — per-user preferences that survive across worlds (user_id PK, settings_json)
+- **Prisma client singleton** in `server/lib/db.js` — one shared connection pool
+- **Health check endpoint** — `GET /api/health` returns `{ ok: true, time }` to confirm server is up
+- **CORS configured** — accepts requests from localhost Live Server origins only
+- **Secrets management** — `server/.env` holds DATABASE_URL and JWT_SECRET; both `.gitignore` files exclude it from the repo
+- **bcryptjs** used in place of native `bcrypt` (pure JS, identical API, no native build required on Windows)
+
+---
+
+## Phase 4A — Session 2: JWT Authentication ✅
+
+- **`server/middleware/auth.js`** — `requireAuth` middleware; reads `Authorization: Bearer <token>`, calls `jwt.verify()`, attaches `req.user = { userId, username }` to the request; returns 401 on missing/invalid/expired tokens (no distinction to prevent info leakage)
+- **`server/routes/auth.js`** — three endpoints mounted at `/api/auth`:
+  - `POST /api/auth/register` — Zod validation (username 3–20 chars alphanumeric+underscore, password 8–128), bcrypt hash cost 12, Prisma transaction creates `users` + `settings` rows atomically, returns 201 + JWT + `{ id, username }`; 409 on duplicate username
+  - `POST /api/auth/login` — bcrypt.compare against stored hash; identical 401 "Invalid credentials" for both bad username and bad password (no enumeration); fire-and-forget `last_login` update; returns JWT + `{ id, username }`
+  - `GET /api/auth/me` — protected by `requireAuth`; re-fetches user from DB with `select` to exclude `password_hash`; returns `{ id, username, created_at }`
+- **Rate limiting** — `express-rate-limit` v8 (`limit: 10`, 15-minute window) applied to all three auth routes via shared `authLimiter` instance
+- **`server/index.js`** — auth router mounted (`app.use('/api/auth', require('./routes/auth'))`); private-worlds and settings routes remain stubbed for Session 3
+
+*Remaining Phase 4A sessions: Session 3 (saves & settings API), Session 4 (frontend migration + login UI).*
+
+*Last updated: 2026-05-12. Phase 4A Session 2 complete — JWT auth layer: register, login, /me endpoints, Bearer token middleware, rate limiting.*

@@ -5,7 +5,10 @@
       "Bash(Measure-Object -Line)",
       "PowerShell(\\(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\"\\).Count)",
       "Bash(Get-ChildItem -Path \"d:\\\\By Any Means Game Project\" -Recurse -File -Name)",
-      "PowerShell(Set-Location \"d:\\\\By-Any-Means-Game-Project\\\\server\"; $env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install --save-dev prisma 2>&1)"
+      "PowerShell(Set-Location \"d:\\\\By-Any-Means-Game-Project\\\\server\"; $env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install --save-dev prisma 2>&1)",
+      "Bash(grep -rn '$transaction' 'd:\\\\By-Any-Means-Game-Project\\\\server\\\\node_modules\\\\@prisma\\\\client\\\\runtime')",
+      "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
+      "Bash(node -e \"require\\('./routes/auth'\\); console.log\\('routes/auth loaded OK'\\);\")"
     ]
   }
 }

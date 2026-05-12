@@ -28,7 +28,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // ── Routes (added in Sessions 2 & 3) ─────────────────────────────────────────
-// app.use('/api/auth',           require('./routes/auth'));
+app.use('/api/auth',           require('./routes/auth'));
 // app.use('/api/private-worlds', require('./routes/privateWorlds'));
 // app.use('/api/settings',       require('./routes/settings'));
 

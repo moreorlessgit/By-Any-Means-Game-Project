@@ -20,18 +20,19 @@ See **docs/backend-architecture.md** for the full technical design and **docs/se
 
 ---
 
-### Phase 4A — Backend Foundation *(do first)*
+### Phase 4A — Backend Foundation *(in progress)*
 
 Goal: Replace `localStorage` with a real backend. Private worlds work exactly as before, now server-backed and accessible from any device.
 
-- Node.js + Express project setup alongside existing frontend
-- PostgreSQL schema: `users`, `private_worlds`, `private_world_saves`, `settings`
-- Auth endpoints: register, login, JWT middleware
-- Private world save/load API (mirrors current save slot behavior)
-- Settings API (replaces `bam_settings` key)
-- Frontend migration layer: thin API wrapper replaces all `localStorage` reads and writes
-- Self-hosted on home box; accessible from work or any device
-- Existing save data migration path: export current localStorage → import to new system
+- ✅ Node.js + Express project setup alongside existing frontend (`server/`)
+- ✅ PostgreSQL schema: `users`, `private_worlds`, `private_world_saves`, `settings` — migrated and live
+- ✅ Health check endpoint, CORS, secrets management
+- ✅ Auth endpoints: register, login, JWT middleware
+- ⬜ Private world save/load API (mirrors current save slot behavior) *(Session 3)*
+- ⬜ Settings API (replaces `bam_settings` key) *(Session 3)*
+- ⬜ Frontend migration layer: thin API wrapper replaces all `localStorage` reads and writes *(Session 4)*
+- ⬜ Login screen on load *(Session 4)*
+- ⬜ Existing save data migration path: export current localStorage → import to new system *(Session 4)*
 
 **Player-visible change:** Login screen on load. Save/load now persists to server. Everything else identical.
 
