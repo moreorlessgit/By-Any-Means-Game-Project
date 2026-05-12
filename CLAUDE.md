@@ -7,7 +7,7 @@
 
 **Name:** By Any Means
 **Type:** Personal emergency services dispatch and agency-building simulation game
-**Status:** Active development, Phase 2+ bug fixes and feature additions complete
+**Status:** Active development, Phase 3 complete with major QOL/UI batch implemented
 
 ### Primary Goal
 A fully custom-buildable emergency services simulation. The player starts small — a single station, a single unit — and builds outward at their own pace with no artificial cost scaling or forced progression. The player defines everything: station names, unit callsigns, coverage areas, response plans, box alarms. The game is a canvas for the player's vision of their local emergency services landscape, not a fixed scenario.
@@ -320,18 +320,68 @@ These will be created only when a system grows too large to logically live in an
 
 ---
 
-## 8. Planned Systems — Phase Roadmap
+## 8. Systems Built — Phase 3 ✅
+
+- **Hospital and prison placement** — Hospitals and jails/prisons placeable on map by player
+- **Patient transport logic** — ALS patients routed to nearest appropriate hospital based on injury requirements; BLS patients to nearest BLS-capable hospital
+- **Prisoner transport logic** — Prisoners from holding cells route to nearest county jail; from county jails route to nearest state correctional facility
+- **Transport unit assignment** — Dispatch modal for manual unit selection when transporting patients/prisoners; units must be marked for transport capability
+- **In-transit unavailable** — Units become unavailable during transport + offload time at receiving facility (ALS alert time + offload duration, configurable per facility type)
+- **Transport time via OSRM** — Real-road routing used to calculate transport ETAs; displayed in transport dispatch modal
+- **Air medical dispatch** — Air units available for time-critical patient transports (configurable per hospital air traffic policy)
+- **Cashflow modal** — Summary of income (call rewards), expenses (station/unit purchase/upkeep, transport costs, offload fees), net position; tracks budget changes over time
+- **Facilities modal** — Dedicated UI for managing hospitals and jails (OOS status, capacity, offload times)
+- **Suspect and charge system** — Arrested suspects tracked with charges and hold duration; booking/processing times at holding stations before jail transfer
+- **Holding cell modal with live countdown** — Progress bars and remaining time text update every tick without full re-render
+- **Incident label on suspects** — Arrest call label displayed in holding cell modal for context
+- **Jail modal with transfer UI** — Manual prisoner-to-prison transfers with destination jail selection
+
+---
+
+## 8.5. Systems Built — Phase 3+ QOL/UI Batch ✅
+
+**Sidebar Redesign & Operations Modal:**
+- **Sidebar structure** — Simplified sidebar with Cancel Placement button (top), collapsible BUILD panel (6 categories: Fire/EMS/Police/Air/Facilities/Dispatch Center, each independently collapsible), OPERATIONS button
+- **Operations modal** — `#ops-modal` with 3 top-level tabs:
+  - **Stations tab** — Search + filter pills (All|Fire|EMS|Police|Air); full station list with Manage/Focus/OOS buttons
+  - **Facilities tab** — Search + filter pills (All|Hospitals|Jails); hospital and jail lists with Manage/Focus/OOS buttons
+  - **Operations tab** — 4 sub-tabs:
+    - **Dispatch Centers** — Search bar; DC list with Edit/Summary/OOS buttons; shows active call count vs cap
+    - **ESN Zones** — Search bar; ESN list with Edit Shape/Manage/OOS buttons
+    - **Response Plans** — Search bar; Plans list with Edit/Delete buttons
+    - **Box Alarms** — Search bar; Box alarms list with Edit/Delete buttons per ESN
+- **Transport Queue button** — Dedicated sidebar control (below OPERATIONS button) visible when queue has pending transports; shows count badge and pulses for attention
+- **Transport dispatch modal** — Unit-selection UI showing available `transport_prisoner` or `patrol` units sorted by distance from current holding location; displays unit name, home station, distance, and ETA estimates
+- **Pending transport queue** — Global `pendingTransports[]` stores references to suspects needing transport; auto-queued from processing timer expiry; manually queued from holding cell / jail transfers; player assigns units via dispatch modal
+- **Transport queue modal** — Lists all pending transports with Assign Unit and Dismiss buttons per entry; clicking Assign opens the dispatch modal for that transfer
+
+**Search & Filter Improvements:**
+- **DC modal ESN search** — Input field above ESN checkbox list filters in real-time by ESN name
+- **ESN modal station search per service** — Three independent search inputs (Fire|EMS|Law) filter assigned stations per service group
+- **DC assignment in ESN modal** — Select dropdown to assign/reassign an ESN to a specific dispatch center; removes ESN from all other DCs on save
+- **DC summary 3-column grid** — Replaces flat pill layout with structured 3-column Fire/EMS/Law grid per ESN showing coverage by service
+
+**Box Alarm Ordered Preferences:**
+- **New data structure** — `requirements: [{ prefs: [{type:'unit'|'tag', id?, name?, tag?}] }]` replacing old flat `[['tag']]` format
+- **Ordered preference list UI** — Each slot shows list of preferences with Add Unit / Add Tag / Remove / Move buttons; preferences executed in order (first available unit wins)
+- **Backward compatibility** — `loadBoxAlarmData()` auto-converts old `[['tag']]` format to new structure on load; `applyAutoDispatch()` handles both formats at runtime
+
+**Unit and Station Management:**
+- **Unit drag-and-drop reorder** — Units in station Manage modal are `draggable`; drag-over highlights target; drop reorders in `s.units[]` array and persists to save data
+- **Incident label display** — Suspects in holding cell show arrest call incident label for context (stored in `suspect.incidentLabel`)
+- **Holding cell live countdown** — Progress bars and remaining time text (`#hcm-bar-${sus.id}`, `#hcm-rem-${sus.id}`) update every tick via `_updateHoldingCellModal()` without full modal re-render
+
+**UI Polish:**
+- **Header always visible** — `#header` now `position:sticky; top:0; z-index:10001` so clock/speed controls remain accessible above all modals (z-index 9999)
+- **ESN color presets expanded** — `ESN_COLOR_PRESETS` increased from 8 to 21 colors (ambers, greens, blues, reds, purples, pinks, teals, gray, white) for more visual variety
+
+---
+
+## 9. Planned Systems — Phase Roadmap
 
 Phases are a guide, not a strict sequence. Player input determines priority.
 
-### Phase 3 — Hospitals, Prisons, and Transport
-- Hospital and prison locations placeable on map by player
-- Patient transport logic: ALS patients to nearest appropriate hospital, prisoners to nearest prison
-- BLS vs ALS transport decisions based on patient injury type
-- Unit becomes unavailable during transport + offload time
-- Transport time calculated via OSRM routing
-
-### Phase 4 — Volunteer System and Personnel
+### Phase 4 (Next) — Volunteer System and Personnel
 - **Station staffing types:** Each station configured as Career (fully paid), Combination, or Volunteer
 - **Volunteer response delay:** Volunteers must respond to the station before the apparatus can respond. Delay calculated from volunteer's home/work location within the ESN. Adds realistic rural response time lag.
 - **Personnel system:** Individual named responders at each station. Can be renamed by player. Tracks certifications (FF1, FF2, Driver/Operator, EMT, AEMT, Paramedic, LEO, etc.)
@@ -362,7 +412,7 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 
 ---
 
-## 9. Design Philosophy
+## 10. Design Philosophy
 
 - **Authenticity over arcade.** If it doesn't work like this in real life, it probably shouldn't work like this in the game. The player is a real dispatcher and EMT — they will notice.
 - **The player is in control.** Every area, every station name, every unit callsign, every ESN boundary is defined by the player. The game provides the engine; the player provides the world.
@@ -373,7 +423,7 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 
 ---
 
-## 10. Coding Conventions
+## 11. Coding Conventions
 
 - **Comments on every config variable** explaining what it does and what values are valid
 - **Comments throughout game logic code** explaining what each function and significant block does in plain English — the player is not a developer and should be able to read the code and get a general understanding of what is happening
@@ -385,10 +435,14 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 - **At the end of productive sessions:** offer to update this CLAUDE.md file to reflect new systems built or decisions made.
 - **Never delete or overwrite player save data** without explicit confirmation.
 - **Prefer editing existing files** over creating new ones unless separation is clearly justified. Explain reasoning if a new file is proposed.
+### Live UI update pattern
+DOM elements inside modals that display countdown timers or progress bars must receive an `id` attribute (e.g. `id="hcm-bar-${item.id}"`) so they can be updated in-place each game tick by a dedicated `_update*()` helper called from `_tickGameClock()`. Never fully re-render a modal every tick — it destroys dropdown state. Pattern established in `_updateDispatchStabBars()`, `_updateHospitalProgressBars()`, `_updateHoldingCellModal()`.
 
+### US units only
+All game distances, speeds, and measurements displayed to the player must use US customary units: miles (mi), miles per hour (mph). Never display kilometers or km/h to the player. Internal OSRM data (which returns meters/km) is converted before display. Config values are in mph.
 ---
 
-## 11. Session Behavior for Claude
+## 12. Session Behavior for Claude
 
 - Read this file at the start of every session before doing anything
 - Ask clarifying questions whenever anything is ambiguous — not just about code, but about design intent, priorities, or player preferences. It is always better to ask than to assume.
@@ -400,4 +454,4 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 
 ---
 
-*Last updated: Phase 2+ bug fix batches complete. Phase 3 (hospitals, prisons, patient transport) is the next planned phase.*
+*Last updated: 2026-05-12. Phase 3 (hospitals, jails, patient/prisoner transport, air medical, cashflow/facilities modals, suspects/charges) and Phase 3+ QOL/UI batch (sidebar redesign with Operations modal, transport dispatch queue, holding cell live timers, ESN/DC search, box alarm ordered preferences, unit drag-and-drop reorder, header sticky positioning, expanded color presets) complete. Phase 4 (volunteer system, personnel, certifications) is next.*
