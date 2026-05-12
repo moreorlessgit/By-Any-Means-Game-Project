@@ -12,31 +12,72 @@ GENERAL HOUSEKEEPING, cleaning up the index.html file. Check for anything that c
 
 General Realism - Medical Emergency type calls should only have one PT typically. (I can fix this myself, claude ignore this one.)
 
-## Phase 3.25 (Next) — General Bugfixes and Phases 1-3 Working as Intended
+## Phase 4 — "Noli Timere Messorem" — Backend, Database, Auth, Multiplayer
 
-### Bugs ✅ (All resolved in Phase 3.25 bugfix batch)
+This is the most critical phase of the project. Every feature built after Phase 4 lands directly into the established backend pattern — new DB table, new API endpoint, new frontend call. No more retrofitting.
 
-~~Bug - Suspect Transfer unit assignment from holding cells now works. However the assigned unit does not go to the police station where the suspect is to pick up the suspect before beginning their transport to the jail. And the ETAs are messed up.~~
-
-~~Bug - Operations Modal - Facilities Tab - Facilities tab does not list facilities like the station tab does, and does not have a search bar.~~
-
-### UI
-
-~~UI - Left Sidebar - Operations Modal - ESNs show up under dispatch centers tab not the ESN zones tab like they should.~~
-
-~~UI - Edit ESN Zone Modal - No search bar in dropdown for the dispatch center assignment. Along this same fix, change from checkboxes to searchable dropdowns for Fire/EMS/Law Coverage so format remains uniform and it is easier on the player to define coverage for an ESN.~~
-
-~~UI - Add another settings tab where you can define colors to units based on type. This saves and is used in the dispatch list where it highlights behind only the Unit Type Name. For players to easily pick out types of units. Suggestions on alternate methods acceptable. Examples - "Patrol Unit" "Supervisor" "Brush Truck"~~
-
-~~UI Feature - Incident List right sidebar - Calls in transport pending should have some sort of temporary flash to them to make them easily visible.~~
-
-~~UI - Transport PT to hospital ETA should be shown on transport tab when picking hospitals, to make informed decisions on closest hospital.~~
-
-~~UI - Hospital Modal Glitched and lost its tabs at the top. Order for tabs on the top should be offloading units to the left most, purchases to the right most.~~
+See **docs/backend-architecture.md** for the full technical design and **docs/security.md** for the security model.
 
 ---
 
-## Phase 4 - "Noli Timere Messorem" - Oh god. Oh Fuck. Backend build, database build, auth build, frontend changes.
+### Phase 4A — Backend Foundation *(do first)*
+
+Goal: Replace `localStorage` with a real backend. Private worlds work exactly as before, now server-backed and accessible from any device.
+
+- Node.js + Express project setup alongside existing frontend
+- PostgreSQL schema: `users`, `private_worlds`, `private_world_saves`, `settings`
+- Auth endpoints: register, login, JWT middleware
+- Private world save/load API (mirrors current save slot behavior)
+- Settings API (replaces `bam_settings` key)
+- Frontend migration layer: thin API wrapper replaces all `localStorage` reads and writes
+- Self-hosted on home box; accessible from work or any device
+- Existing save data migration path: export current localStorage → import to new system
+
+**Player-visible change:** Login screen on load. Save/load now persists to server. Everything else identical.
+
+---
+
+### Phase 4B — Global World: Stations & Groups
+
+Goal: Players can see each other's stations and form groups (alliance-style).
+
+- Stations and units become server-side entities in the global world (not just save state)
+- Group system: create a group, share invite code, others join
+- Group members' stations always render on your map
+- Facilities (hospitals, jails, prisons) become global entities — visible to all, valid transport targets for all players regardless of group
+- Socket.IO: live station add/edit/remove broadcast within group
+- One account gives access to both private worlds and the global world
+
+**Player-visible change:** Friend's stations appear on the map. Facilities placed by anyone are valid for transport.
+
+---
+
+### Phase 4C — Shared Calls
+
+Goal: Group members can share incidents and respond together.
+
+- Incidents stored server-side in global world (real-time, 1× server clock, no time acceleration)
+- Calls are private by default — only you see them
+- "Share to group" button broadcasts the call to all group members
+- Group members can dispatch their own units to a shared call from anywhere
+- Responding and on-scene units from group members are visible on shared calls only
+- Socket.IO: shared call broadcast, unit position updates on active shared calls, resolution broadcast
+
+**Player-visible change:** Shared calls appear in your incident list. You can dispatch your units to them and see friends' units working the scene.
+
+---
+
+### Phase 4D — Polish & Public *(only if/when needed)*
+
+Goal: Open the game to strangers safely.
+
+- Public registration with email verification
+- Cloudflare in front (free DDoS protection, bot filtering)
+- Group management UI (kick members, rename, transfer ownership)
+- Player profiles
+- Abuse reporting
+- Move to cloud hosting (Railway.app or Fly.io — free tiers available)
+- GDPR considerations if EU players are ever anticipated
 
 
 ---
@@ -92,5 +133,10 @@ General Realism - Medical Emergency type calls should only have one PT typically
 
 ## Stretch Goals
 
-- Potential cheap hosting for sharing with friends (GitHub Pages / Cloudflare Pages)
-- Possible future: simple multiplayer where two dispatchers share a CAD
+- Full US map coverage via OSM tile streaming
+- Equipment customization per apparatus (tools, equipment loadout affecting capability tags)
+- Feature - ESN Creation and Edit has check boxes for various modifiers/designations like "Commercial" and "Interstate" which *in the future* affect the types of calls that can spawn as well as the weighting for them.
+- Feature - Allow Players to weight their ESNs within a dispatch center. Lower/Raise spawn rate of calls based on these weights applied. Allows rural ESNs to be determined by player and lower call volume appropriately.
+- Major Feature - Police Units/stations Automatically Patrol ESNs they are assigned to. Car Numbers configurable per ESN. If unable to meet requirements, then split evenly. If still unable to meet requirements, then cars are allotted at random, and patrol between different ESNs assigned.
+- Major Feature - EMS Units can be staged at a location?
+- Bug - ALS PTs transportable by non-ALS units. Rendezvous System is the fix.

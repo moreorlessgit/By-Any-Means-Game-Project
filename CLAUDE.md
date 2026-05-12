@@ -10,14 +10,19 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 
 ## Tech Stack
 
-| Layer | Current |
+| Layer | Current / Planned |
 |---|---|
 | UI/Game | Plain HTML + CSS + JS |
 | Map | Leaflet.js |
 | Routing | OSRM (public API) |
 | OSM data | Overpass API |
-| Storage | localStorage (`bam_save_` prefix) |
+| Storage | localStorage → API calls (Phase 4 migration) |
 | Local server | Live Server (VSCode extension) |
+| Backend | Node.js + Express (Phase 4) |
+| Database | PostgreSQL (Phase 4) |
+| Auth | JWT — JSON Web Tokens (Phase 4) |
+| Real-time | Socket.IO (Phase 4) |
+| DB layer | Prisma ORM (Phase 4) |
 
 ---
 
@@ -63,5 +68,7 @@ index.html, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.
 - **docs/roadmap.md** — Phase 4+ planned systems. Pull when planning or building new phases.
 - **docs/file-structure.md** — Current + planned file layout and file creation rules. Pull when adding files or asking where code belongs.
 - **docs/architecture.md** — Detailed implementation rules per system (animation, saves, ESNs, dispatch, etc.). Pull when touching a specific system.
+- **docs/backend-architecture.md** — Full backend design: DB schema, API contract, Socket.IO events, auth flow, world model. Pull when working on any Phase 4+ backend or API code.
+- **docs/security.md** — Security model, threat matrix, implementation checklist. Pull when working on auth, API endpoints, or any code that touches player data.
 - **docs/conventions.md** — Coding conventions, naming rules, ID prefixes, UI patterns. Pull when writing new code or establishing new patterns.
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.

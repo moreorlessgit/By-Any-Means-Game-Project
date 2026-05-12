@@ -21,10 +21,45 @@
 
 These will be created only when a system grows too large to logically live in an existing file, or when separation genuinely improves maintainability. Always discuss with the player before creating a new file.
 
+### Phase 4 — Backend (new directory alongside frontend)
+
 ```
-  saves/              — Folder for JSON save files (multiple save slots)
-  personnel.js        — Individual responder tracking, certifications, volunteer status (when built in Phase 4)
-  dispatch.js         — CAD-style dispatch window and response plan logic (when built in Phase 5)
+  server/
+    index.js            — Express app entry point, middleware setup, Socket.IO init
+    .env                — Secrets (JWT secret, DB connection string). NEVER committed to git.
+    prisma/
+      schema.prisma     — Database schema (single source of truth for DB structure)
+      migrations/       — Auto-generated migration files from Prisma
+    routes/
+      auth.js           — POST /api/auth/register, /api/auth/login, GET /api/auth/me
+      groups.js         — Group CRUD, invite codes, join/leave
+      stations.js       — Station CRUD (global world)
+      units.js          — Unit CRUD (global world)
+      incidents.js      — Incident CRUD, share-to-group, dispatch
+      facilities.js     — Hospital/jail/prison CRUD (global, visible to all)
+      privateWorlds.js  — Private world create/delete
+      saves.js          — Private world save slot CRUD
+      settings.js       — Per-user settings persistence
+    middleware/
+      auth.js           — JWT verification middleware (protects all non-auth routes)
+      validate.js       — Input validation middleware (Zod schemas)
+      rateLimit.js      — Rate limiting config (strict on auth routes)
+    sockets/
+      index.js          — Socket.IO event handlers (group rooms, position broadcasts)
+    lib/
+      db.js             — Prisma client singleton
+```
+
+### Phase 5 — Personnel
+
+```
+  personnel.js        — Individual responder tracking, certifications, volunteer status
+```
+
+### Phase 6 — CAD
+
+```
+  dispatch.js         — CAD-style dispatch window and response plan logic
 ```
 
 ---
