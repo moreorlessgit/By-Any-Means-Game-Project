@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\")",
+      "Bash(Measure-Object -Line)",
+      "PowerShell(\\(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\"\\).Count)",
+      "Bash(Get-ChildItem -Path \"d:\\\\By Any Means Game Project\" -Recurse -File -Name)"
+    ]
+  }
+}
