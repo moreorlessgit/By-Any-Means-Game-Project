@@ -105,6 +105,7 @@ function placeHospital(lat, lng, name){
   updateMoney(-cost);
   logCashflow(-cost, `Hospital placed: ${name}`);
   setStatus(`🏥 ${name} placed. -$${cost.toLocaleString()}`);
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   return hospital;
 }
 
@@ -139,6 +140,7 @@ function renameHospital(id, newName){
     permanent: false, className: 'station-tooltip', direction: 'top'
   });
   if(_activeHospitalId === id) _renderHospitalModal();
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   setStatus(`✅ Hospital renamed to "${newName}".`);
 }
 
@@ -149,6 +151,7 @@ function toggleHospitalDiversion(id){
   h.onDiversion = !h.onDiversion;
   h.marker.setOpacity(h.onDiversion ? 0.5 : 1);
   if(_activeHospitalId === id) _renderHospitalModal();
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   setStatus(`${h.name} — ${h.onDiversion ? '🔴 ON DIVERSION' : '✅ DIVERSION CLEARED'}`);
 }
 
@@ -159,6 +162,7 @@ function toggleHospitalService(id){
   h.inService = !h.inService;
   h.marker.setOpacity(h.inService ? 1 : 0.4);
   if(_activeHospitalId === id) _renderHospitalModal();
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   setStatus(`${h.name} — ${h.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
 }
 

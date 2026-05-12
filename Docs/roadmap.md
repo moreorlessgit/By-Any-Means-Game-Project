@@ -10,19 +10,19 @@ Phases are a guide, not a strict sequence. Player input determines priority.
 
 GENERAL HOUSEKEEPING, cleaning up the index.html file. Check for anything that can help trim down this file. I am open to splitting things out into extra .js/css files that you suggest to keep some features more contained and easier for you to search and edit in the future. Should still allow modularity. Primary goal is reducing token usage overall.
 
-### Bugs
+### Bugs ✅ (All resolved in Phase 3.25 bugfix batch)
 
-Bug - Suspect Transfer unit assignment from holding cells now works. However the assigned unit does not go to the police station where the suspect is to pick up the suspect before beginning their transport to the jail. And the ETAs are messed up.
+~~Bug - Suspect Transfer unit assignment from holding cells now works. However the assigned unit does not go to the police station where the suspect is to pick up the suspect before beginning their transport to the jail. And the ETAs are messed up.~~
 
-Bug - Operations Modal - Facilities Tab - Facilities tab does not list facilities like the station tab does, and does not have a search bar.
+~~Bug - Operations Modal - Facilities Tab - Facilities tab does not list facilities like the station tab does, and does not have a search bar.~~
 
 General Realism - Medical Emergency type calls should only have one PT typically. (I can fix this myself, claude ignore this one.)
 
 ### UI
 
-UI - Left Sidebar - Operations Modal - ESNs show up under dispatch centers tab not the ESN zones tab like they should.
+~~UI - Left Sidebar - Operations Modal - ESNs show up under dispatch centers tab not the ESN zones tab like they should.~~
 
-UI - Edit ESN Zone Modal - No search bar in dropdown for the dispatch center assignment. Along this same fix, change from checkboxes to searchable dropdowns for Fire/EMS/Law Coverage so format remains uniform and it is easier on the player to define coverage for an ESN.
+~~UI - Edit ESN Zone Modal - No search bar in dropdown for the dispatch center assignment. Along this same fix, change from checkboxes to searchable dropdowns for Fire/EMS/Law Coverage so format remains uniform and it is easier on the player to define coverage for an ESN.~~
 
 UI - Add another settings tab where you can define colors to units based on type. This saves and is used in the dispatch list where it highlights behind only the Unit Type Name. Examples - "Patrol Unit" "Supervisor" "Brush Truck"
 

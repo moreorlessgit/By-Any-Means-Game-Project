@@ -132,4 +132,30 @@
 
 ---
 
-*Last updated: 2026-05-12. Phase 3 (hospitals, jails, patient/prisoner transport, air medical, cashflow/facilities modals, suspects/charges) and Phase 3+ QOL/UI batch (sidebar redesign with Operations modal, transport dispatch queue, holding cell live timers, ESN/DC search, box alarm ordered preferences, unit drag-and-drop reorder, header sticky positioning, expanded color presets) complete. Phase 4 (volunteer system, personnel, certifications) is next.*
+---
+
+## Phase 3.25 Bugfix & UI Batch ✅
+
+**Suspect/Prisoner Transport — Two-Leg Routing:**
+- **Two-leg pickup flow** — Transport units now drive to the suspect's current holding location first (police station holding cell for station→jail transfers; source county jail for jail→prison transfers), pick up the prisoner, then continue to the destination. Previously units skipped the pickup and routed directly to the destination.
+- **`_getSuspectPickupLocation()` helper** — Single source of truth for "where is this suspect right now"; resolves over `suspect.status`, `suspect.facilityId`, and `suspect.holdingStationId` so station→jail and jail→prison flows are handled uniformly.
+- **Phase tracking** — `unit.transportPhase` = `'enroute_pickup'` | `'enroute_dropoff'`; `suspect.status` = `'awaiting_pickup'` during leg 1, `'in_transport'` during leg 2.
+- **Deferred cell vacate** — Source jail cell stays occupied until the transport unit physically arrives for pickup (`onPickupArrived`). Previously `_doTransfer` freed the cell immediately at queue time, causing count drift.
+- **`_holdingTransfer` fix** — Was setting `suspect.facilityId` to the destination before dispatch, causing `_getSuspectPickupLocation` to return the destination as the pickup point. Removed; `intakePrisoner` sets `facilityId` on arrival.
+- **`_doTransfer` fix** — Same `facilityId` contamination bug plus premature cell vacate. Both corrected; status properly set to `'needs_transport'` so dismiss/re-queue works.
+- **Returning units dispatchable** — Units in `returning` status are now included in transport unit selection (both the dispatch modal list and auto-dispatch). Routing starts from the unit's current animated position (`unit.animMarker.getLatLng()`), not home station.
+- **Transport dispatch modal z-index** — Modal and queue modal bumped to `z-index: 10001` at creation; no longer appears behind jail/facility modals when opened from within them.
+- **ETA includes pickup leg** — Dispatch modal ETA calculation sums pickup leg (unit → suspect location) + dropoff leg (suspect location → destination); pickup hint shown per unit row when pickup leg is non-trivial.
+- **Station-list pills** — Transporting units show `🚔📥` during pickup phase and `🚔→` during dropoff phase; tooltip includes pickup source and destination.
+
+**Operations Modal:**
+- **Facilities tab list + search** — Hospitals and jails now render as searchable cards in the Facilities tab (same card pattern as Stations tab); Focus pans map, Manage opens the facility modal; OOS badge reflects live status.
+- **DC tab / ESN tab separation** — Dispatch Centers tab now shows only DC cards; ESN Zones tab shows only ESNs with working search. Previously ESNs appeared under the DC tab.
+
+**Edit ESN Zone Modal:**
+- **Searchable multi-select coverage** — Fire, EMS, and Law coverage dropdowns replaced with chip-based searchable multiselect (`_buildSearchableMultiselect`); chips show current assignments with × removal; panel filters by typing.
+- **DC assignment search** — DC dropdown also uses the multiselect helper in single-select mode; consistent UX across all assignment groups.
+
+---
+
+*Last updated: 2026-05-12. Phase 3.25 bugfix batch complete (two-leg prisoner transport routing, facilities sidebar list, ESN/DC tab split, ESN searchable multiselect). Remaining Phase 3.25 items: index.html housekeeping/file split, unit-type color settings tab, transport-pending incident flash, PT-to-hospital ETA on transport tab.*

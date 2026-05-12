@@ -64,6 +64,7 @@ function placeJail(lat, lng, name, type){
   updateMoney(-cost);
   logCashflow(-cost, `${typeCfg.label} placed: ${name}`);
   setStatus(`${typeCfg.icon} ${name} placed. -$${cost.toLocaleString()}`);
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   return jail;
 }
 
@@ -100,6 +101,7 @@ function renameJail(id, newName){
     permanent: false, className: 'station-tooltip', direction: 'top'
   });
   if(_activeJailId === id) _renderJailModal();
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   setStatus(`✅ Facility renamed to "${newName}".`);
 }
 
@@ -193,6 +195,9 @@ function intakePrisoner(jailId, suspectId){
 
   suspect.status                = jail.type === 'state_correctional' ? 'at_prison' : 'at_jail';
   suspect.facilityId            = jailId;
+  // Suspect is no longer at a police station — clear the stale field so future transport
+  // lookups (e.g. jail→prison transfers) don't route back to the original arrest station.
+  suspect.holdingStationId      = null;
   suspect.processingStartSec    = gameSeconds;
   suspect.processingDurationSec = Math.round(minSec + Math.random() * (maxSec - minSec));
   // Felony → stays until transferred to state correctional (unless this IS state correctional)
@@ -244,9 +249,12 @@ function transferPrisoner(fromFacilityId, suspectId, toFacilityId){
     return;
   }
 
-  // Remove from source
-  fromJail.prisoners = fromJail.prisoners.filter(id => id !== suspectId);
-  fromJail.occupied  = Math.max(0, fromJail.occupied - 1);
+  // NOTE: do NOT remove the suspect from fromJail.prisoners / decrement occupied here.
+  // The cell stays occupied until the transport unit physically arrives at the jail —
+  // onPickupArrived (in index.html) frees the cell at pickup time. This keeps cell counts
+  // accurate during the in-flight transfer and prevents new prisoners from being booked
+  // into a cell that's nominally "free" but still has someone waiting in it.
+  // suspect.facilityId stays pointed at fromJail (the pickup source) until intake at the destination.
 
   // Reset processing timer — it will be restarted at intake
   suspect.processingStartSec    = null;
@@ -257,8 +265,7 @@ function transferPrisoner(fromFacilityId, suspectId, toFacilityId){
   if(typeof queuePrisonerTransport === 'function'){
     queuePrisonerTransport(suspect, toJail);
   } else {
-    suspect.status     = 'needs_transport';
-    suspect.facilityId = toFacilityId;
+    suspect.status = 'needs_transport';
   }
   if(_activeJailId === fromFacilityId) _renderJailModal();
   setStatus(`${suspect.id} flagged for transfer to ${toJail.name}.`);
@@ -522,12 +529,13 @@ function _doTransfer(fromJailId, suspectId){
   if(!fromJail || !toJail || !suspect){ setStatus('⚠️ Transfer failed.'); return; }
   if(toJail.occupied >= toJail.cells){ setStatus(`⚠️ ${toJail.name} is full.`); return; }
 
-  // Remove from source facility immediately
-  fromJail.prisoners = fromJail.prisoners.filter(id => id !== suspectId);
-  fromJail.occupied  = Math.max(0, fromJail.occupied - 1);
-  suspect.facilityId = toJailId;
+  // Do NOT remove from source facility or change facilityId yet.
+  // The cell stays occupied and facilityId stays pointing at fromJail so that
+  // _getSuspectPickupLocation() routes the transport unit HERE to pick up the prisoner.
+  // onPickupArrived() (index.html) frees the source cell when the unit physically arrives.
   suspect.processingStartSec    = null;
   suspect.processingDurationSec = null;
+  suspect.status = 'needs_transport';
 
   // Open unit-selection dispatch modal immediately (player-initiated transfer)
   if(typeof _openTransportDispatchModal === 'function'){
@@ -545,6 +553,7 @@ function _toggleJailService(id){
   j.inService = !j.inService;
   j.marker.setOpacity(j.inService ? 1 : 0.4);
   _renderJailModal();
+  if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
   setStatus(`${j.name} — ${j.inService ? 'IN SERVICE' : 'OUT OF SERVICE'}`);
 }
 

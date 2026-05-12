@@ -104,10 +104,17 @@ function renderStationList(){
       const isRet  = u.status === 'returning' && u._returnRemSec > 0;
       const isTrans = u.status === 'transporting';
       const isOff  = u.status === 'offloading';
+      // Jail transport phases (set by dispatchPrisonerTransport)
+      const isJailTrans = isTrans && u.transportDestination?.type === 'jail';
+      const isPickup    = isJailTrans && u.transportPhase === 'enroute_pickup';
       // Pill text: show ETA on returning, destination on transporting/offloading
       let pillTxt = u.name;
       if(isRet)   pillTxt = `${u.name} ↩${formatETA(u._returnRemSec)}`;
-      if(isTrans) pillTxt = `${u.name} 🚑→`;
+      if(isTrans){
+        if(isPickup)         pillTxt = `${u.name} 🚔📥`;
+        else if(isJailTrans) pillTxt = `${u.name} 🚔→`;
+        else                 pillTxt = `${u.name} 🚑→`;
+      }
       if(isOff){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
         pillTxt = remSec > 0 ? `${u.name} 🏥 ${formatETA(remSec)}` : `${u.name} 🏥`;
@@ -117,10 +124,25 @@ function renderStationList(){
       let ttip = uOOS ? 'Out of service' : u.status;
       if(isRet)   ttip = `Returning — ${formatETA(u._returnRemSec)} to ST`;
       if(isTrans){
-        const destName = u.transportDestination?.id
-          ? (hospitals.find(h => h.id === u.transportDestination.id)?.name || 'facility')
+        // Resolve destination name across facility types
+        const destId = u.transportDestination?.id;
+        const destType = u.transportDestination?.type;
+        const destName = destId
+          ? (destType === 'jail'
+              ? (jails.find(j => j.id === destId)?.name || 'jail')
+              : (hospitals.find(h => h.id === destId)?.name || 'facility'))
           : 'facility';
-        ttip = `Transporting → ${destName}`;
+        if(isPickup){
+          // Pickup source may be a station OR a jail (jail→prison transfer) — prefer the
+          // structured pickupSource set at dispatch time, fall back to id lookup across both lists.
+          const pickupName = u.pickupSource?.name
+            || stations.find(st => st.id === u.pickupStationId)?.name
+            || jails.find(j => j.id === u.pickupStationId)?.name
+            || 'pickup location';
+          ttip = `Picking up at ${pickupName} → ${destName}`;
+        } else {
+          ttip = `Transporting → ${destName}`;
+        }
       }
       if(isOff){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
@@ -789,9 +811,11 @@ function _holdingTransfer(suspectId, jailOrPrison){
   }
 
   // Free the holding cell, then open unit-selection modal for player to assign transport.
+  // Do NOT set sus.facilityId here — it must remain null so _getSuspectPickupLocation
+  // returns the holding station (via holdingStationId) as the pickup point, not the destination jail.
+  // intakePrisoner() will set facilityId when the unit actually arrives at the destination.
   _freeStationCell(s, suspectId);
-  sus.status     = 'needs_transport';
-  sus.facilityId = facility.id;
+  sus.status = 'needs_transport';
   if(typeof _openTransportDispatchModal === 'function'){
     _openTransportDispatchModal(sus, facility);
   } else if(typeof queuePrisonerTransport === 'function'){

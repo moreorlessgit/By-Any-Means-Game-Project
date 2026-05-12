@@ -365,8 +365,9 @@ function _selectESNColor(color) {
   _renderColorSwatches(color);
 }
 
-// Builds the station assignment checkboxes grouped by service type,
-// with per-group search bars (D3) and a DC assignment dropdown at the bottom (D2).
+// Builds the station assignment UI grouped by service type and the DC dropdown.
+// Each group uses a searchable-multiselect component (chip bar + search + filtered checkbox panel).
+// The DC selector uses the same component in single-select mode.
 function _renderESNAssignUI(existing) {
   const container = document.getElementById('esn-assignments');
   const labels = { fire: 'Fire Coverage', ems: 'EMS Coverage', police: 'Law Enforcement' };
@@ -378,51 +379,126 @@ function _renderESNAssignUI(existing) {
     const eligible = stations.filter(s =>
       s.units.some(u => BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => serviceTags.includes(t)))
     );
-    // Unique group id so multiple search inputs don't conflict
     const groupId = `esn-assign-${type}`;
     html += `<div class="esn-assign-group">
-      <div class="esn-assign-label">${labels[type]}</div>
-      <input type="text" placeholder="Search ${type} stations…"
-             style="width:100%;font-size:.78rem;padding:3px 7px;margin-bottom:4px;"
-             oninput="_filterESNStationSearch(this,'${groupId}')"/>
-      <div id="${groupId}">`;
+      <div class="esn-assign-label">${labels[type]}</div>`;
     if (!eligible.length) {
       html += `<div class="esn-assign-empty">No ${type} stations placed yet</div>`;
     } else {
-      eligible.forEach(st => {
-        const chk = assigned.includes(st.id) ? 'checked' : '';
-        html += `<label class="esn-check-row" data-st-name="${st.name.toLowerCase()}">
-          <input type="checkbox" value="${st.id}" data-svctype="${type}" ${chk}/>
-          ${st.name}
-        </label>`;
+      html += _buildSearchableMultiselect({
+        panelId:     groupId,
+        placeholder: `Search ${type} stations…`,
+        options:     eligible.map(s => ({ value: s.id, label: s.name })),
+        selected:    new Set(assigned),
+        singleSelect:false,
+        // checkbox extras so confirmESNModal's reader keeps working
+        checkboxExtra: `data-svctype="${type}"`,
       });
     }
-    html += `</div></div>`;
+    html += `</div>`;
   });
 
-  // D2 — Dispatch Center assignment dropdown
+  // Dispatch Center — single-select via the same component, paired with a hidden input
+  // that confirmESNModal already reads (#esn-dc-assign).
   const currentDCId = existing
     ? (dispatchCenters.find(dc => dc.assignedESNs.includes(existing.id))?.id || '')
     : '';
   html += `<div class="esn-assign-group" style="margin-top:10px;">
     <div class="esn-assign-label">Dispatch Center</div>
-    <select id="esn-dc-assign" style="width:100%;padding:5px 8px;font-size:.82rem;">
-      <option value="">— None —</option>
-      ${dispatchCenters.map(dc =>
-        `<option value="${dc.id}"${dc.id === currentDCId ? ' selected' : ''}>${dc.name}</option>`
-      ).join('')}
-    </select>
-  </div>`;
+    <input type="hidden" id="esn-dc-assign" value="${currentDCId}"/>`;
+  if (!dispatchCenters.length) {
+    html += `<div class="esn-assign-empty">No dispatch centers placed yet</div>`;
+  } else {
+    html += _buildSearchableMultiselect({
+      panelId:     'esn-assign-dc',
+      placeholder: 'Search dispatch centers…',
+      options:     dispatchCenters.map(dc => ({ value: dc.id, label: dc.name })),
+      selected:    currentDCId ? new Set([currentDCId]) : new Set(),
+      singleSelect:true,
+      hiddenInputId:'esn-dc-assign',
+    });
+  }
+  html += `</div>`;
 
   container.innerHTML = html;
 }
 
-// Filters station checkboxes within a specific assignment group by name.
-function _filterESNStationSearch(inputEl, groupId){
+// Builds a searchable multi-select panel: chip bar (selected items, removable) + search input + filtered checkbox list.
+// opts: { panelId, placeholder, options:[{value,label}], selected:Set, singleSelect, checkboxExtra, hiddenInputId }
+// Selected state is the live source of truth — read by walking checked checkboxes inside #panelId.
+// For singleSelect, the chosen value is also mirrored to #hiddenInputId so existing readers don't change.
+function _buildSearchableMultiselect(opts){
+  const { panelId, placeholder, options, selected, singleSelect, checkboxExtra='', hiddenInputId='' } = opts;
+  const chipsHTML = options
+    .filter(o => selected.has(o.value))
+    .map(o => `<span class="esn-msm-chip" data-value="${o.value}">
+        ${o.label}<span class="x" title="Remove"
+          onclick="_msmRemove('${panelId}','${o.value}',${singleSelect ? 'true' : 'false'},'${hiddenInputId}')">×</span>
+      </span>`)
+    .join('');
+  const rowsHTML = options.map(o => {
+    const checked = selected.has(o.value) ? 'checked' : '';
+    return `<label class="esn-check-row" data-label="${o.label.toLowerCase()}">
+      <input type="checkbox" value="${o.value}" ${checkboxExtra} ${checked}
+        onchange="_msmToggle('${panelId}','${o.value}',${singleSelect ? 'true' : 'false'},'${hiddenInputId}')"/>
+      ${o.label}
+    </label>`;
+  }).join('');
+  return `<div class="esn-msm-chips" id="${panelId}-chips">${chipsHTML}</div>
+    <input type="text" placeholder="${placeholder}"
+           style="width:100%;font-size:.78rem;padding:3px 7px;margin-bottom:4px;"
+           oninput="_msmFilter(this,'${panelId}')"/>
+    <div class="esn-msm-panel" id="${panelId}">${rowsHTML}</div>`;
+}
+
+// Filter handler — hides rows whose data-label doesn't contain the query.
+function _msmFilter(inputEl, panelId){
   const q = inputEl.value.toLowerCase();
-  document.querySelectorAll(`#${groupId} .esn-check-row`).forEach(row => {
-    row.style.display = row.dataset.stName?.includes(q) ? '' : 'none';
+  document.querySelectorAll(`#${panelId} .esn-check-row`).forEach(row => {
+    row.style.display = row.dataset.label?.includes(q) ? '' : 'none';
   });
+}
+
+// Toggle handler — fired on checkbox change. For singleSelect, unchecks all siblings first.
+// Rebuilds the chip row and, when relevant, the hidden mirror input.
+function _msmToggle(panelId, value, singleSelect, hiddenInputId){
+  const panel = document.getElementById(panelId);
+  if(!panel) return;
+  if(singleSelect){
+    // Uncheck every other box so the radio-like single value is enforced
+    panel.querySelectorAll('input[type=checkbox]').forEach(cb => {
+      if(cb.value !== value) cb.checked = false;
+    });
+  }
+  _msmRefreshChips(panelId, singleSelect, hiddenInputId);
+}
+
+// Removes a single value (via the chip × button).
+function _msmRemove(panelId, value, singleSelect, hiddenInputId){
+  const panel = document.getElementById(panelId);
+  if(!panel) return;
+  const cb = panel.querySelector(`input[type=checkbox][value="${value}"]`);
+  if(cb) cb.checked = false;
+  _msmRefreshChips(panelId, singleSelect, hiddenInputId);
+}
+
+// Rebuilds the chip bar from currently checked checkboxes and updates the hidden mirror input.
+function _msmRefreshChips(panelId, singleSelect, hiddenInputId){
+  const panel = document.getElementById(panelId);
+  const chips = document.getElementById(panelId + '-chips');
+  if(!panel || !chips) return;
+  const checked = Array.from(panel.querySelectorAll('input[type=checkbox]:checked'));
+  chips.innerHTML = checked.map(cb => {
+    const label = cb.parentElement.textContent.trim();
+    return `<span class="esn-msm-chip" data-value="${cb.value}">
+      ${label}<span class="x" title="Remove"
+        onclick="_msmRemove('${panelId}','${cb.value}',${singleSelect ? 'true' : 'false'},'${hiddenInputId}')">×</span>
+    </span>`;
+  }).join('');
+  if(hiddenInputId){
+    const hidden = document.getElementById(hiddenInputId);
+    if(hidden) hidden.value = checked[0]?.value || '';
+  }
 }
 
 // Shows existing box alarms for this ESN inside the modal.
@@ -463,7 +539,8 @@ function confirmESNModal() {
   const labelSize = document.getElementById('esn-label-size')?.value || 'md';
 
   const assignments = { fire: [], ems: [], police: [] };
-  document.querySelectorAll('#esn-assignments input[type=checkbox]:checked').forEach(cb => {
+  // Only coverage checkboxes have data-svctype; the DC checkboxes don't, so this naturally skips them.
+  document.querySelectorAll('#esn-assignments input[type=checkbox][data-svctype]:checked').forEach(cb => {
     assignments[cb.dataset.svctype].push(cb.value);
   });
 
@@ -546,7 +623,10 @@ function deleteESN(id) {
   esn?.polygon?.remove();
   esns = esns.filter(e => e.id !== id);
   boxAlarms = boxAlarms.filter(b => b.esnId !== id);
+  // Strip the deleted ESN from every DC's assignedESNs so DC card counts stay accurate.
+  dispatchCenters.forEach(dc => { dc.assignedESNs = dc.assignedESNs.filter(eid => eid !== id); });
   renderESNList();
+  renderDCList();
   setStatus('🗑 ESN deleted.');
 }
 
@@ -587,7 +667,6 @@ function setDCLayerVisible(visible) {
 // =============================================================================
 
 function renderESNList() {
-  renderDCList();  // always refresh DC section when ESN list refreshes
   const searchEl = document.getElementById('esn-search');
   const q = searchEl ? searchEl.value.trim().toLowerCase() : '';
   // Typing in search clears the DC filter so they don't conflict
@@ -1113,12 +1192,18 @@ function renderDCList() {
 
 // Toggles the DC filter: clicking a DC shows only its ESNs; clicking it again clears the filter.
 function _selectDCFilter(dcId) {
+  const turningOn = _selectedDCFilter !== dcId;
   _selectedDCFilter = (_selectedDCFilter === dcId) ? null : dcId;
   renderDCList();
   // Clear the search bar when a DC filter is selected, so both don't fight each other
   const searchEl = document.getElementById('esn-search');
   if(searchEl && _selectedDCFilter !== null) searchEl.value = '';
   _renderFilteredESNList();
+  // UX: when filter is turned ON from the DC tab, hop to the ESN tab where the filtered list lives.
+  if(turningOn && typeof switchOpsSubTab === 'function'
+     && document.getElementById('ops-sub-dcs')?.style.display !== 'none'){
+    switchOpsSubTab('esns');
+  }
 }
 
 function closeDCSummary() {
