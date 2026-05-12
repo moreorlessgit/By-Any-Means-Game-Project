@@ -80,6 +80,12 @@
     .build-cat-hdr:hover{color:var(--text);}
     .build-cat-body{padding-left:4px;margin-top:2px;}
 
+    /* ── HOSPITAL SIDEBAR TABS ── */
+    .sb-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;}
+    .sb-tab{flex:1;padding:9px 6px;text-align:center;font-size:.82rem;cursor:pointer;border-bottom:3px solid transparent;transition:color .15s,border-color .15s;}
+    .sb-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+    .sb-tab:hover:not(.active){background:var(--hover);}
+
     /* ── OPS MODAL TABS ── */
     .ops-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--panel);}
     .ops-tab{
@@ -236,8 +242,12 @@
     .istatus.needs{color:var(--accent);}
     .istatus.partial{color:var(--gold);}
     .istatus.enroute{color:var(--ems);}
-    .istatus.transport{color:#f97316;}
+    .istatus.transport{color:#f97316;animation:bam-transport-pulse 1.4s ease-in-out infinite;}
     .istatus.resolved{color:var(--green);}
+    @keyframes bam-transport-pulse{
+      0%,100%{background:rgba(249,115,22,.15);color:#f97316;padding:2px 4px;border-radius:3px;}
+      50%{background:rgba(249,115,22,.4);color:#fff;padding:2px 4px;border-radius:3px;}
+    }
     .icard .ipatients{font-size:.8rem;color:var(--ems);margin-top:2px;}
 
     /* ── SHARED MODAL CHROME ── */
@@ -338,6 +348,37 @@
       font-size:.82rem;padding:4px 0;cursor:pointer;
     }
     .esn-check-row input{width:auto;flex-shrink:0;}
+    /* Searchable multiselect — chip bar above the search-and-checkbox panel.
+       Used in the Edit ESN modal for Fire/EMS/Law Coverage and Dispatch Center assignment. */
+    .esn-msm-chips{
+      display:flex;flex-wrap:wrap;gap:4px;
+      min-height:22px;padding:3px 4px;margin-bottom:4px;
+      border:1px solid var(--border);border-radius:2px;background:var(--bg);
+    }
+    .esn-msm-chips:empty::before{
+      content:'(none selected)';
+      font-size:.74rem;color:var(--muted);font-style:italic;padding:2px 4px;
+    }
+    .esn-msm-chip{
+      display:inline-flex;align-items:center;gap:5px;
+      font-size:.74rem;line-height:1;
+      background:var(--gold);color:#000;
+      border-radius:10px;padding:3px 4px 3px 8px;
+      max-width:100%;white-space:nowrap;
+    }
+    .esn-msm-chip .x{
+      cursor:pointer;font-weight:700;
+      background:rgba(0,0,0,.25);color:#fff;
+      border-radius:50%;width:14px;height:14px;
+      display:inline-flex;align-items:center;justify-content:center;
+      font-size:.7rem;line-height:1;
+    }
+    .esn-msm-chip .x:hover{background:rgba(0,0,0,.5);}
+    .esn-msm-panel{
+      max-height:140px;overflow-y:auto;
+      border:1px solid var(--border);border-radius:2px;
+      padding:3px 6px;background:var(--bg);
+    }
     .ba-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);}
     .ba-info{flex:1;min-width:0;}
     .ba-name{font-weight:700;font-size:.82rem;color:var(--gold);}
@@ -512,11 +553,6 @@
     .dc-filter-card{cursor:pointer;transition:border-color .15s;}
     .dc-filter-card:hover{border-color:var(--border2);}
     .dc-filter-card.active{border-color:var(--gold);background:rgba(240,165,0,.07);}
-    .dc-collapse-btn{
-      background:none;border:none;color:var(--muted);cursor:pointer;
-      font-size:.8rem;padding:0 3px;line-height:1;transition:color .15s;
-    }
-    .dc-collapse-btn:hover{color:var(--text);}
   </style>
 </head>
 <body>
@@ -720,11 +756,14 @@
       </div>
       <!-- ── Facilities pane ── -->
       <div id="ops-pane-facilities" class="ops-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
-        <div style="padding:10px 14px;flex-shrink:0;display:flex;gap:8px;border-bottom:1px solid var(--border);">
+        <div style="padding:8px 14px 6px;flex-shrink:0;display:flex;gap:8px;border-bottom:1px solid var(--border);">
           <button class="btn-sm" onclick="openFacilitiesModal()">📋 Manage All Facilities</button>
         </div>
+        <div class="sb-search" style="flex-shrink:0;">
+          <input type="text" id="facility-search" placeholder="Search facilities…" oninput="renderFacilitiesSidebarList()"/>
+        </div>
         <div class="sb-scroll" id="ops-facilities-scroll">
-          <div class="empty-msg">Open Manage All Facilities to see hospitals and jails.</div>
+          <div class="empty-msg">No hospitals or jails placed yet.</div>
         </div>
       </div>
       <!-- ── Operations pane ── -->
@@ -736,30 +775,19 @@
           <div class="ops-subtab"        id="ops-stab-plans"     onclick="switchOpsSubTab('plans')">Response Plans</div>
           <div class="ops-subtab"        id="ops-stab-boxalarms" onclick="switchOpsSubTab('boxalarms')">Box Alarms</div>
         </div>
-        <!-- DC sub-pane -->
+        <!-- DC sub-pane — Dispatch Centers only -->
         <div id="ops-sub-dcs" class="ops-sub-pane" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
-          <div style="padding:6px 12px 4px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid var(--border);">
-            <div class="sb-title" style="margin-bottom:0;">Dispatch Centers</div>
-            <button class="dc-collapse-btn" id="dc-collapse-btn" onclick="toggleDCSection()" title="Collapse/expand">▲</button>
-          </div>
-          <div id="dc-section-body" style="padding:0 12px 8px;flex-shrink:0;border-bottom:1px solid var(--border);">
+          <div class="sb-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
             <div id="dc-list"><div class="empty-msg">No dispatch centers placed yet.</div></div>
           </div>
+        </div>
+        <!-- ESN sub-pane — ESN Zones only -->
+        <div id="ops-sub-esns" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
           <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);">
             <input type="text" id="esn-search" placeholder="Search ESN zones…" style="width:100%;" oninput="renderESNList()"/>
           </div>
-          <div class="sb-scroll" id="esn-scroll">
+          <div class="sb-scroll" id="esn-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
             <div class="empty-msg">No ESN zones yet.</div>
-          </div>
-        </div>
-        <!-- ESNs sub-pane (alias — same list visible in DC sub-pane via filter; this just focuses ESN list) -->
-        <div id="ops-sub-esns" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
-          <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);">
-            <input type="text" id="esn-search-2" placeholder="Search ESN zones…" style="width:100%;"
-                   oninput="document.getElementById('esn-search').value=this.value;renderESNList()"/>
-          </div>
-          <div class="sb-scroll" id="esn-scroll-2" style="flex:1;overflow-y:auto;padding:8px 12px;">
-            <!-- mirrors #esn-scroll via renderESNList2 -->
           </div>
         </div>
         <!-- Plans sub-pane -->
@@ -853,6 +881,7 @@
         <div class="settings-tab active" onclick="switchSettingsTab('simulation')">Simulation</div>
         <div class="settings-tab" onclick="switchSettingsTab('avl')">AVL Labels</div>
         <div class="settings-tab" onclick="switchSettingsTab('map')">Map</div>
+        <div class="settings-tab" onclick="switchSettingsTab('unitcolors')">Unit Colors</div>
       </div>
       <!-- Simulation tab -->
       <div id="stab-simulation" class="settings-pane active">
@@ -901,6 +930,8 @@
       <div id="stab-map" class="settings-pane">
         <div style="font-size:.8rem;color:var(--muted);padding:10px 0;">Map style options — coming soon.</div>
       </div>
+      <!-- Unit Colors tab — content populated by _initUnitColorSettings() at startup -->
+      <div id="stab-unitcolors" class="settings-pane"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeSettings()">Close</button>
@@ -1189,6 +1220,12 @@ let avlStyle = {
   fontSize:    BAM_CONFIG.ui?.avlLabelStyle?.fontSize    || 9,
 };
 
+// Unit type label badge colors for dispatch list — keyed by type key, defaults from config
+let unitTypeColors = {};
+Object.entries(BAM_CONFIG.unitTypes).forEach(([key, cfg]) => {
+  unitTypeColors[key] = cfg.color || '#555555';
+});
+
 // Player-adjustable spawn rate multiplier (0.25 = very slow, 3 = chaos)
 let playerSpawnRate = 1;
 
@@ -1267,6 +1304,7 @@ function switchOpsTab(tab){
     if(pane) pane.style.display = t===tab ? 'flex' : 'none';
   });
   if(tab === 'stations')   renderStationList();
+  if(tab === 'facilities') renderFacilitiesSidebarList();
   if(tab === 'operations'){ renderDCList(); renderESNList(); }
 }
 
@@ -1594,7 +1632,7 @@ function renderDispatchBody(inc, mCfg){
       html += `<div class="dm-enroute-row">
         <div style="flex:1;">
           <div class="dm-enroute-name">${stCfg.icon} ${unit.name}</div>
-          <div style="font-size:.8rem;color:var(--muted);">${station.name}</div>
+          <div style="font-size:.8rem;color:var(--muted);">${station.name} · <span style="background:${unitTypeColors[unit.typeKey]||stCfg.color||'#555'};color:#fff;padding:1px 6px;border-radius:10px;font-size:.72rem;font-weight:600;">${stCfg.label}</span></div>
         </div>
         ${statusTxt}
         <button class="btn-sm danger" style="font-size:.8rem;padding:2px 6px;margin-left:8px;"
@@ -1740,7 +1778,7 @@ function renderDispatchBody(inc, mCfg){
       id="dur_${unit.id}">
       <div>
         <div class="dm-unit-name">${utCfg.icon} ${unit.name}</div>
-        <div class="dm-unit-station">${station.name} · ${utCfg.label}</div>
+        <div class="dm-unit-station">${station.name} · <span style="background:${unitTypeColors[unit.typeKey]||utCfg.color||'#555'};color:#fff;padding:1px 7px;border-radius:10px;font-size:.75rem;font-weight:600;">${utCfg.label}</span></div>
         <div style="font-size:.8rem;color:var(--muted)">Tags: ${utCfg.tags.join(', ')}</div>
       </div>
       <div class="dm-unit-eta" style="text-align:right;line-height:1.4;">${etaTxt}</div>
@@ -2185,12 +2223,13 @@ function renderTransportTab(inc){
             <div style="flex:1;min-width:110px;">
               <div style="font-size:.8rem;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">HOSPITAL</div>
               <select id="tr-hosp-${pt.id}" style="width:100%;font-size:.8rem;"
-                onchange="_updateTransportCompat('${pt.id}','${reqDept}')">
+                onchange="_updateTransportCompat('${pt.id}','${reqDept}','${inc.id}')">
                 <option value="">Select hospital…</option>${hospOptHtml}
               </select>
             </div>
           </div>
           <div id="tr-compat-${pt.id}" style="font-size:.8rem;margin:4px 0;min-height:16px;"></div>
+          <div id="tr-eta-${pt.id}" style="font-size:.8rem;color:var(--gold);margin-top:2px;min-height:14px;"></div>
           <button class="btn-primary" style="width:100%;padding:7px;margin-top:4px;"
             onclick="_beginTransport('${pt.id}','${inc.id}')">▶ Begin Transport</button>
         </div>`;
@@ -2271,19 +2310,43 @@ function renderTransportTab(inc){
   return html;
 }
 
-// Updates the compatibility indicator when a hospital is selected in a transport row.
-function _updateTransportCompat(patientId, reqDept){
+// Updates the compatibility indicator and drive-time ETA when a hospital is selected in a transport row.
+function _updateTransportCompat(patientId, reqDept, incId){
   const hospId = document.getElementById('tr-hosp-'+patientId)?.value;
   const compatEl = document.getElementById('tr-compat-'+patientId);
+  const etaEl    = document.getElementById('tr-eta-'+patientId);
   if(!compatEl) return;
-  if(!hospId){ compatEl.textContent = ''; return; }
+  if(!hospId){
+    compatEl.textContent = '';
+    if(etaEl) etaEl.textContent = '';
+    return;
+  }
   const hosp = hospitals.find(h => h.id === hospId);
-  if(!hosp){ compatEl.textContent = ''; return; }
+  if(!hosp){
+    compatEl.textContent = '';
+    if(etaEl) etaEl.textContent = '';
+    return;
+  }
   const deptLabel = BAM_CONFIG.hospitalDepartments?.[reqDept]?.label || reqDept;
   if(hosp.departments[reqDept]){
     compatEl.innerHTML = `<span class="transport-compat-ok">✓ ${deptLabel} available</span>`;
   } else {
     compatEl.innerHTML = `<span class="transport-compat-bad">⚠ ${deptLabel} not installed — will use ED</span>`;
+  }
+  // Fetch drive-time ETA from incident scene to hospital via OSRM
+  if(etaEl && incId){
+    const inc = incidents.find(i=>i.id===incId);
+    if(inc){
+      etaEl.textContent = '🏥 Calculating ETA…';
+      const url = `https://router.project-osrm.org/route/v1/driving/${inc.lng},${inc.lat};${hosp.lng},${hosp.lat}?overview=false`;
+      fetch(url).then(r=>r.json()).then(data=>{
+        const dur  = data.routes?.[0]?.duration;
+        const dist = data.routes?.[0]?.distance;
+        if(dur==null){ etaEl.textContent='🏥 ETA unavailable'; return; }
+        const mi = (dist*0.000621371).toFixed(1);
+        etaEl.textContent = `🏥 ETA: ${formatETA(Math.round(dur))} — ${mi} mi`;
+      }).catch(()=>{ etaEl.textContent='🏥 ETA unavailable'; });
+    }
   }
 }
 
@@ -2587,19 +2650,55 @@ function onTransportArrived(unit, hospital){
   setStatus(`🏥 ${unit.name} offloading at ${hospital.name}`);
 }
 
+// Returns the suspect's current physical pickup location for transport routing.
+// A suspect may be at a station (booked, awaiting transfer) or at a jail/prison
+// (awaiting transfer to state correctional). The relevant ID lives on different fields
+// depending on status — this helper normalizes the lookup so callers don't have to.
+// Returns { lat, lng, name, id, kind:'station'|'jail', inService } or null.
+function _getSuspectPickupLocation(suspect){
+  if(!suspect) return null;
+  // Currently held in a jail/prison cell
+  if(suspect.status === 'at_jail' || suspect.status === 'at_prison'){
+    const j = jails.find(x => x.id === suspect.facilityId);
+    if(j) return { lat:j.lat, lng:j.lng, name:j.name, id:j.id, kind:'jail', inService: j.inService !== false };
+  }
+  // In a station holding cell or just released from one awaiting jail transport
+  if(suspect.status === 'at_station' || suspect.status === 'awaiting_transfer'){
+    const s = stations.find(x => x.id === suspect.holdingStationId);
+    if(s) return { lat:s.lat, lng:s.lng, name:s.name, id:s.id, kind:'station', inService: s.inService !== false };
+  }
+  // needs_transport / awaiting_pickup / in_transport — prefer jail (most recent location) over station
+  if(suspect.facilityId){
+    const j = jails.find(x => x.id === suspect.facilityId);
+    if(j) return { lat:j.lat, lng:j.lng, name:j.name, id:j.id, kind:'jail', inService: j.inService !== false };
+  }
+  if(suspect.holdingStationId){
+    const s = stations.find(x => x.id === suspect.holdingStationId);
+    if(s) return { lat:s.lat, lng:s.lng, name:s.name, id:s.id, kind:'station', inService: s.inService !== false };
+  }
+  return null;
+}
+
 // Dispatches a prisoner transport unit to a jail/prison.
 // preferredUnit: optional {unit, station} from the transport dispatch modal.
 // If omitted, the nearest available patrol/transport unit is used (legacy behavior).
+//
+// Two-leg flow with phase tracking:
+//   Leg 1 (pickup):  unit's current location → suspect's current location (status=transporting, phase=enroute_pickup)
+//   Leg 2 (dropoff): suspect's current location → destination facility    (status=transporting, phase=enroute_dropoff)
+// Pickup location resolves through _getSuspectPickupLocation() so it works for
+// station→jail transfers AND jail→prison transfers.
 function dispatchPrisonerTransport(suspect, facility, preferredUnit=null){
   let unitEntry = preferredUnit;
+  const pickupLoc = _getSuspectPickupLocation(suspect);
   if(!unitEntry){
-    const station = stations.find(s => s.id === suspect.holdingStationId);
-    const fromLat = station?.lat || facility.lat;
-    const fromLng = station?.lng || facility.lng;
+    const fromLat = pickupLoc?.lat || facility.lat;
+    const fromLng = pickupLoc?.lng || facility.lng;
     const transportUnits = getAllUnits().filter(({unit}) => {
       const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
       return (tags.includes('transport_prisoner')||tags.includes('patrol'))
-        && unit.status === 'available' && unit.inService !== false;
+        && (unit.status === 'available' || unit.status === 'returning')
+        && unit.inService !== false;
     }).sort((a,b) =>
       haversineKm(a.station.lat,a.station.lng,fromLat,fromLng) -
       haversineKm(b.station.lat,b.station.lng,fromLat,fromLng)
@@ -2611,16 +2710,42 @@ function dispatchPrisonerTransport(suspect, facility, preferredUnit=null){
     unitEntry = transportUnits[0];
   }
   const {unit, station:unitStation} = unitEntry;
-  const distKm = haversineKm(unitStation.lat, unitStation.lng, facility.lat, facility.lng);
-  unit.transportDistanceMi = distKm * 0.621371;
+  // For returning units, start routing from their current animated position — not home station.
+  // animMarker tracks exact position mid-route; home station is the fallback if not animating.
+  const _animPos = (unit.status === 'returning' && unit.animMarker)
+    ? unit.animMarker.getLatLng() : null;
+  const routeFrom = _animPos
+    ? { lat: _animPos.lat, lng: _animPos.lng, name: unitStation.name, id: unitStation.id }
+    : unitStation;
+  // Dropoff distance (pickup→facility) is the prisoner-carrying leg — drives transport revenue.
+  const pickupFromLat = pickupLoc?.lat ?? routeFrom.lat;
+  const pickupFromLng = pickupLoc?.lng ?? routeFrom.lng;
+  const dropoffDistKm = haversineKm(pickupFromLat, pickupFromLng, facility.lat, facility.lng);
+  unit.transportDistanceMi = dropoffDistKm * 0.621371;
   unit.transportSuspect = suspect.id;
   unit._transportSuspectRef = suspect;   // direct reference — used by onPrisonerTransportArrived
   unit.transportDestination = { type: 'jail', id: facility.id };
   unit.homeStationId = unitStation.id;
+  // Pickup source — used by onPickupArrived to free the cell at the source jail (if applicable).
+  unit.pickupSource = pickupLoc ? { kind: pickupLoc.kind, id: pickupLoc.id, name: pickupLoc.name } : null;
+  unit.pickupStationId = pickupLoc?.id || null;   // legacy display field
   unit.status = 'transporting';
-  suspect.status = 'in_transport';
-  routeToPrison(unit, unitStation, facility, suspect);
-  setStatus(`🚔 ${unit.name} transporting prisoner to ${facility.name}`);
+  // Skip pickup leg if unit is already at the suspect's location (or pickup location unknown).
+  // For returning units, compare against routeFrom (current position), not home station.
+  const skipPickup = !pickupLoc
+    || (pickupLoc.kind === 'station' && pickupLoc.id === unitStation.id && !_animPos)
+    || (haversineKm(routeFrom.lat, routeFrom.lng, pickupLoc.lat, pickupLoc.lng) < 0.05);
+  if(skipPickup){
+    unit.transportPhase = 'enroute_dropoff';
+    suspect.status = 'in_transport';
+    routeToPrison(unit, pickupLoc || routeFrom, facility, suspect);
+    setStatus(`🚔 ${unit.name} transporting prisoner to ${facility.name}`);
+  } else {
+    unit.transportPhase = 'enroute_pickup';
+    suspect.status = 'awaiting_pickup';
+    routeToHoldingPickup(unit, routeFrom, pickupLoc, facility, suspect);
+    setStatus(`🚔 ${unit.name} en route to pick up prisoner at ${pickupLoc.name}`);
+  }
 }
 
 // ── TRANSPORT DISPATCH QUEUE ──────────────────────────────────────────────────
@@ -2658,15 +2783,17 @@ function _openTransportDispatchModal(suspect, facility){
   pendingTransports = pendingTransports.filter(pt => pt.suspect.id !== suspect.id);
   renderPendingTransportBadge();
 
-  // Find the holding/source location for distance sorting
-  const srcStation = stations.find(s => s.id === (suspect.holdingStationId || suspect.facilityId));
-  const fromLat = srcStation?.lat ?? facility.lat;
-  const fromLng = srcStation?.lng ?? facility.lng;
+  // Resolve the suspect's current pickup location — could be a station or a jail
+  // depending on whether this is a station→jail booking or a jail→prison transfer.
+  const pickupLoc = _getSuspectPickupLocation(suspect);
+  const fromLat = pickupLoc?.lat ?? facility.lat;
+  const fromLng = pickupLoc?.lng ?? facility.lng;
 
   const available = getAllUnits().filter(({unit}) => {
     const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
     return (tags.includes('transport_prisoner') || tags.includes('patrol'))
-      && unit.status === 'available' && unit.inService !== false;
+      && (unit.status === 'available' || unit.status === 'returning')
+      && unit.inService !== false;
   }).sort((a,b) =>
     haversineKm(a.station.lat, a.station.lng, fromLat, fromLng) -
     haversineKm(b.station.lat, b.station.lng, fromLat, fromLng)
@@ -2682,16 +2809,26 @@ function _openTransportDispatchModal(suspect, facility){
   const unitRows = available.length === 0
     ? '<div class="empty-msg" style="padding:12px 0;">No transport or patrol units available.</div>'
     : available.map(({unit, station:us}) => {
-        const distKm  = haversineKm(us.lat, us.lng, facility.lat, facility.lng);
-        const distMi  = (distKm * 0.621371).toFixed(1);
-        const uTypeCfg = BAM_CONFIG.unitTypes[unit.typeKey] || {};
-        const speedMph = uTypeCfg.speedMph || 60;
-        const etaSec  = (distKm / (speedMph * 1.60934)) * 3600;
+        // ETA = pickup leg (unit → pickup location) + dropoff leg (pickup → destination).
+        // If the unit is at the pickup location, pickup leg is zero.
+        const pickupKm  = pickupLoc
+          ? haversineKm(us.lat, us.lng, pickupLoc.lat, pickupLoc.lng)
+          : 0;
+        const dropoffKm = haversineKm(fromLat, fromLng, facility.lat, facility.lng);
+        const totalKm   = pickupKm + dropoffKm;
+        const distMi    = (totalKm * 0.621371).toFixed(1);
+        const uTypeCfg  = BAM_CONFIG.unitTypes[unit.typeKey] || {};
+        const speedMph  = uTypeCfg.speedMph || 60;
+        const etaSec    = (totalKm / (speedMph * 1.60934)) * 3600;
+        // Show pickup hint when the two legs aren't trivially the same point
+        const legHint = (pickupKm > 0.1 && pickupLoc)
+          ? `<span style="color:var(--muted);"> (pickup at ${pickupLoc.name})</span>`
+          : '';
         return `<div style="display:flex;align-items:center;justify-content:space-between;
                              padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:6px;gap:8px;">
           <div>
             <div style="font-weight:700;font-size:.85rem;">${unit.name}</div>
-            <div style="font-size:.77rem;color:var(--muted);">${us.name} · ${distMi} mi · ETA ${formatETA(Math.round(etaSec))}</div>
+            <div style="font-size:.77rem;color:var(--muted);">${us.name} · ${distMi} mi · ETA ${formatETA(Math.round(etaSec))}${legHint}</div>
           </div>
           <button class="btn-sm" onclick="_dispatchTransportUnit('${unit.id}','${us.id}','${suspect.id}','${facility.id}')">
             Dispatch
@@ -2704,6 +2841,7 @@ function _openTransportDispatchModal(suspect, facility){
     modal = document.createElement('div');
     modal.id = 'transport-dispatch-modal';
     modal.className = 'modal-overlay';
+    modal.style.zIndex = '10001';  // above facility/jail modals (9999)
     document.body.appendChild(modal);
   }
   modal.innerHTML = `
@@ -2768,6 +2906,7 @@ function _openTransportQueueModal(){
     modal = document.createElement('div');
     modal.id = 'transport-queue-modal';
     modal.className = 'modal-overlay';
+    modal.style.zIndex = '10001';
     modal.addEventListener('click', e => { if(e.target === modal) modal.classList.remove('open'); });
     document.body.appendChild(modal);
   }
@@ -2783,7 +2922,8 @@ function _openTransportQueueModal(){
         const sus = pt.suspect;
         const tierCfg  = BAM_CONFIG.chargeTiers[sus.chargeTier] || {};
         const tierColor = tierColors[sus.chargeTier] || 'var(--muted)';
-        const srcSt = stations.find(s => s.id === sus.holdingStationId);
+        // Source location may be a station OR a jail (jail→prison transfer)
+        const srcLoc = _getSuspectPickupLocation(sus);
         const waitSec = Math.max(0, gameSeconds - (pt.queuedAt || gameSeconds));
         return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:4px;
                              padding:10px 12px;margin-bottom:8px;display:flex;align-items:center;
@@ -2796,7 +2936,7 @@ function _openTransportQueueModal(){
             </div>
             ${sus.incidentLabel ? `<div style="font-size:.77rem;color:var(--muted);margin-top:1px;">${sus.incidentLabel}</div>` : ''}
             <div style="font-size:.77rem;color:var(--muted);margin-top:2px;">
-              ${srcSt ? srcSt.name + ' →' : ''} <b>${pt.facility.name}</b>
+              ${srcLoc ? srcLoc.name + ' →' : ''} <b>${pt.facility.name}</b>
               &nbsp;·&nbsp; waiting ${formatETA(waitSec)}
             </div>
           </div>
@@ -2826,6 +2966,100 @@ function _removeFromTransportQueue(ptId){
   pendingTransports = pendingTransports.filter(pt => pt.id !== ptId);
   renderPendingTransportBadge();
   _openTransportQueueModal();
+}
+
+// Routes a transport unit from its current location to the suspect's pickup location.
+// pickupLoc is the {lat,lng,name,id,kind} object from _getSuspectPickupLocation().
+// Non-emergency drive (no lights-and-siren bonus). On arrival, hands off to onPickupArrived
+// which frees the source cell (if jail), flips the phase, and starts dropoff via routeToPrison.
+async function routeToHoldingPickup(unit, fromStation, pickupLoc, facility, suspect){
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  const dotColor = BAM_CONFIG.unitTypes[unit.typeKey]?.color || '#aaaaaa';
+  unit._animGen = (unit._animGen||0)+1;
+  const myGen = unit._animGen;
+  try{
+    const url=`https://router.project-osrm.org/route/v1/driving/${fromStation.lng},${fromStation.lat};${pickupLoc.lng},${pickupLoc.lat}?overview=full&geometries=geojson&annotations=duration`;
+    const resp=await fetch(url); const data=await resp.json();
+    if(data.code!=='Ok'||!data.routes.length) throw new Error('No route');
+    if(unit._animGen!==myGen) return;
+    const coords=data.routes[0].geometry.coordinates.map(([lng,lat])=>([lat,lng]));
+    const distKm=data.routes[0].distance/1000;
+    const durationSec=Math.min(data.routes[0].duration, (distKm/48.28)*3600);
+    // Build cumulative time array from OSRM per-segment annotations for accurate animation timing
+    const segDurs=data.routes[0].legs[0].annotation?.duration||[];
+    const ct=[0]; for(let i=0;i<segDurs.length;i++) ct.push(ct[i]+segDurs[i]);
+    const tot=ct[ct.length-1];
+    if(tot>0) for(let i=1;i<ct.length;i++) ct[i]/=tot; else for(let i=1;i<ct.length;i++) ct[i]=i/(ct.length-1);
+    unit.routeCumTimes=(ct.length===coords.length)?ct:null;
+    // Dashed line — same style as dropoff route but slightly more transparent to read as "empty leg"
+    const line=L.polyline(coords,{color:dotColor,weight:2,opacity:.45,dashArray:'2,5'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:1000}).addTo(map);
+    animMarker.bindTooltip(`${unit.name} → pickup at ${pickupLoc.name}`);
+    unit.animMarker=animMarker; unit.routeCoords=coords;
+    _animateWithCallback(unit, coords, durationSec, ()=>onPickupArrived(unit, pickupLoc, facility, suspect));
+  } catch(e){
+    if(unit._animGen!==myGen) return;
+    // Fallback: straight-line pickup
+    const dist=haversineKm(fromStation.lat,fromStation.lng,pickupLoc.lat,pickupLoc.lng);
+    const coords=[[fromStation.lat,fromStation.lng],[pickupLoc.lat,pickupLoc.lng]];
+    const line=L.polyline(coords,{color:dotColor,weight:2,opacity:.35,dashArray:'2,5'}).addTo(map);
+    unit.routeLine=line;
+    const animMarker=L.marker(coords[0],{icon:_buildUnitDotIcon(unit,dotColor),zIndexOffset:900}).addTo(map);
+    unit.animMarker=animMarker; unit.routeCoords=coords; unit.routeCumTimes=[0,1];
+    _animateWithCallback(unit, coords, (dist/48.28)*3600, ()=>onPickupArrived(unit, pickupLoc, facility, suspect));
+  }
+}
+
+// Called when a transport unit arrives at the suspect's pickup location.
+// For jail→prison transfers, this is where the source jail cell actually frees up
+// (transferPrisoner defers cell vacate until pickup so cells stay accurate during transit).
+// Flips the phase, then routes to the destination facility.
+function onPickupArrived(unit, pickupLoc, facility, suspect){
+  if(unit.routeLine){ unit.routeLine.remove(); unit.routeLine=null; }
+  if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
+  // Source may have gone OOS or been removed while we were enroute — bail safely.
+  if(!pickupLoc || pickupLoc.inService === false){
+    setStatus(`⚠️ ${unit.name} arrived but pickup location unavailable — returning to station`);
+    if(suspect && suspect.status === 'awaiting_pickup'){
+      suspect.status = pickupLoc?.kind === 'jail'
+        ? (jails.find(j => j.id === pickupLoc.id)?.type === 'state_correctional' ? 'at_prison' : 'at_jail')
+        : 'at_station';
+    }
+    unit.transportSuspect = null;
+    unit._transportSuspectRef = null;
+    unit.transportDestination = null;
+    unit.transportPhase = null;
+    unit.pickupStationId = null;
+    unit.pickupSource = null;
+    const homeStation = stations.find(s => s.id === unit.homeStationId);
+    unit.status = 'returning';
+    if(homeStation) routeAndAnimateReturn(unit, homeStation, pickupLoc?.lat ?? homeStation.lat, pickupLoc?.lng ?? homeStation.lng);
+    else { unit.status='available'; renderStationList(); }
+    return;
+  }
+  // If picking up from a source jail (jail→prison transfer), free the cell now.
+  // transferPrisoner intentionally leaves the suspect in jail.prisoners + occupied so the cell
+  // stays accurate while the unit drives over to collect them.
+  if(pickupLoc.kind === 'jail'){
+    const sourceJail = jails.find(j => j.id === pickupLoc.id);
+    if(sourceJail && suspect){
+      sourceJail.prisoners = sourceJail.prisoners.filter(id => id !== suspect.id);
+      sourceJail.occupied  = Math.max(0, sourceJail.occupied - 1);
+      // Refresh the source jail modal if it happens to be open
+      if(typeof _activeJailId !== 'undefined' && _activeJailId === sourceJail.id
+         && typeof _renderJailModal === 'function') _renderJailModal();
+      if(typeof renderFacilitiesSidebarList === 'function') renderFacilitiesSidebarList();
+    }
+  }
+  // Phase flip — unit now carries the prisoner.
+  unit.transportPhase = 'enroute_dropoff';
+  if(suspect) suspect.status = 'in_transport';
+  setStatus(`🚔 ${unit.name} picked up prisoner — transporting to ${facility.name}`);
+  renderStationList();
+  // Leg 2: pickup → facility. routeToPrison already does emergency-speed routing.
+  routeToPrison(unit, pickupLoc, facility, suspect);
 }
 
 // Routes a police/transport unit to a jail/prison with a prisoner.
@@ -2893,9 +3127,11 @@ function onPrisonerTransportArrived(unit, facility, suspect){
   }
   // Intake at jail
   if(resolvedSuspect) intakePrisoner(facility.id, resolvedSuspect.id);
-  // Unit returns to station immediately
+  // Unit returns to station immediately — clear all transport state
   unit.transportSuspect = null;
   unit.transportDestination = null;
+  unit.transportPhase = null;
+  unit.pickupStationId = null;
   const homeStation = stations.find(s => s.id === unit.homeStationId);
   unit.status = 'returning';
   if(homeStation) routeAndAnimateReturn(unit, homeStation, facility.lat, facility.lng);
@@ -3059,6 +3295,57 @@ function renderFacilitiesModal(){
 
   if(!html) html = `<div class="empty-msg">No facilities match your filters.</div>`;
   body.innerHTML = html;
+}
+
+// Renders the Facilities tab's sidebar list — hospitals + jails only (air stations live in Stations tab).
+// Mirrors the Stations tab pattern: search input filters by name, each card has Focus + Manage actions.
+function renderFacilitiesSidebarList(){
+  const el = document.getElementById('ops-facilities-scroll');
+  if(!el) return;
+  const q = (document.getElementById('facility-search')?.value || '').trim().toLowerCase();
+  const hMatches = hospitals.filter(h => !q || h.name.toLowerCase().includes(q));
+  const jMatches = jails.filter(j => !q || j.name.toLowerCase().includes(q));
+
+  if(!hMatches.length && !jMatches.length){
+    el.innerHTML = (hospitals.length + jails.length) === 0
+      ? '<div class="empty-msg">No hospitals or jails placed yet.<br>Use the Build panel to place a facility.</div>'
+      : '<div class="empty-msg">No facilities match search.</div>';
+    return;
+  }
+
+  let html = '';
+
+  hMatches.forEach(h => {
+    const oos = h.inService === false;
+    const tot = Object.values(h.departments).reduce((s,d)=>s+d.beds,0);
+    const occ = Object.values(h.departments).reduce((s,d)=>s+d.occupiedBeds,0);
+    html += `<div class="scard${oos?' oos':''}">
+      <div class="sn">🏥 ${h.name}${oos?' <span class="oos-badge">OOS</span>':''}${h.onDiversion?' <span class="oos-badge" style="background:var(--accent);">DIVERSION</span>':''}</div>
+      <div class="st">Hospital</div>
+      <div class="su">${occ}/${tot} beds occupied</div>
+      <div class="scard-actions">
+        <button class="btn-sm" onclick="map.setView([${h.lat},${h.lng}], 14)">Focus</button>
+        <button class="btn-sm" onclick="openHospitalModal('${h.id}')">Manage</button>
+      </div>
+    </div>`;
+  });
+
+  jMatches.forEach(j => {
+    const oos = j.inService === false;
+    const typeCfg = BAM_CONFIG.facilityTypes?.[j.type];
+    const icon = j.type === 'county_jail' ? '🔒' : '⛓️';
+    html += `<div class="scard${oos?' oos':''}">
+      <div class="sn">${icon} ${j.name}${oos?' <span class="oos-badge">OOS</span>':''}</div>
+      <div class="st">${typeCfg?.label||j.type}</div>
+      <div class="su">${j.occupied}/${j.cells} cells occupied</div>
+      <div class="scard-actions">
+        <button class="btn-sm" onclick="map.setView([${j.lat},${j.lng}], 14)">Focus</button>
+        <button class="btn-sm" onclick="openJailModal('${j.id}')">Manage</button>
+      </div>
+    </div>`;
+  });
+
+  el.innerHTML = html;
 }
 
 // Releases a unit from its current call (works for both enroute and on-scene units).
@@ -3335,11 +3622,11 @@ function closeSettings(){
 }
 
 function switchSettingsTab(tab){
+  const tabs=['simulation','avl','map','unitcolors'];
   document.querySelectorAll('.settings-tab').forEach((el,i)=>{
-    const tabs=['simulation','avl','map'];
     el.classList.toggle('active', tabs[i]===tab);
   });
-  ['simulation','avl','map'].forEach(t=>{
+  tabs.forEach(t=>{
     const p=document.getElementById('stab-'+t);
     if(p) p.classList.toggle('active', t===tab);
   });
@@ -3365,9 +3652,47 @@ function applyAVLStyle(key, val){
   saveSettings();
 }
 
+function applyUnitTypeColor(typeKey, val){
+  unitTypeColors[typeKey] = val;
+  saveSettings();
+  // Refresh the open dispatch modal so badge colors update immediately
+  if(activeDispatchId){
+    const inc = incidents.find(i=>i.id===activeDispatchId);
+    if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+// Fills the Unit Colors settings pane with color pickers grouped by station type.
+// Called once at startup (after loadSettings) so inputs reflect any saved values.
+function _initUnitColorSettings(){
+  const pane = document.getElementById('stab-unitcolors');
+  if(!pane) return;
+  const groups = [
+    {key:'fire',   label:'Fire Units'},
+    {key:'ems',    label:'EMS Units'},
+    {key:'police', label:'Police Units'},
+    {key:'air',    label:'Air Units'},
+  ];
+  let html = '';
+  groups.forEach(({key, label}) => {
+    const types = Object.entries(BAM_CONFIG.unitTypes).filter(([,cfg])=>cfg.stationType===key);
+    if(!types.length) return;
+    html += `<div class="section-title">${label}</div>`;
+    types.forEach(([typeKey, cfg]) => {
+      const color = unitTypeColors[typeKey] || cfg.color || '#555555';
+      html += `<div class="settings-row">
+        <span class="settings-label">${cfg.label}</span>
+        <input type="color" id="s-utc-${typeKey}" class="settings-color" value="${color}"
+          onchange="applyUnitTypeColor('${typeKey}',this.value)"/>
+      </div>`;
+    });
+  });
+  pane.innerHTML = html;
+}
+
 function saveSettings(){
   try{
-    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle }));
+    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle, unitTypeColors }));
   }catch(e){}
 }
 
@@ -3377,17 +3702,8 @@ function loadSettings(){
     if(s.playerSpawnRate) playerSpawnRate=parseFloat(s.playerSpawnRate)||1;
     if(s.avlColors) avlColors={...avlColors,...s.avlColors};
     if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
+    if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
   }catch(e){}
-}
-
-// Collapses or expands the DC section in the Operations modal (Dispatch Centers sub-tab).
-function toggleDCSection(){
-  const body = document.getElementById('dc-section-body');
-  const btn  = document.getElementById('dc-collapse-btn');
-  if(!body || !btn) return;
-  const collapsed = body.style.display === 'none';
-  body.style.display = collapsed ? '' : 'none';
-  btn.textContent = collapsed ? '▲' : '▼';
 }
 
 // ── INCIDENT PANEL ────────────────────────────────────────────────────────────
@@ -3774,7 +4090,7 @@ function newGame(){
   resolvedCount=0; gameDay=1; gameSeconds=8*3600;
   // Refresh UI
   updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
-  renderResponsePlanList(); renderBoxAlarmList(); renderESNList();
+  renderResponsePlanList(); renderBoxAlarmList(); renderESNList(); renderDCList();
   _tickGameClock();
   scheduleNextSpawn();
   setStatus('New game started. Build your first station!');
@@ -4162,6 +4478,7 @@ new LayerControl().addTo(map);
 setInterval(_tickGameClock, 1000);
 
 loadSettings();
+_initUnitColorSettings();
 initSidebarCosts();
 migrateOldSave();
 const loaded = autoLoadLastSlot();
