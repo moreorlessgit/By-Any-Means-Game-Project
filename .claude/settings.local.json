@@ -4,7 +4,8 @@
       "Bash(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\")",
       "Bash(Measure-Object -Line)",
       "PowerShell(\\(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\"\\).Count)",
-      "Bash(Get-ChildItem -Path \"d:\\\\By Any Means Game Project\" -Recurse -File -Name)"
+      "Bash(Get-ChildItem -Path \"d:\\\\By Any Means Game Project\" -Recurse -File -Name)",
+      "PowerShell(Set-Location \"d:\\\\By-Any-Means-Game-Project\\\\server\"; $env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install --save-dev prisma 2>&1)"
     ]
   }
 }

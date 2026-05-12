@@ -1,0 +1,56 @@
+// Phase 4A schema — four tables: users, private worlds, save slots, settings.
+// Future phases (4B+) will add groups, stations, units, incidents, facilities.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// One row per registered player.
+model User {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique
+  password_hash String
+  created_at    DateTime @default(now())
+  last_login    DateTime?
+
+  private_worlds PrivateWorld[]
+  settings       Settings?
+}
+
+// One private world per player (can be expanded to many later).
+// A world is the container — save slots live inside it.
+model PrivateWorld {
+  id         Int      @id @default(autoincrement())
+  owner      User     @relation(fields: [owner_user_id], references: [id])
+  owner_user_id Int
+  name       String
+  created_at DateTime @default(now())
+
+  saves PrivateWorldSave[]
+}
+
+// Named save slots within a private world.
+// slot_name is unique per world — overwriting a slot updates the existing row.
+model PrivateWorldSave {
+  id         Int          @id @default(autoincrement())
+  world      PrivateWorld @relation(fields: [world_id], references: [id])
+  world_id   Int
+  slot_name  String
+  state_json Json
+  saved_at   DateTime     @default(now()) @updatedAt
+
+  @@unique([world_id, slot_name])
+}
+
+// Per-user settings (spawn rate, AVL colors, etc.).
+// Survives across worlds and save slots.
+model Settings {
+  user          User @relation(fields: [user_id], references: [id])
+  user_id       Int  @id
+  settings_json Json @default("{}")
+}
