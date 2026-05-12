@@ -24,11 +24,13 @@ General Realism - Medical Emergency type calls should only have one PT typically
 
 ~~UI - Edit ESN Zone Modal - No search bar in dropdown for the dispatch center assignment. Along this same fix, change from checkboxes to searchable dropdowns for Fire/EMS/Law Coverage so format remains uniform and it is easier on the player to define coverage for an ESN.~~
 
-UI - Add another settings tab where you can define colors to units based on type. This saves and is used in the dispatch list where it highlights behind only the Unit Type Name. Examples - "Patrol Unit" "Supervisor" "Brush Truck"
+~~UI - Add another settings tab where you can define colors to units based on type. This saves and is used in the dispatch list where it highlights behind only the Unit Type Name. For players to easily pick out types of units. Suggestions on alternate methods acceptable. Examples - "Patrol Unit" "Supervisor" "Brush Truck"~~
 
-UI Feature - Incident List right sidebar - Calls in transport pending should have some sort of flash to them to make them easily visible.
+~~UI Feature - Incident List right sidebar - Calls in transport pending should have some sort of temporary flash to them to make them easily visible.~~
 
-UI - Transport PT to hospital ETA should be shown on transport tab, to make informed decisions.
+~~UI - Transport PT to hospital ETA should be shown on transport tab when picking hospitals, to make informed decisions on closest hospital.~~
+
+~~UI - Hospital Modal Glitched and lost its tabs at the top. Order for tabs on the top should be offloading units to the left most, purchases to the right most.~~
 
 ---
 

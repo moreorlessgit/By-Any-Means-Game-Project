@@ -80,6 +80,12 @@
     .build-cat-hdr:hover{color:var(--text);}
     .build-cat-body{padding-left:4px;margin-top:2px;}
 
+    /* ── HOSPITAL SIDEBAR TABS ── */
+    .sb-tabs{display:flex;border-bottom:1px solid var(--border);background:var(--panel);flex-shrink:0;}
+    .sb-tab{flex:1;padding:9px 6px;text-align:center;font-size:.82rem;cursor:pointer;border-bottom:3px solid transparent;transition:color .15s,border-color .15s;}
+    .sb-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+    .sb-tab:hover:not(.active){background:var(--hover);}
+
     /* ── OPS MODAL TABS ── */
     .ops-tabs{display:flex;border-bottom:2px solid var(--border);background:var(--panel);}
     .ops-tab{
@@ -236,8 +242,12 @@
     .istatus.needs{color:var(--accent);}
     .istatus.partial{color:var(--gold);}
     .istatus.enroute{color:var(--ems);}
-    .istatus.transport{color:#f97316;}
+    .istatus.transport{color:#f97316;animation:bam-transport-pulse 1.4s ease-in-out infinite;}
     .istatus.resolved{color:var(--green);}
+    @keyframes bam-transport-pulse{
+      0%,100%{background:rgba(249,115,22,.15);color:#f97316;padding:2px 4px;border-radius:3px;}
+      50%{background:rgba(249,115,22,.4);color:#fff;padding:2px 4px;border-radius:3px;}
+    }
     .icard .ipatients{font-size:.8rem;color:var(--ems);margin-top:2px;}
 
     /* ── SHARED MODAL CHROME ── */
@@ -871,6 +881,7 @@
         <div class="settings-tab active" onclick="switchSettingsTab('simulation')">Simulation</div>
         <div class="settings-tab" onclick="switchSettingsTab('avl')">AVL Labels</div>
         <div class="settings-tab" onclick="switchSettingsTab('map')">Map</div>
+        <div class="settings-tab" onclick="switchSettingsTab('unitcolors')">Unit Colors</div>
       </div>
       <!-- Simulation tab -->
       <div id="stab-simulation" class="settings-pane active">
@@ -919,6 +930,8 @@
       <div id="stab-map" class="settings-pane">
         <div style="font-size:.8rem;color:var(--muted);padding:10px 0;">Map style options — coming soon.</div>
       </div>
+      <!-- Unit Colors tab — content populated by _initUnitColorSettings() at startup -->
+      <div id="stab-unitcolors" class="settings-pane"></div>
     </div>
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeSettings()">Close</button>
@@ -1206,6 +1219,12 @@ let avlStyle = {
   textColor:   BAM_CONFIG.ui?.avlLabelStyle?.textColor   || '#ffffff',
   fontSize:    BAM_CONFIG.ui?.avlLabelStyle?.fontSize    || 9,
 };
+
+// Unit type label badge colors for dispatch list — keyed by type key, defaults from config
+let unitTypeColors = {};
+Object.entries(BAM_CONFIG.unitTypes).forEach(([key, cfg]) => {
+  unitTypeColors[key] = cfg.color || '#555555';
+});
 
 // Player-adjustable spawn rate multiplier (0.25 = very slow, 3 = chaos)
 let playerSpawnRate = 1;
@@ -1613,7 +1632,7 @@ function renderDispatchBody(inc, mCfg){
       html += `<div class="dm-enroute-row">
         <div style="flex:1;">
           <div class="dm-enroute-name">${stCfg.icon} ${unit.name}</div>
-          <div style="font-size:.8rem;color:var(--muted);">${station.name}</div>
+          <div style="font-size:.8rem;color:var(--muted);">${station.name} · <span style="background:${unitTypeColors[unit.typeKey]||stCfg.color||'#555'};color:#fff;padding:1px 6px;border-radius:10px;font-size:.72rem;font-weight:600;">${stCfg.label}</span></div>
         </div>
         ${statusTxt}
         <button class="btn-sm danger" style="font-size:.8rem;padding:2px 6px;margin-left:8px;"
@@ -1759,7 +1778,7 @@ function renderDispatchBody(inc, mCfg){
       id="dur_${unit.id}">
       <div>
         <div class="dm-unit-name">${utCfg.icon} ${unit.name}</div>
-        <div class="dm-unit-station">${station.name} · ${utCfg.label}</div>
+        <div class="dm-unit-station">${station.name} · <span style="background:${unitTypeColors[unit.typeKey]||utCfg.color||'#555'};color:#fff;padding:1px 7px;border-radius:10px;font-size:.75rem;font-weight:600;">${utCfg.label}</span></div>
         <div style="font-size:.8rem;color:var(--muted)">Tags: ${utCfg.tags.join(', ')}</div>
       </div>
       <div class="dm-unit-eta" style="text-align:right;line-height:1.4;">${etaTxt}</div>
@@ -2204,12 +2223,13 @@ function renderTransportTab(inc){
             <div style="flex:1;min-width:110px;">
               <div style="font-size:.8rem;letter-spacing:1px;color:var(--muted);margin-bottom:2px;">HOSPITAL</div>
               <select id="tr-hosp-${pt.id}" style="width:100%;font-size:.8rem;"
-                onchange="_updateTransportCompat('${pt.id}','${reqDept}')">
+                onchange="_updateTransportCompat('${pt.id}','${reqDept}','${inc.id}')">
                 <option value="">Select hospital…</option>${hospOptHtml}
               </select>
             </div>
           </div>
           <div id="tr-compat-${pt.id}" style="font-size:.8rem;margin:4px 0;min-height:16px;"></div>
+          <div id="tr-eta-${pt.id}" style="font-size:.8rem;color:var(--gold);margin-top:2px;min-height:14px;"></div>
           <button class="btn-primary" style="width:100%;padding:7px;margin-top:4px;"
             onclick="_beginTransport('${pt.id}','${inc.id}')">▶ Begin Transport</button>
         </div>`;
@@ -2290,19 +2310,43 @@ function renderTransportTab(inc){
   return html;
 }
 
-// Updates the compatibility indicator when a hospital is selected in a transport row.
-function _updateTransportCompat(patientId, reqDept){
+// Updates the compatibility indicator and drive-time ETA when a hospital is selected in a transport row.
+function _updateTransportCompat(patientId, reqDept, incId){
   const hospId = document.getElementById('tr-hosp-'+patientId)?.value;
   const compatEl = document.getElementById('tr-compat-'+patientId);
+  const etaEl    = document.getElementById('tr-eta-'+patientId);
   if(!compatEl) return;
-  if(!hospId){ compatEl.textContent = ''; return; }
+  if(!hospId){
+    compatEl.textContent = '';
+    if(etaEl) etaEl.textContent = '';
+    return;
+  }
   const hosp = hospitals.find(h => h.id === hospId);
-  if(!hosp){ compatEl.textContent = ''; return; }
+  if(!hosp){
+    compatEl.textContent = '';
+    if(etaEl) etaEl.textContent = '';
+    return;
+  }
   const deptLabel = BAM_CONFIG.hospitalDepartments?.[reqDept]?.label || reqDept;
   if(hosp.departments[reqDept]){
     compatEl.innerHTML = `<span class="transport-compat-ok">✓ ${deptLabel} available</span>`;
   } else {
     compatEl.innerHTML = `<span class="transport-compat-bad">⚠ ${deptLabel} not installed — will use ED</span>`;
+  }
+  // Fetch drive-time ETA from incident scene to hospital via OSRM
+  if(etaEl && incId){
+    const inc = incidents.find(i=>i.id===incId);
+    if(inc){
+      etaEl.textContent = '🏥 Calculating ETA…';
+      const url = `https://router.project-osrm.org/route/v1/driving/${inc.lng},${inc.lat};${hosp.lng},${hosp.lat}?overview=false`;
+      fetch(url).then(r=>r.json()).then(data=>{
+        const dur  = data.routes?.[0]?.duration;
+        const dist = data.routes?.[0]?.distance;
+        if(dur==null){ etaEl.textContent='🏥 ETA unavailable'; return; }
+        const mi = (dist*0.000621371).toFixed(1);
+        etaEl.textContent = `🏥 ETA: ${formatETA(Math.round(dur))} — ${mi} mi`;
+      }).catch(()=>{ etaEl.textContent='🏥 ETA unavailable'; });
+    }
   }
 }
 
@@ -3578,11 +3622,11 @@ function closeSettings(){
 }
 
 function switchSettingsTab(tab){
+  const tabs=['simulation','avl','map','unitcolors'];
   document.querySelectorAll('.settings-tab').forEach((el,i)=>{
-    const tabs=['simulation','avl','map'];
     el.classList.toggle('active', tabs[i]===tab);
   });
-  ['simulation','avl','map'].forEach(t=>{
+  tabs.forEach(t=>{
     const p=document.getElementById('stab-'+t);
     if(p) p.classList.toggle('active', t===tab);
   });
@@ -3608,9 +3652,47 @@ function applyAVLStyle(key, val){
   saveSettings();
 }
 
+function applyUnitTypeColor(typeKey, val){
+  unitTypeColors[typeKey] = val;
+  saveSettings();
+  // Refresh the open dispatch modal so badge colors update immediately
+  if(activeDispatchId){
+    const inc = incidents.find(i=>i.id===activeDispatchId);
+    if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+// Fills the Unit Colors settings pane with color pickers grouped by station type.
+// Called once at startup (after loadSettings) so inputs reflect any saved values.
+function _initUnitColorSettings(){
+  const pane = document.getElementById('stab-unitcolors');
+  if(!pane) return;
+  const groups = [
+    {key:'fire',   label:'Fire Units'},
+    {key:'ems',    label:'EMS Units'},
+    {key:'police', label:'Police Units'},
+    {key:'air',    label:'Air Units'},
+  ];
+  let html = '';
+  groups.forEach(({key, label}) => {
+    const types = Object.entries(BAM_CONFIG.unitTypes).filter(([,cfg])=>cfg.stationType===key);
+    if(!types.length) return;
+    html += `<div class="section-title">${label}</div>`;
+    types.forEach(([typeKey, cfg]) => {
+      const color = unitTypeColors[typeKey] || cfg.color || '#555555';
+      html += `<div class="settings-row">
+        <span class="settings-label">${cfg.label}</span>
+        <input type="color" id="s-utc-${typeKey}" class="settings-color" value="${color}"
+          onchange="applyUnitTypeColor('${typeKey}',this.value)"/>
+      </div>`;
+    });
+  });
+  pane.innerHTML = html;
+}
+
 function saveSettings(){
   try{
-    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle }));
+    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle, unitTypeColors }));
   }catch(e){}
 }
 
@@ -3620,6 +3702,7 @@ function loadSettings(){
     if(s.playerSpawnRate) playerSpawnRate=parseFloat(s.playerSpawnRate)||1;
     if(s.avlColors) avlColors={...avlColors,...s.avlColors};
     if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
+    if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
   }catch(e){}
 }
 
@@ -4395,6 +4478,7 @@ new LayerControl().addTo(map);
 setInterval(_tickGameClock, 1000);
 
 loadSettings();
+_initUnitColorSettings();
 initSidebarCosts();
 migrateOldSave();
 const loaded = autoLoadLastSlot();

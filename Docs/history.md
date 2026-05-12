@@ -156,6 +156,12 @@
 - **Searchable multi-select coverage** — Fire, EMS, and Law coverage dropdowns replaced with chip-based searchable multiselect (`_buildSearchableMultiselect`); chips show current assignments with × removal; panel filters by typing.
 - **DC assignment search** — DC dropdown also uses the multiselect helper in single-select mode; consistent UX across all assignment groups.
 
+**UI Polish & Dispatch Clarity:**
+- **Unit Type Colors settings tab** — New "Unit Colors" tab in Settings modal; color pickers for all 15 unit types grouped by Fire / EMS / Police / Air. Selected color renders as a rounded pill badge behind the unit type label in the dispatch list (both Available Units and Enroute/On Scene sections). Colors persist to `bam_settings` localStorage and apply immediately to any open dispatch modal.
+- **Transport pending flash** — Incident cards in `transport_pending` status now pulse with an orange background animation (`bam-transport-pulse`) so they stand out visually in the right sidebar incident list.
+- **Hospital ETA in transport tab** — When selecting a destination hospital for a patient transport, `_updateTransportCompat()` now fires an OSRM route call from the incident scene to the selected hospital and displays `🏥 ETA: X min — Y mi` below the compatibility indicator. Updates on every hospital change; clears on deselect.
+- **Hospital modal tab CSS fix** — `.sb-tabs` and `.sb-tab` CSS rules were missing from `index.html`, causing the hospital modal tab bar to be invisible. Added full flex tab styling matching the ops/rp-tabs pattern. Tab order (Offloading → Departments → Purchases) was already correct in `hospitals.js`.
+
 ---
 
 *Last updated: 2026-05-12. Phase 3.25 bugfix batch complete (two-leg prisoner transport routing, facilities sidebar list, ESN/DC tab split, ESN searchable multiselect). Remaining Phase 3.25 items: index.html housekeeping/file split, unit-type color settings tab, transport-pending incident flash, PT-to-hospital ETA on transport tab.*
