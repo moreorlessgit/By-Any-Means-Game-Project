@@ -212,12 +212,12 @@ const BAM_CONFIG = {
       label:                'Sheriff Transport Van',
       tags:                 ['transport_prisoner'],
       stationType:          'police',
-      cost:                 25000,
+      cost:                 7000,
       personnel:            2,
       color:                '#64748b',
       icon:                 '🚐',
       providerLevel:        null,
-      maxTransportCapacity: 4,   // van can hold more suspects
+      maxTransportCapacity: 6,   // van can hold more suspects
     },
     // ── AIR MEDICAL ───────────────────────────────────────────────────────────
     helicopter: {
