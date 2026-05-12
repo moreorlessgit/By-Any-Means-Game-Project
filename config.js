@@ -1088,8 +1088,8 @@ const BAM_CONFIG = {
   // INCIDENT SPAWN SETTINGS
   // ---------------------------------------------------------------------------
   spawn: {
-    intervalMinMs:  45000,
-    intervalMaxMs:  90000,
+    intervalMinMs:  90000,
+    intervalMaxMs:  180000,
     maxActiveIncidents: 8,
     defaultRadiusKm: 8,
 
