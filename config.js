@@ -421,7 +421,7 @@ const BAM_CONFIG = {
     },
 
     // ── EMS CALLS ─────────────────────────────────────────────────────────────
-    cardiac_arrest: {
+    cardiac_arrest_pt: {
       label:         'Cardiac Arrest',
       category:      'ems',
       spawnMode:     'random',
@@ -430,16 +430,16 @@ const BAM_CONFIG = {
       reward:        700,
       patientChance: 1.0,
       patients:      [
-        { injuryType: 'cardiac', minCount: 1, maxCount: 1 },
+        { injuryType: 'cardiac_arrest', minCount: 1, maxCount: 1 },
       ],
       chargeTiers:   null,
       escalatesTo:   null,
       escalateChance:0,
       escalateAfter: 0,
-      color:         '#2ea8ff'
+      color:         '#880000'
     },
-    medical_emergency: {
-      label:         'Medical Emergency',
+    respiratory_emergency: {
+      label:         'Respiratory Arrest',
       category:      'ems',
       spawnMode:     'random',
       spawnWeight:   15,
@@ -447,14 +447,80 @@ const BAM_CONFIG = {
       reward:        300,
       patientChance: 1.0,
       patients:      [
-        { injuryType: 'diabetic',     minCount: 0, maxCount: 1 },
-        { injuryType: 'syncope',      minCount: 0, maxCount: 1 },
-        { injuryType: 'respiratory',  minCount: 0, maxCount: 1 },
+        { injuryType: 'respiratory_arrest',  minCount: 1, maxCount: 1 },
+      ],
+      chargeTiers:   null,
+      escalatesTo:   'cardiac_arrest_pt',
+      escalateChance:1,
+      escalateAfter: 300,
+      color:         '#880000'
+    },
+    unresponsive_patient:{
+      label:         'Unresponsive Patient',
+      category:      'ems',
+      spawnMode:     'random',
+      spawnWeight:   15,
+      requirements:  [['bls','als']],
+      reward:        300,
+      patientChance: 0.65,
+      patients:      [
+        { injuryType: 'unresponsive',     minCount: 0, maxCount: 1 },
+      ],
+      chargeTiers:   null,
+      escalatesTo:   'respiratory_emergency',
+      escalateChance:0.05,
+      escalateAfter: 400,
+      color:         '#880000'
+    },
+    heart_attack:{
+      label:         'Heart Attack',
+      category:      'ems',
+      spawnMode:     'random',
+      spawnWeight:   15,
+      requirements:  [['bls','als']],
+      reward:        300,
+      patientChance: 1,
+      patients:      [
+        { injuryType: 'myocardial',     minCount: 1, maxCount: 1 },
+      ],
+      chargeTiers:   null,
+      escalatesTo:   'respiratory_emergency',
+      escalateChance:0.15,
+      escalateAfter: 300,
+      color:         '#880000'
+    },
+    syncope_episode:{
+      label:         'Syncope Episode',
+      category:      'ems',
+      spawnMode:     'random',
+      spawnWeight:   15,
+      requirements:  [['bls']],
+      reward:        300,
+      patientChance: 0.60,
+      patients:      [
+        { injuryType: 'syncope',     minCount: 1, maxCount: 1 },
       ],
       chargeTiers:   null,
       escalatesTo:   null,
       escalateChance:0,
       escalateAfter: 0,
+      color:         '#2ea8ff'
+    },
+    diabetic_emergency:{
+      label:         'Diabetic Emergency',
+      category:      'ems',
+      spawnMode:     'random',
+      spawnWeight:   15,
+      requirements:  [['bls','als']],
+      reward:        300,
+      patientChance: 0.8,
+      patients:      [
+        { injuryType: 'diabetic',     minCount: 0, maxCount: 1 },
+      ],
+      chargeTiers:   null,
+      escalatesTo:   'unresponsive_patient',
+      escalateChance:0.7,
+      escalateAfter: 300,
       color:         '#2ea8ff'
     },
     traumatic_injury: {
@@ -477,7 +543,7 @@ const BAM_CONFIG = {
     },
     mva_injury: {
       label:         'MVA w/ Injuries',
-      category:      'ems',
+      category:      'fire',
       spawnMode:     'road_major',
       spawnWeight:   10,
       requirements:  [['bls'],['engine']],
@@ -495,7 +561,7 @@ const BAM_CONFIG = {
     },
     mva_entrapment: {
       label:         'MVA w/ Entrapment',
-      category:      'ems',
+      category:      'fire',
       spawnMode:     'road_major',
       spawnWeight:   0,
       requirements:  [['als'],['transport'],['rescue'],['engine']],
@@ -641,11 +707,11 @@ const BAM_CONFIG = {
       category:      'ems',
       spawnMode:     'random',
       spawnWeight:   4,
-      requirements:  [['patrol'],['als']],
+      requirements:  [['patrol'],['bls','als']],
       reward:        250,
       patientChance: 1.0,
       patients:      [
-        { injuryType: 'psych_crisis', minCount: 1, maxCount: 2 },
+        { injuryType: 'psych_crisis', minCount: 1, maxCount: 1 },
       ],
       chargeTiers:   null,
       escalatesTo:   null,
@@ -669,25 +735,41 @@ const BAM_CONFIG = {
   // ---------------------------------------------------------------------------
   injuryTypes: {
     // ── Medical ───────────────────────────────────────────────────────────────
-    cardiac: {
-      label:            'Cardiac Event',
+    cardiac_arrest: {
+      label:            'Cardiac Arrest',
       needsALS:         true,
       transport:        'hospital',
       requiredDept:     'cardiac_cath',
       patientTier:      'critical',
       stabilizeTimeSec: 120,
     },
-    respiratory: {
-      label:            'Respiratory Distress',
+    respiratory_arrest: {
+      label:            'Respiratory Arrest',
       needsALS:         true,
       transport:        'hospital',
       requiredDept:     'icu',
-      patientTier:      'serious',
+      patientTier:      'critical',
       stabilizeTimeSec: 90,
+    },
+    unresponsive: {
+      label:            'Unresponsive',
+      needsALS:         true,
+      transport:        'hospital',
+      requiredDept:     'emergency',
+      patientTier:      'serious',
+      stabilizeTimeSec: 60,
+    },
+    myocardial: {
+      label:            'Heart Attack',
+      needsALS:         true,
+      transport:        'hospital',
+      requiredDept:     'cardiac_cath',
+      patientTier:      'critical',
+      stabilizeTimeSec: 120,
     },
     diabetic: {
       label:            'Diabetic Emergency',
-      needsALS:         false,
+      needsALS:         true,
       transport:        'hospital',
       requiredDept:     'emergency',
       patientTier:      'minor',
