@@ -553,6 +553,87 @@
     .dc-filter-card{cursor:pointer;transition:border-color .15s;}
     .dc-filter-card:hover{border-color:var(--border2);}
     .dc-filter-card.active{border-color:var(--gold);background:rgba(240,165,0,.07);}
+
+    /* ── PHASE 4A: LOGIN / WORLD PICKER ────────────────────────────────── */
+    /* These overlays live above .modal-overlay (z 9999) so the game UI
+       below can't be interacted with until a world+slot is loaded. */
+    .auth-overlay{
+      display:none;position:fixed;inset:0;background:var(--bg);
+      z-index:10000;align-items:center;justify-content:center;
+      flex-direction:column;padding:30px;
+    }
+    .auth-overlay.open{display:flex;}
+    .auth-box{
+      background:var(--panel2);border:1px solid var(--border2);
+      border-top:3px solid var(--gold);border-radius:3px;
+      padding:28px;width:380px;max-width:95vw;
+    }
+    .auth-title{
+      color:var(--gold);font-size:1.3rem;letter-spacing:2px;
+      text-transform:uppercase;text-align:center;margin-bottom:6px;
+    }
+    .auth-sub{color:var(--muted);font-size:.8rem;text-align:center;margin-bottom:18px;}
+    .auth-tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:14px;}
+    .auth-tab{
+      flex:1;padding:8px;cursor:pointer;text-align:center;
+      color:var(--muted);font-size:.85rem;letter-spacing:1px;text-transform:uppercase;
+      border-bottom:2px solid transparent;
+    }
+    .auth-tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+    .auth-field{display:flex;flex-direction:column;margin-bottom:10px;}
+    .auth-field label{color:var(--muted);font-size:.75rem;margin-bottom:4px;letter-spacing:.5px;}
+    .auth-field input{
+      background:var(--bg);border:1px solid var(--border2);color:var(--text);
+      padding:8px 10px;border-radius:2px;font-family:inherit;font-size:.9rem;
+    }
+    .auth-field input:focus{outline:none;border-color:var(--gold);}
+    .auth-submit{
+      width:100%;background:var(--gold);color:var(--bg);font-weight:700;
+      border:none;padding:10px;cursor:pointer;letter-spacing:1px;text-transform:uppercase;
+      font-family:inherit;font-size:.85rem;margin-top:6px;border-radius:2px;
+    }
+    .auth-submit:hover{filter:brightness(1.1);}
+    .auth-submit:disabled{opacity:.5;cursor:not-allowed;}
+    .auth-error{color:var(--accent);font-size:.8rem;margin-top:8px;min-height:1em;}
+
+    /* World picker — wider, lists worlds as cards. */
+    .picker-box{
+      background:var(--panel2);border:1px solid var(--border2);
+      border-top:3px solid var(--gold);border-radius:3px;
+      padding:24px;width:640px;max-width:95vw;max-height:85vh;
+      display:flex;flex-direction:column;gap:14px;
+    }
+    .picker-header{
+      display:flex;justify-content:space-between;align-items:baseline;
+      border-bottom:1px solid var(--border);padding-bottom:10px;
+    }
+    .picker-header h2{color:var(--gold);font-size:1.1rem;letter-spacing:1.5px;text-transform:uppercase;}
+    .picker-user{font-size:.8rem;color:var(--muted);}
+    .picker-user a{color:var(--accent);cursor:pointer;text-decoration:underline;}
+    .picker-list{overflow-y:auto;display:flex;flex-direction:column;gap:8px;flex:1;}
+    .picker-card{
+      background:var(--panel);border:1px solid var(--border);border-radius:2px;
+      padding:12px 14px;display:flex;justify-content:space-between;align-items:center;
+      transition:border-color .15s;
+    }
+    .picker-card.clickable{cursor:pointer;}
+    .picker-card.clickable:hover{border-color:var(--gold);}
+    .picker-card.disabled{opacity:.5;cursor:not-allowed;border-style:dashed;}
+    .picker-card-name{font-weight:600;color:var(--text);}
+    .picker-card-meta{font-size:.75rem;color:var(--muted);margin-top:2px;}
+    .picker-card-actions{display:flex;gap:6px;}
+    .picker-create-row{display:flex;gap:6px;padding-top:8px;border-top:1px solid var(--border);}
+    .picker-create-row input{
+      flex:1;background:var(--bg);border:1px solid var(--border2);color:var(--text);
+      padding:7px 10px;border-radius:2px;font-family:inherit;font-size:.85rem;
+    }
+    .picker-create-row input:focus{outline:none;border-color:var(--gold);}
+    .picker-empty{color:var(--muted);font-style:italic;text-align:center;padding:20px;}
+    .picker-back{
+      background:transparent;border:none;color:var(--muted);cursor:pointer;
+      font-family:inherit;font-size:.8rem;padding:0;
+    }
+    .picker-back:hover{color:var(--gold);}
   </style>
 </head>
 <body>
@@ -939,7 +1020,88 @@
   </div>
 </div>
 
-<!-- SAVE / LOAD MODAL -->
+<!-- PHASE 4A: LOGIN / REGISTER OVERLAY -->
+<!-- Shown on page load when there is no valid JWT. Hides everything else
+     behind it. On successful auth → world picker → save slot picker → game. -->
+<div id="auth-overlay" class="auth-overlay">
+  <div class="auth-box">
+    <div class="auth-title">By Any Means</div>
+    <div class="auth-sub">Field Operations — Account Required</div>
+    <div class="auth-tabs">
+      <div id="auth-tab-login" class="auth-tab active" onclick="_authSwitchTab('login')">Login</div>
+      <div id="auth-tab-register" class="auth-tab" onclick="_authSwitchTab('register')">Register</div>
+    </div>
+    <div class="auth-field">
+      <label for="auth-username">Username</label>
+      <input type="text" id="auth-username" autocomplete="username" maxlength="20"
+             onkeydown="if(event.key==='Enter') _authSubmit()"/>
+    </div>
+    <div class="auth-field">
+      <label for="auth-password">Password</label>
+      <input type="password" id="auth-password" autocomplete="current-password"
+             onkeydown="if(event.key==='Enter') _authSubmit()"/>
+    </div>
+    <button id="auth-submit-btn" class="auth-submit" onclick="_authSubmit()">Login</button>
+    <div class="auth-error" id="auth-error"></div>
+  </div>
+</div>
+
+<!-- PHASE 4A: WORLD PICKER OVERLAY -->
+<!-- Shown after login. Player picks (or creates) a private world. The
+     disabled "Global World" tile is a placeholder for Phase 4B. -->
+<div id="world-picker" class="auth-overlay">
+  <div class="picker-box">
+    <div class="picker-header">
+      <h2>Select World</h2>
+      <div class="picker-user">
+        Signed in as <strong id="picker-username">—</strong> ·
+        <a onclick="_logout()">Sign out</a>
+      </div>
+    </div>
+    <div class="picker-list" id="world-list">
+      <div class="picker-empty">Loading…</div>
+    </div>
+    <div class="picker-create-row">
+      <input type="text" id="world-new-name" placeholder="New private world name…" maxlength="64"
+             onkeydown="if(event.key==='Enter') _createWorld()"/>
+      <button class="btn-primary gold" style="flex:0;padding:7px 16px;" onclick="_createWorld()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 4A: SAVE SLOT PICKER (per world) -->
+<!-- Same UX as the legacy save modal but lives on top of the world picker.
+     Used both at startup (pick a slot to load into) and during play (Ctrl+S). -->
+<div id="slot-picker" class="auth-overlay">
+  <div class="picker-box">
+    <div class="picker-header">
+      <h2 id="slot-picker-title">World — Saves</h2>
+      <button class="picker-back" onclick="_backToWorldPicker()">← Back to worlds</button>
+    </div>
+    <div class="picker-list" id="slot-list">
+      <div class="picker-empty">Loading…</div>
+    </div>
+    <div class="picker-create-row">
+      <input type="text" id="slot-new-name" placeholder="New save slot name…" maxlength="64"
+             onkeydown="if(event.key==='Enter') _saveNewSlot()"/>
+      <button class="btn-primary gold" style="flex:0;padding:7px 16px;" onclick="_saveNewSlot()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- PHASE 4A: ONE-SHOT MIGRATION IMPORTER -->
+<!-- Shown once per browser if legacy localStorage save data is detected. -->
+<div id="migration-modal" class="auth-overlay">
+  <div class="auth-box" style="width:440px;">
+    <div class="auth-title" style="font-size:1.1rem;">Migrate Local Saves?</div>
+    <div class="auth-sub" id="migration-message" style="margin-bottom:14px;line-height:1.4;">…</div>
+    <button class="auth-submit" onclick="_runMigration()">Import to my account</button>
+    <button class="auth-submit" style="background:var(--panel);color:var(--muted);margin-top:6px;" onclick="_dismissMigration()">No thanks, discard</button>
+    <div class="auth-error" id="migration-error"></div>
+  </div>
+</div>
+
+<!-- SAVE / LOAD MODAL (in-game; Ctrl+S during play) -->
 <div id="save-modal" class="modal-overlay">
   <div class="modal-box gold-top" style="width:440px;max-height:80vh;padding:20px;gap:14px;flex-direction:column;">
     <h2 class="gold" style="font-size:1rem;letter-spacing:1px;text-transform:uppercase;">Save / Load Game</h2>
@@ -1168,6 +1330,7 @@
 
 <!-- ═══════════════════════════════════════════════════════════════ SCRIPTS ══ -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="api.js"></script>
 <script src="config.js"></script>
 <script src="stations.js"></script>
 <script src="esn.js"></script>
@@ -3690,20 +3853,28 @@ function _initUnitColorSettings(){
   pane.innerHTML = html;
 }
 
+// Settings auto-sync to the server on every change (no Save button).
+// Phase 4A Session 3 contract: debounced PUT replaces localStorage.setItem.
+// See docs/backend-architecture.md "Settings Sync" for the rationale.
 function saveSettings(){
-  try{
-    localStorage.setItem('bam_settings', JSON.stringify({ playerSpawnRate, avlColors, avlStyle, unitTypeColors }));
-  }catch(e){}
+  if(!window.api || !window.api.isAuthed()) return;
+  window.api.settings.putDebounced({ playerSpawnRate, avlColors, avlStyle, unitTypeColors });
 }
 
-function loadSettings(){
+// Loads the player's settings from the server. Async — only call after auth
+// has succeeded. Defaults stay in place if the server returns an empty {}.
+async function loadSettings(){
+  if(!window.api || !window.api.isAuthed()) return;
   try{
-    const s=JSON.parse(localStorage.getItem('bam_settings')||'{}');
+    const { settings_json } = await window.api.settings.get();
+    const s = settings_json || {};
     if(s.playerSpawnRate) playerSpawnRate=parseFloat(s.playerSpawnRate)||1;
     if(s.avlColors) avlColors={...avlColors,...s.avlColors};
     if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
     if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
-  }catch(e){}
+  }catch(e){
+    console.error('Failed to load settings:', e.message);
+  }
 }
 
 // ── INCIDENT PANEL ────────────────────────────────────────────────────────────
@@ -4204,23 +4375,16 @@ function renderResponsePlanList(){
   }).join('');
 }
 
-// ── SAVE / LOAD — MULTI-SLOT ──────────────────────────────────────────────────
-const SAVE_PREFIX   = 'bam_save_';
-const LAST_SLOT_KEY = 'bam_last_slot';
+// ── SAVE / LOAD — MULTI-SLOT (server-backed via api.js, Phase 4A) ───────────
+// The active world id is tracked in window._activeWorldId; saves go to the
+// server scoped to that world. There are no longer any bam_save_* localStorage
+// keys — those only exist on machines pre-Phase-4A and are handled by the
+// one-shot migration importer in the auth bootstrap block below.
 
-function getSaveSlots(){
-  const slots=[];
-  for(let i=0;i<localStorage.length;i++){
-    const key=localStorage.key(i);
-    if(key&&key.startsWith(SAVE_PREFIX)){
-      try{
-        const data=JSON.parse(localStorage.getItem(key));
-        slots.push({name:key.slice(SAVE_PREFIX.length),data});
-      }catch(e){}
-    }
-  }
-  return slots.sort((a,b)=>(b.data.savedAt||0)-(a.data.savedAt||0));
-}
+// Slot metadata cache: populated by renderSaveSlotList() before render so the
+// click handlers (loadFromSlot, overwriteSlot, deleteSlot) can resolve names
+// without re-fetching. Keyed by slot_name.
+let _slotMetaCache = {};
 
 function buildSaveData(){
   return {
@@ -4258,74 +4422,103 @@ function closeSaveModal(){
   document.getElementById('save-modal').classList.remove('open');
 }
 
-function renderSaveSlotList(){
+// Fetches the current world's slots from the server, populates the in-game
+// save modal. Falls back gracefully if a network/auth error happens — the
+// modal will simply show empty.
+async function renderSaveSlotList(){
   const el=document.getElementById('save-slot-list');
-  const slots=getSaveSlots();
+  if(!window._activeWorldId){
+    el.innerHTML='<div class="save-empty">No active world. Sign in and pick one first.</div>';
+    return;
+  }
+  el.innerHTML='<div class="save-empty">Loading…</div>';
+  let slots;
+  try {
+    slots = await window.api.privateWorlds.saves.list(window._activeWorldId);
+  } catch(e){
+    el.innerHTML='<div class="save-empty">⚠️ Could not load saves: '+e.message+'</div>';
+    return;
+  }
+  _slotMetaCache = {};
+  slots.forEach(s => { _slotMetaCache[s.slot_name] = s; });
+
   if(!slots.length){
     el.innerHTML='<div class="save-empty">No saves yet. Enter a name below to create your first save.</div>';
     return;
   }
-  el.innerHTML=slots.map(({name,data})=>{
-    const date=data.savedAt?new Date(data.savedAt).toLocaleString():'Unknown';
-    const stCount=data.stations?.length||0;
-    const esnCount=data.esns?.length||0;
-    const budget=data.money!=null?'$'+data.money.toLocaleString():'';
-    const safe=name.replace(/'/g,"\\'");
+  el.innerHTML=slots.map(s=>{
+    const date = s.saved_at ? new Date(s.saved_at).toLocaleString() : 'Unknown';
+    const safe = s.slot_name.replace(/'/g,"\\'");
+    const confirmCls = _overwriteConfirmSlot===s.slot_name ? ' confirm' : '';
+    const confirmTxt = _overwriteConfirmSlot===s.slot_name ? 'Confirm?' : 'Overwrite';
     return `<div class="save-slot-row">
       <div class="save-slot-info">
-        <div class="save-slot-name">${name}</div>
-        <div class="save-slot-meta">${stCount} station(s) · ${esnCount} ESN(s) · ${budget} · ${date}</div>
+        <div class="save-slot-name">${s.slot_name}</div>
+        <div class="save-slot-meta">Saved ${date}</div>
       </div>
       <div class="save-slot-actions">
         <button class="btn-sm" onclick="loadFromSlot('${safe}')">Load</button>
-        <button class="btn-sm overwrite${_overwriteConfirmSlot===name?' confirm':''}" id="owbtn-${safe}"
-          onclick="overwriteSlot('${safe}')">${_overwriteConfirmSlot===name?'Confirm?':'Overwrite'}</button>
+        <button class="btn-sm overwrite${confirmCls}" id="owbtn-${safe}"
+          onclick="overwriteSlot('${safe}')">${confirmTxt}</button>
         <button class="btn-sm danger" onclick="deleteSlot('${safe}')">Delete</button>
       </div>
     </div>`;
   }).join('');
 }
 
-function saveToSlot(){
+async function saveToSlot(){
   const name=document.getElementById('save-new-name').value.trim();
   if(!name){ setStatus('⚠️ Enter a save name.'); return; }
-  const key=SAVE_PREFIX+name;
-  // If slot already exists, use the same confirm flow as overwriteSlot
-  if(localStorage.getItem(key)!==null){ overwriteSlot(name); return; }
-  localStorage.setItem(key,JSON.stringify(buildSaveData()));
-  localStorage.setItem(LAST_SLOT_KEY,name);
-  renderSaveSlotList();
-  document.getElementById('save-new-name').value='';
-  setStatus(`💾 Saved as "${name}".`);
+  // Use the cache to detect an existing slot — same UX as before (overwrite confirm).
+  if(_slotMetaCache[name]){ overwriteSlot(name); return; }
+  try {
+    await window.api.privateWorlds.saves.put(window._activeWorldId, name, buildSaveData());
+    window.api.activePointer.set(window._activeWorldId, name);
+    document.getElementById('save-new-name').value='';
+    await renderSaveSlotList();
+    setStatus(`💾 Saved as "${name}".`);
+  } catch(e){
+    setStatus('⚠️ Save failed: '+e.message);
+  }
 }
 
 // Two-click overwrite: first click turns button red "Confirm?", second click saves.
 // Clicking any other button or waiting resets the pending slot.
-function overwriteSlot(name){
+async function overwriteSlot(name){
   if(_overwriteConfirmSlot === name){
     // Second click — confirmed, do the save
-    localStorage.setItem(SAVE_PREFIX+name, JSON.stringify(buildSaveData()));
-    localStorage.setItem(LAST_SLOT_KEY, name);
-    _overwriteConfirmSlot = null;
-    renderSaveSlotList();
-    // Clear the new-name field if it matched
-    const inp = document.getElementById('save-new-name');
-    if(inp && inp.value.trim() === name) inp.value='';
-    setStatus(`💾 Saved over "${name}".`);
+    try {
+      await window.api.privateWorlds.saves.put(window._activeWorldId, name, buildSaveData());
+      window.api.activePointer.set(window._activeWorldId, name);
+      _overwriteConfirmSlot = null;
+      await renderSaveSlotList();
+      const inp = document.getElementById('save-new-name');
+      if(inp && inp.value.trim() === name) inp.value='';
+      setStatus(`💾 Saved over "${name}".`);
+    } catch(e){
+      _overwriteConfirmSlot = null;
+      setStatus('⚠️ Save failed: '+e.message);
+    }
   } else {
     // First click — arm the confirm state
     _overwriteConfirmSlot = name;
-    renderSaveSlotList();
+    await renderSaveSlotList();
     // Auto-reset after 4 seconds if user doesn't confirm
     setTimeout(()=>{ if(_overwriteConfirmSlot===name){ _overwriteConfirmSlot=null; renderSaveSlotList(); } }, 4000);
   }
 }
 
-function loadFromSlot(name){
-  const raw=localStorage.getItem(SAVE_PREFIX+name);
-  if(!raw){ setStatus('⚠️ Save not found.'); return; }
+async function loadFromSlot(name){
+  if(!window._activeWorldId){ setStatus('⚠️ No active world.'); return; }
+  let resp;
+  try {
+    resp = await window.api.privateWorlds.saves.get(window._activeWorldId, name);
+  } catch(e){
+    setStatus('⚠️ Load failed: '+e.message);
+    return;
+  }
+  const data = resp.state_json;
   try{
-    const data=JSON.parse(raw);
     // Clear all map state
     stations.forEach(s=>{ s.marker?.remove(); s.units.forEach(u=>{ u.animMarker?.remove(); u.routeLine?.remove(); }); });
     incidents.forEach(i=>{ i.marker?.remove(); if(i.escalateTimer) clearTimeout(i.escalateTimer); });
@@ -4358,10 +4551,11 @@ function loadFromSlot(name){
     });
     renderPendingTransportBadge();
 
-    localStorage.setItem(LAST_SLOT_KEY,name);
+    window.api.activePointer.set(window._activeWorldId, name);
     updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
     renderResponsePlanList(); renderBoxAlarmList(); _tickGameClock();
     closeSaveModal();
+    _hideAllOverlays();
     setStatus(`💾 Loaded "${name}" — ${stations.length} station(s), ${esns.length} ESN(s). Budget: $${money.toLocaleString()}`);
   } catch(e){
     console.error('Load failed',e);
@@ -4369,53 +4563,19 @@ function loadFromSlot(name){
   }
 }
 
-function deleteSlot(name){
+async function deleteSlot(name){
   if(!confirm(`Delete save "${name}"? This cannot be undone.`)) return;
-  localStorage.removeItem(SAVE_PREFIX+name);
-  if(localStorage.getItem(LAST_SLOT_KEY)===name) localStorage.removeItem(LAST_SLOT_KEY);
-  renderSaveSlotList();
-  setStatus(`🗑 Deleted save "${name}".`);
-}
-
-// One-time migration from the old bam_v2 single-slot format.
-function migrateOldSave(){
-  const legacy=localStorage.getItem('bam_v2');
-  if(!legacy||localStorage.getItem(LAST_SLOT_KEY)) return;
-  try{
-    const parsed=JSON.parse(legacy);
-    parsed.savedAt=parsed.savedAt||Date.now();
-    localStorage.setItem(SAVE_PREFIX+'Imported Save',JSON.stringify(parsed));
-    localStorage.setItem(LAST_SLOT_KEY,'Imported Save');
-    localStorage.removeItem('bam_v2');
-  }catch(e){}
-}
-
-// Loads the last used slot on startup. Returns true if successful.
-function autoLoadLastSlot(){
-  const lastName=localStorage.getItem(LAST_SLOT_KEY);
-  if(!lastName) return false;
-  const raw=localStorage.getItem(SAVE_PREFIX+lastName);
-  if(!raw) return false;
-  try{
-    const data=JSON.parse(raw);
-    money=data.money||BAM_CONFIG.economy.startingMoney;
-    resolvedCount=data.resolvedCount||0;
-    gameDay=data.gameDay||1;
-    gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
-    responsePlans=data.responsePlans||[];
-    cashflowLog=data.cashflowLog||[];
-    data.stations?.forEach(s=>recreateStation(s));
-    loadESNData(data.esns);
-    loadDCData(data.dispatchCenters);
-    loadBoxAlarmData(data.boxAlarms);
-    loadHospitalData(data.hospitals||[]);
-    loadJailData(data.jails||[]);
-    loadSuspectData(data.suspects||[]);
-    updateMoney(0); renderStationList(); renderStats();
-    renderResponsePlanList(); renderBoxAlarmList();
-    setStatus(`💾 Loaded "${lastName}" — ${stations.length} station(s), ${esns.length} ESN(s).`);
-    return true;
-  }catch(e){ console.error('Auto-load failed',e); return false; }
+  try {
+    await window.api.privateWorlds.saves.delete(window._activeWorldId, name);
+    // If we just nuked the active-pointer slot, clear it so we don't try to
+    // resume into a slot that no longer exists on next login.
+    const ptr = window.api.activePointer.get();
+    if(ptr.slotName === name) window.api.activePointer.set(window._activeWorldId, null);
+    await renderSaveSlotList();
+    setStatus(`🗑 Deleted save "${name}".`);
+  } catch(e){
+    setStatus('⚠️ Delete failed: '+e.message);
+  }
 }
 
 // recreateStation() is in stations.js
@@ -4451,6 +4611,345 @@ document.addEventListener('keydown',e=>{
   if(e.key==='s'&&e.ctrlKey){ e.preventDefault(); openSaveModal(); }
 });
 
+// ── PHASE 4A: AUTH / WORLD-PICKER / SLOT-PICKER BOOTSTRAP ────────────────────
+// These functions drive the overlays declared in the HTML earlier. The flow:
+//   page-load → _bootstrapAuth() → either login overlay or world picker
+//   pick a world  → _enterWorld(id) → slot picker
+//   pick a slot   → loadFromSlot(slot) → game runs
+//   new slot save → _saveNewSlot()    → game runs with fresh seed
+
+window._activeWorldId   = null;
+window._activeWorldName = null;
+window._authMode        = 'login';   // 'login' | 'register'
+
+// Hide every full-screen overlay. Called once the player is inside a world.
+function _hideAllOverlays(){
+  ['auth-overlay','world-picker','slot-picker','migration-modal']
+    .forEach(id => document.getElementById(id).classList.remove('open'));
+}
+
+function _showOverlay(id){
+  // Only one full-screen overlay visible at a time so focus is unambiguous.
+  ['auth-overlay','world-picker','slot-picker','migration-modal']
+    .forEach(o => document.getElementById(o).classList.toggle('open', o === id));
+}
+
+// Wired from api.js: if any API call returns 401, drop the player back to login.
+window.onApiUnauthorized = () => {
+  window._activeWorldId = null;
+  window._activeWorldName = null;
+  _showOverlay('auth-overlay');
+};
+
+// ── Login / Register ─────────────────────────────────────────────────────────
+function _authSwitchTab(mode){
+  window._authMode = mode;
+  document.getElementById('auth-tab-login')   .classList.toggle('active', mode === 'login');
+  document.getElementById('auth-tab-register').classList.toggle('active', mode === 'register');
+  document.getElementById('auth-submit-btn').textContent = mode === 'login' ? 'Login' : 'Create Account';
+  document.getElementById('auth-error').textContent = '';
+}
+
+async function _authSubmit(){
+  const username = document.getElementById('auth-username').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const btn      = document.getElementById('auth-submit-btn');
+  const errEl    = document.getElementById('auth-error');
+  errEl.textContent = '';
+  if(!username || !password){ errEl.textContent = 'Username and password required.'; return; }
+  btn.disabled = true;
+  try {
+    if(window._authMode === 'register') await window.api.auth.register(username, password);
+    else                                await window.api.auth.login(username, password);
+    document.getElementById('auth-password').value = '';
+    await _onAuthSuccess();
+  } catch(e){
+    errEl.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _logout(){
+  window.api.auth.logout();
+  window.api.activePointer.clear();
+  window._activeWorldId = null;
+  window._activeWorldName = null;
+  _showOverlay('auth-overlay');
+  document.getElementById('auth-username').value = '';
+}
+
+// After a successful login/register: fetch the user, load settings, then
+// either trigger the one-shot localStorage importer or show the world picker.
+async function _onAuthSuccess(){
+  let me;
+  try { me = await window.api.auth.me(); }
+  catch(e){ document.getElementById('auth-error').textContent = e.message; return; }
+  document.getElementById('picker-username').textContent = me.username;
+  await loadSettings();
+  // Re-render the unit-color swatch panel against the freshly loaded settings,
+  // since _initUnitColorSettings() ran at boot against defaults.
+  _initUnitColorSettings();
+  // Migration importer fires only if legacy bam_save_* keys exist and the
+  // player has not previously imported/dismissed.
+  if(_hasLegacySaves() && !localStorage.getItem('bam_migration_handled')){
+    _showMigrationModal();
+  } else {
+    await _showWorldPicker();
+  }
+}
+
+// ── World picker ─────────────────────────────────────────────────────────────
+async function _showWorldPicker(){
+  _showOverlay('world-picker');
+  document.getElementById('world-new-name').value = '';
+  await _renderWorldList();
+}
+
+async function _renderWorldList(){
+  const el = document.getElementById('world-list');
+  el.innerHTML = '<div class="picker-empty">Loading…</div>';
+  let worlds;
+  try { worlds = await window.api.privateWorlds.list(); }
+  catch(e){ el.innerHTML = '<div class="picker-empty">⚠️ '+e.message+'</div>'; return; }
+
+  const cards = [];
+
+  // Disabled Global World tile — placeholder for Phase 4B.
+  cards.push(`<div class="picker-card disabled">
+    <div>
+      <div class="picker-card-name">🌐 Global World</div>
+      <div class="picker-card-meta">Coming in Phase 4B — always-live, no save slots</div>
+    </div>
+  </div>`);
+
+  if(!worlds.length){
+    cards.push('<div class="picker-empty">No private worlds yet. Name one below to begin.</div>');
+  } else {
+    worlds.forEach(w => {
+      const last = w.latest_saved_at
+        ? 'Last saved ' + new Date(w.latest_saved_at).toLocaleString()
+        : 'No saves yet';
+      const safeName = w.name.replace(/"/g,'&quot;');
+      cards.push(`<div class="picker-card clickable" onclick="_enterWorld(${w.id}, &quot;${safeName}&quot;)">
+        <div>
+          <div class="picker-card-name">${w.name}</div>
+          <div class="picker-card-meta">${w.save_count} save slot(s) · ${last}</div>
+        </div>
+        <div class="picker-card-actions">
+          <button class="btn-sm danger" onclick="event.stopPropagation(); _deleteWorld(${w.id}, &quot;${safeName}&quot;)">Delete</button>
+        </div>
+      </div>`);
+    });
+  }
+  el.innerHTML = cards.join('');
+}
+
+async function _createWorld(){
+  const inp  = document.getElementById('world-new-name');
+  const name = inp.value.trim();
+  if(!name) return;
+  try {
+    const w = await window.api.privateWorlds.create(name);
+    inp.value = '';
+    _enterWorld(w.id, w.name);
+  } catch(e){
+    alert('Could not create world: '+e.message);
+  }
+}
+
+async function _deleteWorld(id, name){
+  if(!confirm(`Delete world "${name}" and ALL its saves? This cannot be undone.`)) return;
+  try {
+    await window.api.privateWorlds.delete(id);
+    // If the player just deleted the world they were last in, clear the pointer.
+    const ptr = window.api.activePointer.get();
+    if(ptr.worldId === id) window.api.activePointer.clear();
+    await _renderWorldList();
+  } catch(e){
+    alert('Delete failed: '+e.message);
+  }
+}
+
+// ── Slot picker (per-world) ──────────────────────────────────────────────────
+function _enterWorld(id, name){
+  window._activeWorldId   = id;
+  window._activeWorldName = name;
+  document.getElementById('slot-picker-title').textContent = name + ' — Saves';
+  _showOverlay('slot-picker');
+  document.getElementById('slot-new-name').value = '';
+  _renderSlotPickerList();
+}
+
+function _backToWorldPicker(){
+  window._activeWorldId   = null;
+  window._activeWorldName = null;
+  _showOverlay('world-picker');
+  _renderWorldList();
+}
+
+async function _renderSlotPickerList(){
+  const el = document.getElementById('slot-list');
+  el.innerHTML = '<div class="picker-empty">Loading…</div>';
+  let slots;
+  try { slots = await window.api.privateWorlds.saves.list(window._activeWorldId); }
+  catch(e){ el.innerHTML = '<div class="picker-empty">⚠️ '+e.message+'</div>'; return; }
+
+  if(!slots.length){
+    el.innerHTML = '<div class="picker-empty">No saves in this world yet. Name a slot below to start fresh.</div>';
+    return;
+  }
+  el.innerHTML = slots.map(s => {
+    const safe = s.slot_name.replace(/"/g,'&quot;');
+    return `<div class="picker-card clickable" onclick="loadFromSlot(&quot;${safe}&quot;)">
+      <div>
+        <div class="picker-card-name">${s.slot_name}</div>
+        <div class="picker-card-meta">Saved ${new Date(s.saved_at).toLocaleString()}</div>
+      </div>
+      <div class="picker-card-actions">
+        <button class="btn-sm danger" onclick="event.stopPropagation(); _pickerDeleteSlot(&quot;${safe}&quot;)">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function _pickerDeleteSlot(name){
+  if(!confirm(`Delete save "${name}"? This cannot be undone.`)) return;
+  try {
+    await window.api.privateWorlds.saves.delete(window._activeWorldId, name);
+    await _renderSlotPickerList();
+  } catch(e){
+    alert('Delete failed: '+e.message);
+  }
+}
+
+// "Save" button in the slot picker creates a fresh game seeded with default
+// data, then immediately saves it under the given slot name. The player
+// proceeds into the new game with their first save already on disk.
+async function _saveNewSlot(){
+  const name = document.getElementById('slot-new-name').value.trim();
+  if(!name){ alert('Enter a slot name.'); return; }
+  // Wipe any in-memory leftover state before seeding (e.g., player jumped
+  // back to picker after playing another save).
+  _resetGameState();
+  seedTestData();
+  try {
+    await window.api.privateWorlds.saves.put(window._activeWorldId, name, buildSaveData());
+    window.api.activePointer.set(window._activeWorldId, name);
+    _hideAllOverlays();
+    updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
+    renderResponsePlanList(); renderBoxAlarmList(); _tickGameClock();
+    setStatus(`💾 New save "${name}" created in "${window._activeWorldName}".`);
+  } catch(e){
+    alert('Save failed: '+e.message);
+  }
+}
+
+// ── Migration importer (one-shot per browser) ────────────────────────────────
+function _hasLegacySaves(){
+  for(let i=0;i<localStorage.length;i++){
+    const k = localStorage.key(i);
+    if(k && k.startsWith('bam_save_')) return true;
+  }
+  return false;
+}
+
+function _showMigrationModal(){
+  const keys = [];
+  for(let i=0;i<localStorage.length;i++){
+    const k = localStorage.key(i);
+    if(k && k.startsWith('bam_save_')) keys.push(k);
+  }
+  document.getElementById('migration-message').innerHTML =
+    `We found <strong>${keys.length}</strong> legacy save${keys.length===1?'':'s'} stored on this browser. ` +
+    `Import ${keys.length===1?'it':'them'} into a new private world on your account so you can pick up where you left off?`;
+  document.getElementById('migration-error').textContent = '';
+  _showOverlay('migration-modal');
+}
+
+async function _runMigration(){
+  const errEl = document.getElementById('migration-error');
+  errEl.textContent = '';
+  try {
+    const world = await window.api.privateWorlds.create('Imported Saves');
+    for(let i=0;i<localStorage.length;i++){
+      const key = localStorage.key(i);
+      if(!key || !key.startsWith('bam_save_')) continue;
+      const slotName = key.slice('bam_save_'.length);
+      let state;
+      try { state = JSON.parse(localStorage.getItem(key)); }
+      catch(_){ continue; }
+      if(state && typeof state === 'object'){
+        await window.api.privateWorlds.saves.put(world.id, slotName, state);
+      }
+    }
+    // Also migrate legacy bam_settings if present (one-time).
+    const legacySettings = localStorage.getItem('bam_settings');
+    if(legacySettings){
+      try {
+        const parsed = JSON.parse(legacySettings);
+        if(parsed && typeof parsed === 'object'){
+          await window.api.settings.put(parsed);
+          // Re-load into memory so the UI reflects them immediately.
+          await loadSettings();
+        }
+      } catch(_){}
+    }
+    // Clear legacy keys.
+    const toDelete = [];
+    for(let i=0;i<localStorage.length;i++){
+      const k = localStorage.key(i);
+      if(k && (k.startsWith('bam_save_') || k === 'bam_settings' || k === 'bam_last_slot' || k === 'bam_v2')) toDelete.push(k);
+    }
+    toDelete.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('bam_migration_handled', 'imported');
+    await _showWorldPicker();
+  } catch(e){
+    errEl.textContent = 'Import failed: '+e.message;
+  }
+}
+
+function _dismissMigration(){
+  if(!confirm('Discard your local saves and continue without importing? This cannot be undone.')) return;
+  const toDelete = [];
+  for(let i=0;i<localStorage.length;i++){
+    const k = localStorage.key(i);
+    if(k && (k.startsWith('bam_save_') || k === 'bam_settings' || k === 'bam_last_slot' || k === 'bam_v2')) toDelete.push(k);
+  }
+  toDelete.forEach(k => localStorage.removeItem(k));
+  localStorage.setItem('bam_migration_handled', 'dismissed');
+  _showWorldPicker();
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+// Wipes runtime game state so seedTestData / loadFromSlot start from a clean
+// slate. Used by _saveNewSlot before seeding, and by loadFromSlot indirectly
+// (loadFromSlot does its own teardown).
+function _resetGameState(){
+  stations.forEach(s=>{ s.marker?.remove(); s.units.forEach(u=>{ u.animMarker?.remove(); u.routeLine?.remove(); }); });
+  incidents.forEach(i=>{ i.marker?.remove(); if(i.escalateTimer) clearTimeout(i.escalateTimer); });
+  clearESNState();
+  stations.length=0; incidents.length=0; callLog.length=0;
+}
+
+// ── Top-level bootstrap ─────────────────────────────────────────────────────
+async function _bootstrapAuth(){
+  if(!window.api.isAuthed()){
+    _showOverlay('auth-overlay');
+    document.getElementById('auth-username').focus();
+    return;
+  }
+  // We have a stored token — validate it before showing the picker.
+  try {
+    await window.api.auth.me();
+    await _onAuthSuccess();
+  } catch(e){
+    // Invalid/expired token: fall through to login.
+    _showOverlay('auth-overlay');
+    document.getElementById('auth-username').focus();
+  }
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
 
 // Layer toggle control (Leaflet bottom-left)
@@ -4477,18 +4976,19 @@ new LayerControl().addTo(map);
 // Game clock — ticks every real second, advancing by gameSpeed game-minutes.
 setInterval(_tickGameClock, 1000);
 
-loadSettings();
+// Synchronous UI setup that doesn't depend on auth.
 _initUnitColorSettings();
 initSidebarCosts();
-migrateOldSave();
-const loaded = autoLoadLastSlot();
-if(!loaded) seedTestData();
 updateMoney(0);
 renderIncidentList(); renderStats();
 _tickGameClock();
 setPlacing(null);
 scheduleNextSpawn();
-setStatus('SYSTEM READY — Draw ESN zones for call spawning · Ctrl+S to save');
+setStatus('SYSTEM READY — Sign in to load a world.');
+
+// Hand off to the auth bootstrap — the picker will eventually trigger
+// loadFromSlot() or _saveNewSlot(), which is where actual play begins.
+_bootstrapAuth();
 </script>
 </body>
 </html>

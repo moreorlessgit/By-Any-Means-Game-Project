@@ -10,21 +10,37 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 
 ## Tech Stack
 
-| Layer | Current |
+| Layer | Current / Planned |
 |---|---|
 | UI/Game | Plain HTML + CSS + JS |
 | Map | Leaflet.js |
 | Routing | OSRM (public API) |
 | OSM data | Overpass API |
-| Storage | localStorage (`bam_save_` prefix) |
-| Local server | Live Server (VSCode extension) |
+| Storage | PostgreSQL via REST API — **localStorage retired for game data (Phase 4A complete)** |
+| Local server (frontend) | Live Server (VSCode extension) — port 5500 |
+| Backend | Node.js + Express — **live, port 3001** |
+| Database | PostgreSQL 18 — **live, bam_dev** |
+| Auth | JWT — **login required to play; settings auto-sync, private worlds use save slots** |
+| Real-time | Socket.IO (Phase 4B) |
+| DB layer | Prisma ORM v6 — **live, schema migrated** |
 
 ---
 
 ## Current Files
 
 ```
-index.html, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js, CLAUDE.md, docs/
+Frontend (root):
+  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js
+  CLAUDE.md, docs/, .gitignore
+
+Backend (server/):
+  index.js, lib/db.js, smoke-test.http, package.json
+  middleware/auth.js
+  routes/auth.js, routes/privateWorlds.js, routes/privateWorldSaves.js, routes/settings.js
+  prisma/schema.prisma, prisma/migrations/
+
+Launch + hosting reference:
+  docs/launch-guide.md   ← how to run, host, connect remotely, push updates
 ```
 
 ---
@@ -63,5 +79,8 @@ index.html, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.
 - **docs/roadmap.md** — Phase 4+ planned systems. Pull when planning or building new phases.
 - **docs/file-structure.md** — Current + planned file layout and file creation rules. Pull when adding files or asking where code belongs.
 - **docs/architecture.md** — Detailed implementation rules per system (animation, saves, ESNs, dispatch, etc.). Pull when touching a specific system.
+- **docs/backend-architecture.md** — Full backend design: DB schema, API contract, Socket.IO events, auth flow, world model. Pull when working on any Phase 4+ backend or API code.
+- **docs/security.md** — Security model, threat matrix, implementation checklist. Pull when working on auth, API endpoints, or any code that touches player data.
 - **docs/conventions.md** — Coding conventions, naming rules, ID prefixes, UI patterns. Pull when writing new code or establishing new patterns.
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.
+- **docs/launch-guide.md** — How to start the backend + frontend, connect from another computer on the LAN, and roll out updates. Pull when the player asks how to launch, host, or update the game.

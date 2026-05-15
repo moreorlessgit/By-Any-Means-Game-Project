@@ -18,9 +18,10 @@ The primary player/developer is a real-world 911 dispatcher and Firefighter/EMT.
 - **Long-term goal:** Full US map playable via OpenStreetMap tile streaming (no local map storage needed)
 
 ### Distribution Goals
-- Currently personal use only
-- May be shared non-commercially with one or two friends (fellow dispatchers)
-- Long-term stretch goal: free or very cheap hosting (GitHub Pages, Cloudflare Pages, etc.)
+- **Phase 4A target:** Self-hosted on a home server, accessible from any device (work, home, mobile)
+- **Phase 4B/4C target:** Invite-only multiplayer for a small group of friends (fellow dispatchers)
+- **Phase 4D stretch:** Potentially open to strangers — free, non-commercial
+- Hosting path: home box → Railway.app or Fly.io (free tiers) when ready for cloud
 - Never commercial
 
 ---
@@ -35,8 +36,13 @@ Simple does not need to mean limited. Free is required. Best tool for the job wi
 | Map | Leaflet.js | OpenStreetMap tiles, streamed on demand |
 | Routing | OSRM (public API) | Real road routing, ETA calculation; `router.project-osrm.org` |
 | OSM data | Overpass API | Per-ESN building + road node cache; `overpass-api.de` |
-| Storage | localStorage (`bam_save_` prefix) | SQLite migration planned for later |
-| Local server | Live Server (VSCode extension) | Sufficient for now |
+| Storage | localStorage → API calls | Phase 4 migration; localStorage removed when backend is live |
+| Local server | Live Server (VSCode extension) | Frontend dev; backend runs alongside on separate port |
+| Backend | Node.js + Express | Phase 4 — API server, game state persistence |
+| Database | PostgreSQL | Phase 4 — accounts, save data, global world entities |
+| Auth | JWT (JSON Web Tokens) | Phase 4 — stateless authentication |
+| Real-time | Socket.IO | Phase 4 — group station updates, shared call sync |
+| DB layer | Prisma ORM | Phase 4 — migrations, type-safe queries, injection prevention |
 | Build tools | None currently | Can be introduced if there is a clear benefit — explain before adding |
 
 ---

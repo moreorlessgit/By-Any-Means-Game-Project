@@ -1,0 +1,142 @@
+### Phase 4A Session 3 smoke tests
+### Run end-to-end against a fresh `npm run dev` server.
+### Compatible with the VSCode "REST Client" extension and JetBrains HTTP client.
+###
+### Usage:
+###   1. Start the server: `cd server && npm run dev`
+###   2. Click "Send Request" above each block top-to-bottom.
+###   3. The {{token}} variable is set automatically from the register/login response.
+
+@host = http://localhost:3001
+@username = smoke_{{$timestamp}}
+@password = correcthorsebatterystaple
+
+### Health check
+GET {{host}}/api/health
+
+### Register a fresh user — saves token into {{token}}
+# @name register
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "{{username}}",
+  "password": "{{password}}"
+}
+
+@token = {{register.response.body.token}}
+
+### Who am I?
+GET {{host}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Settings: should be {} for a fresh account
+GET {{host}}/api/settings
+Authorization: Bearer {{token}}
+
+### Settings: auto-sync write
+PUT {{host}}/api/settings
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "settings_json": {
+    "playerSpawnRate": 1.5,
+    "avlColors": { "available": "#0a0" },
+    "unitTypeColors": {}
+  }
+}
+
+### Settings: read back
+GET {{host}}/api/settings
+Authorization: Bearer {{token}}
+
+### List private worlds (empty at first)
+GET {{host}}/api/private-worlds
+Authorization: Bearer {{token}}
+
+### Create a private world
+# @name createWorld
+POST {{host}}/api/private-worlds
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "Smoke Test World"
+}
+
+@worldId = {{createWorld.response.body.id}}
+
+### List private worlds (should show one)
+GET {{host}}/api/private-worlds
+Authorization: Bearer {{token}}
+
+### List saves for the world (empty)
+GET {{host}}/api/private-worlds/{{worldId}}/saves
+Authorization: Bearer {{token}}
+
+### Save a slot
+POST {{host}}/api/private-worlds/{{worldId}}/saves
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "slot_name": "slot1",
+  "state_json": {
+    "money": 250000,
+    "stations": [],
+    "gameDay": 1,
+    "gameSeconds": 0
+  }
+}
+
+### Overwrite the same slot (should upsert, not duplicate)
+POST {{host}}/api/private-worlds/{{worldId}}/saves
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "slot_name": "slot1",
+  "state_json": {
+    "money": 300000,
+    "stations": [],
+    "gameDay": 2,
+    "gameSeconds": 60
+  }
+}
+
+### List saves (should still be one slot, updated saved_at)
+GET {{host}}/api/private-worlds/{{worldId}}/saves
+Authorization: Bearer {{token}}
+
+### Read the slot back
+GET {{host}}/api/private-worlds/{{worldId}}/saves/slot1
+Authorization: Bearer {{token}}
+
+### Ownership test: another user cannot read my world
+# @name register2
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "smoke2_{{$timestamp}}",
+  "password": "correcthorsebatterystaple"
+}
+
+@token2 = {{register2.response.body.token}}
+
+### Should return 404 (not 403, to avoid leaking world existence)
+GET {{host}}/api/private-worlds/{{worldId}}/saves
+Authorization: Bearer {{token2}}
+
+### Delete the slot
+DELETE {{host}}/api/private-worlds/{{worldId}}/saves/slot1
+Authorization: Bearer {{token}}
+
+### Delete the world
+DELETE {{host}}/api/private-worlds/{{worldId}}
+Authorization: Bearer {{token}}
+
+### Verify world is gone
+GET {{host}}/api/private-worlds
+Authorization: Bearer {{token}}

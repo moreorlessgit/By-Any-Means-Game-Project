@@ -1,0 +1,5 @@
+# Backend secrets and installed packages — never commit these
+server/.env
+server/.env.*
+server/node_modules/
+server/*.log
