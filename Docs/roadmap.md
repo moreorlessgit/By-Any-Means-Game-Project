@@ -92,21 +92,12 @@ Goal: Open the game to strangers safely.
 
 ## Phase 4.5 (Framework For Phase 5) — Framework for Volunteer System, Certifications, and Personnel
 
-- **Unit List Window/Modal** — In Operations Modal, after the stations tab.
-- **Groundwork For Phase 4 — Unit Details Window/Modal** — Can click into it from units on the map or anywhere else a unit is referenced in a window. Shows a bunch of unit info, can rename from here too. General data like ETAs for all phases, PTs loaded, Suspects loaded, etc. Ask Questions to verify intent.
-
+- Merged into Phase 5
 ---
 
-## Phase 5 (After Framework) — Volunteer System, Certifications, and Personnel
+## Phase 5 — Personnel, Volunteer System, Certifications, Unit List Window, Unit Details Window.
 
-- **Station staffing types:** Each station configured as Career (fully paid), Combination, or Volunteer
-- **Volunteer response delay:** Volunteers must respond to the station before the apparatus can respond. Delay calculated from volunteer's home/work location within the ESN. Adds realistic rural response time lag.
-- **Personnel system:** Individual named responders at each station. Can be renamed by player. Tracks certifications (FF1, FF2, Driver/Operator, EMT, AEMT, Paramedic, LEO, etc.)
-- **Volunteer roster:** Volunteers assigned to ESNs, not just stations. They respond from within the ESN.
-- **Certification requirements:** Units require minimum certified personnel to respond (e.g. ALS ambulance needs at least one Paramedic)
-- **Training system:** Player can train personnel to gain new certifications. Training is money-gated only — the player pays a cost and the certification is granted immediately. No waiting. Costs defined in config.js.
-
----
+- See the Phase5.md file.
 
 ## Phase 6 — CAD-Style Call List Overhaul
 
@@ -140,7 +131,7 @@ Goal: Open the game to strangers safely.
 ---
 
 ## Stretch Goals
-
+- Future Phase — Dispatch Center Staffing, CAD Workflow, and Call-Taking
 - Full US map coverage via OSM tile streaming
 - Equipment customization per apparatus (tools, equipment loadout affecting capability tags)
 - Feature - ESN Creation and Edit has check boxes for various modifiers/designations like "Commercial" and "Interstate" which *in the future* affect the types of calls that can spawn as well as the weighting for them.
