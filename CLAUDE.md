@@ -16,11 +16,11 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 | Map | Leaflet.js |
 | Routing | OSRM (public API) |
 | OSM data | Overpass API |
-| Storage | localStorage (frontend) → PostgreSQL via API (Phase 4A migration in progress) |
-| Local server | Live Server (VSCode extension) |
+| Storage | PostgreSQL via REST API — **localStorage retired for game data (Phase 4A complete)** |
+| Local server (frontend) | Live Server (VSCode extension) — port 5500 |
 | Backend | Node.js + Express — **live, port 3001** |
 | Database | PostgreSQL 18 — **live, bam_dev** |
-| Auth | JWT — **live, auth endpoints operational** |
+| Auth | JWT — **login required to play; settings auto-sync, private worlds use save slots** |
 | Real-time | Socket.IO (Phase 4B) |
 | DB layer | Prisma ORM v6 — **live, schema migrated** |
 
@@ -29,9 +29,18 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 ## Current Files
 
 ```
-index.html, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js, CLAUDE.md, docs/
-.gitignore
-server/ (Phase 4A backend — index.js, lib/db.js, middleware/auth.js, routes/auth.js, prisma/schema.prisma, prisma/migrations/)
+Frontend (root):
+  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js
+  CLAUDE.md, docs/, .gitignore
+
+Backend (server/):
+  index.js, lib/db.js, smoke-test.http, package.json
+  middleware/auth.js
+  routes/auth.js, routes/privateWorlds.js, routes/privateWorldSaves.js, routes/settings.js
+  prisma/schema.prisma, prisma/migrations/
+
+Launch + hosting reference:
+  docs/launch-guide.md   ← how to run, host, connect remotely, push updates
 ```
 
 ---
@@ -74,3 +83,4 @@ server/ (Phase 4A backend — index.js, lib/db.js, middleware/auth.js, routes/au
 - **docs/security.md** — Security model, threat matrix, implementation checklist. Pull when working on auth, API endpoints, or any code that touches player data.
 - **docs/conventions.md** — Coding conventions, naming rules, ID prefixes, UI patterns. Pull when writing new code or establishing new patterns.
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.
+- **docs/launch-guide.md** — How to start the backend + frontend, connect from another computer on the LAN, and roll out updates. Pull when the player asks how to launch, host, or update the game.

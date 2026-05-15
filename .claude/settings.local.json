@@ -8,7 +8,22 @@
       "PowerShell(Set-Location \"d:\\\\By-Any-Means-Game-Project\\\\server\"; $env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; & \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" install --save-dev prisma 2>&1)",
       "Bash(grep -rn '$transaction' 'd:\\\\By-Any-Means-Game-Project\\\\server\\\\node_modules\\\\@prisma\\\\client\\\\runtime')",
       "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
-      "Bash(node -e \"require\\('./routes/auth'\\); console.log\\('routes/auth loaded OK'\\);\")"
+      "Bash(node -e \"require\\('./routes/auth'\\); console.log\\('routes/auth loaded OK'\\);\")",
+      "PowerShell(Get-ChildItem -Path \"d:\\\\By-Any-Means-Game-Project\\\\server\" -Recurse -Depth 3 -Exclude node_modules | Where-Object { $_.PSIsContainer -or $_.Extension -in '.js','.json','.prisma' } | Select-Object FullName)",
+      "Bash(node index.js)",
+      "Bash(curl -s http://localhost:3001/api/health)",
+      "Bash(netstat -ano)",
+      "PowerShell(try { Stop-Process -Id 71356 -Force -ErrorAction Stop; Write-Output \"stopped\" } catch { Write-Output \\(\"not-running: \" + $_.Exception.Message\\) })",
+      "Bash(npx prisma *)",
+      "Bash(node --check api.js)",
+      "Bash(curl -s -o /dev/null -w \"GET /  HTTP %{http_code}\\\\n\" http://localhost:5500/index.html)",
+      "Bash(curl -s -o /dev/null -w \"GET /api.js  HTTP %{http_code}\\\\n\" http://localhost:5500/api.js)",
+      "Bash(curl -s -H \"Origin: http://localhost:5500\" -H \"Access-Control-Request-Method: POST\" -X OPTIONS http://localhost:3001/api/auth/login -i)",
+      "PowerShell($pid_to_stop = \\(Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1\\).OwningProcess; if \\($pid_to_stop\\) { Stop-Process -Id $pid_to_stop -Force; Write-Output \\(\"Stopped PID \" + $pid_to_stop\\) } else { Write-Output \"no server running on 3001\" })",
+      "Bash(curl -s -H \"Origin: http://192.168.1.50:5500\" -i -X OPTIONS http://localhost:3001/api/auth/login)",
+      "Bash(python -c ' *)",
+      "Bash(node --check _tmp_check.js)",
+      "Bash(rm _tmp_check.js)"
     ]
   }
 }

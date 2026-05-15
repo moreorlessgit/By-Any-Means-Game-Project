@@ -193,6 +193,46 @@
 - **Rate limiting** — `express-rate-limit` v8 (`limit: 10`, 15-minute window) applied to all three auth routes via shared `authLimiter` instance
 - **`server/index.js`** — auth router mounted (`app.use('/api/auth', require('./routes/auth'))`); private-worlds and settings routes remain stubbed for Session 3
 
-*Remaining Phase 4A sessions: Session 3 (saves & settings API), Session 4 (frontend migration + login UI).*
+---
 
-*Last updated: 2026-05-12. Phase 4A Session 2 complete — JWT auth layer: register, login, /me endpoints, Bearer token middleware, rate limiting.*
+## Phase 4A — Session 3: Saves & Settings API ✅
+
+- **`server/routes/privateWorlds.js`** — private world CRUD mounted at `/api/private-worlds`; all routes guarded by `requireAuth`:
+  - `GET /` — returns the caller's worlds with `save_count` and `latest_saved_at` for the world picker (no save payloads)
+  - `POST /` — Zod validation (name 1–128 chars, trimmed), returns the created world
+  - `DELETE /:id` — single `deleteMany` with ownership filter; save slots are removed automatically via `ON DELETE CASCADE` (see follow-up below)
+- **`server/routes/privateWorldSaves.js`** — save slot CRUD mounted as sub-router at `/api/private-worlds/:worldId/saves` (uses `mergeParams`); every handler first calls `assertWorldOwnership(worldId, userId)`:
+  - `GET /` — list slot metadata only (no `state_json`) so the picker stays fast
+  - `GET /:slot` — full save payload for one slot
+  - `POST /` — `prisma.upsert()` on `(world_id, slot_name)` so saving to an existing slot overwrites (matches Phase 3 behavior); Zod requires `state_json` to be a JSON object but otherwise leaves shape to the frontend
+  - `DELETE /:slot` — single-slot delete
+- **`server/routes/settings.js`** — settings auto-sync endpoint at `/api/settings`:
+  - `GET /` — returns `{ settings_json }`, defaults to `{}` if the row is somehow missing
+  - `PUT /` — full replace (idempotent); separate rate-limiter (`120 req/min`) since the frontend will hit this on every settings change debounced ~500ms
+- **`server/index.js`** — both new routers mounted at the previously stubbed placeholders
+- **`server/smoke-test.http`** — REST Client/JetBrains-compatible end-to-end smoke chain: register → me → settings GET/PUT → worlds list/create → saves upsert/overwrite/list/get → cross-user 404 check → delete cleanup
+- **`server/package.json`** — added `start` and `dev` scripts (uses native `node --watch`)
+- **Design decision (docs):** Settings are auto-synced (no Save button); private world game state keeps manual save slots; future global world (Phase 4B+) will be always-live following the same auto-sync pattern. Documented in [docs/backend-architecture.md](backend-architecture.md) "Settings Sync" and [docs/roadmap.md](roadmap.md) Phase 4A.
+
+*Follow-up resolved in same session:* Migration `20260515002826_cascade_owned_data` switched the three owned-data FKs (`User → PrivateWorld`, `PrivateWorld → PrivateWorldSave`, `User → Settings`) from `RESTRICT` to `CASCADE`, matching `docs/backend-architecture.md`. The world DELETE handler was simplified from a 2-step transaction to a single `deleteMany`.
+
+*Remaining Phase 4A: Session 4 (frontend migration + login UI + world picker + one-shot importer).*
+
+---
+
+## Phase 4A — Session 4: Frontend Migration ✅
+
+- **`api.js`** (new, root) — single ES-free module exposing `window.api` with auth/private-worlds/saves/settings/health calls. Token stored at `localStorage['bam_token']`. On every fetch: auto-attaches `Authorization: Bearer <token>`; on 401 it clears the token and invokes `window.onApiUnauthorized()` so the page re-renders the login overlay. Includes `api.settings.putDebounced()` (500 ms debounce) and `api.activePointer` helpers for the last-world/slot UX pointer.
+- **Login / Register overlay** — full-screen, z-index 10000, two-tab form with username/password fields, server-error display, focuses username on appear.
+- **World picker overlay** — lists the player's private worlds (name, slot count, last-saved timestamp). Card click → slot picker. Includes a disabled "🌐 Global World" tile captioned for Phase 4B. Inline name field creates a new world. Per-world Delete button.
+- **Slot picker overlay** — per-world slot list, clicking a slot loads it; inline "new slot name" field creates a fresh seeded game and saves it under the chosen slot. Back button returns to world picker.
+- **In-game save modal repointed** — `openSaveModal`/`saveToSlot`/`overwriteSlot`/`loadFromSlot`/`deleteSlot` all now hit `api.privateWorlds.saves.*` against `window._activeWorldId`. Two-click overwrite confirm preserved.
+- **Settings auto-sync** — `saveSettings()` now calls `api.settings.putDebounced` (no Save button); `loadSettings()` is async and pulls from the server after auth succeeds. The settings modal's existing change handlers (spawn rate slider, AVL color pickers, unit-type color pickers) all flow through `saveSettings()` so they sync automatically.
+- **One-shot localStorage importer** — on first login per browser, scans for legacy `bam_save_*` keys and offers to import them into a new "Imported Saves" world. Migrates legacy `bam_settings` payload to the server too. Marks `bam_migration_handled = "imported" | "dismissed"` so the modal never reappears on this browser.
+- **Bootstrap flow** — page-load no longer auto-loads any save. Instead: `_bootstrapAuth()` decides between login overlay (no/expired token) and the world picker (`api.auth.me()` succeeds). The map, sidebar, layer controls, and game clock initialize behind the overlay so loading a save shows instant feedback.
+- **`localStorage` keys post-Session-4** — only `bam_token`, `bam_active_world_id`, `bam_active_slot_name`, `bam_migration_handled` remain. All `bam_save_*` and `bam_settings` keys are removed after import/dismiss.
+- **CORS verified** — `Access-Control-Allow-Origin: http://localhost:5500` preflight OK against the live server.
+
+*Phase 4A complete.* Next: Phase 4B (groups, global stations/units, Socket.IO).
+
+*Last updated: 2026-05-14. Phase 4A Session 4 complete — login overlay, world picker, server-backed save slots, settings auto-sync, one-shot importer.*

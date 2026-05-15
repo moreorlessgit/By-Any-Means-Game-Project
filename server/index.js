@@ -8,14 +8,20 @@ const cors    = require('cors');
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// Only accept requests from the game frontend (localhost in dev).
+// Accept requests from the game frontend on:
+//   - localhost / 127.0.0.1 (developer machine)
+//   - any RFC1918 LAN IP (10.0.0.0/8, 172.16-31.0.0/12, 192.168.0.0/16)
+// This lets other devices on the home network play without re-configuring
+// the server. To open the game to the public internet, replace this with
+// an explicit allowlist of trusted origins.
+const LAN_ORIGIN_RE = /^http:\/\/(?:localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+)(?::\d+)?$/;
 app.use(cors({
-  origin: [
-    'http://localhost:5500',   // VSCode Live Server default
-    'http://127.0.0.1:5500',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-  ],
+  origin: (origin, cb) => {
+    // Tools like curl and same-origin requests send no Origin header.
+    if(!origin) return cb(null, true);
+    if(LAN_ORIGIN_RE.test(origin)) return cb(null, true);
+    return cb(new Error('CORS: origin not allowed: ' + origin));
+  },
   credentials: true,
 }));
 
@@ -27,10 +33,10 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
 });
 
-// ── Routes (added in Sessions 2 & 3) ─────────────────────────────────────────
+// ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/api/auth',           require('./routes/auth'));
-// app.use('/api/private-worlds', require('./routes/privateWorlds'));
-// app.use('/api/settings',       require('./routes/settings'));
+app.use('/api/private-worlds', require('./routes/privateWorlds'));
+app.use('/api/settings',       require('./routes/settings'));
 
 // ── 404 fallback ─────────────────────────────────────────────────────────────
 app.use((req, res) => {

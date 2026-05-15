@@ -303,15 +303,33 @@ const state = JSON.parse(localStorage.getItem('bam_save_slot1'));
 
 **After (Phase 4A):**
 ```js
-await api.saves.set('slot1', state);
-const state = await api.saves.get('slot1');
+await api.privateWorlds.saves.put(worldId, 'slot1', state);
+const { state_json } = await api.privateWorlds.saves.get(worldId, 'slot1');
 ```
 
-The `api` module handles token attachment, error handling, and response parsing. All existing save/load UI calls through this wrapper. localStorage is removed entirely once migration is verified.
+The `api` module (`api.js` at repo root) handles token attachment, error handling, and response parsing. All existing save/load UI calls through this wrapper. localStorage is removed for game data once migration is verified — the only keys that persist are `bam_token`, `bam_migration_dismissed`, and active-world/slot pointers for UX continuity.
+
+---
+
+## Settings Sync (auto-save contract)
+
+Settings have no Save button — they auto-sync to the server on every change.
+
+**Client-side rule:**
+- Every code path that mutates the in-memory settings object calls `api.settings.put(currentSettings)`.
+- That call is debounced ~500ms so a burst of rapid changes collapses into a single PUT.
+
+**Server-side rule:**
+- `PUT /api/settings` does a full replace of `settings_json` (idempotent, no merge logic on the server).
+- Permissive rate-limit (120 req/min per IP) accommodates the chatty pattern while still catching runaway loops.
+
+This is the reference pattern for any future auto-synced surface — the global world (Phase 4B+) follows the same shape: client mutates state, debounced PUT replays the change to the server, server is the source of truth on reload.
 
 ---
 
 ## Global vs. Private World Behavior
+
+The global world is **always-live**: there is no Save button on the global end. Player state (stations, units, money, etc.) persists automatically on the server, similar to the settings auto-sync pattern above but per-entity rather than blob-replace. Private worlds keep the familiar named-save-slot model so single-player play stays under the player's control.
 
 | Feature | Global World | Private World |
 |---|---|---|

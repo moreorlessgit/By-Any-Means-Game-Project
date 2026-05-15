@@ -20,21 +20,28 @@ See **docs/backend-architecture.md** for the full technical design and **docs/se
 
 ---
 
-### Phase 4A — Backend Foundation *(in progress)*
+### Phase 4A — Backend Foundation ✅ *(complete)*
 
 Goal: Replace `localStorage` with a real backend. Private worlds work exactly as before, now server-backed and accessible from any device.
 
 - ✅ Node.js + Express project setup alongside existing frontend (`server/`)
-- ✅ PostgreSQL schema: `users`, `private_worlds`, `private_world_saves`, `settings` — migrated and live
+- ✅ PostgreSQL schema: `users`, `private_worlds`, `private_world_saves`, `settings` — migrated and live (FKs cascade on owner delete)
 - ✅ Health check endpoint, CORS, secrets management
-- ✅ Auth endpoints: register, login, JWT middleware
-- ⬜ Private world save/load API (mirrors current save slot behavior) *(Session 3)*
-- ⬜ Settings API (replaces `bam_settings` key) *(Session 3)*
-- ⬜ Frontend migration layer: thin API wrapper replaces all `localStorage` reads and writes *(Session 4)*
-- ⬜ Login screen on load *(Session 4)*
-- ⬜ Existing save data migration path: export current localStorage → import to new system *(Session 4)*
+- ✅ Auth endpoints: register, login, JWT middleware, rate limiting
+- ✅ Private world save/load API — manual save slots, mirrors Phase 3 behavior (upsert on slot_name)
+- ✅ Settings API — **auto-syncs on change, no Save button** (debounced PUT, 120 req/min limit)
+- ✅ Frontend migration layer: `api.js` REST client replaces every `localStorage` game-data read/write
+- ✅ Login screen on load → world picker (private worlds list + disabled "Global World" tile for Phase 4B)
+- ✅ One-shot localStorage importer: detects legacy `bam_save_*` keys and offers to import into an "Imported Saves" world
 
-**Player-visible change:** Login screen on load. Save/load now persists to server. Everything else identical.
+**Player-visible change:** Login screen on load. Save/load persists to the server and is accessible from any device. Settings sync silently. Everything else identical to Phase 3.
+
+**Save model going forward:**
+- **Private worlds (live now)** — manual save slots, just like Phase 3. You name a slot and overwrite when you want.
+- **Global world (Phase 4B+)** — always-live, server-clock, no Save button. Your stations/units persist automatically.
+- **Settings (any world)** — auto-synced on change. No Save button.
+
+See **docs/launch-guide.md** for how to start the server, host on the LAN, and push updates.
 
 ---
 

@@ -24,21 +24,24 @@ model User {
 
 // One private world per player (can be expanded to many later).
 // A world is the container — save slots live inside it.
+// onDelete: Cascade — deleting a user removes their worlds (and via the
+// next relation, their save slots too).
 model PrivateWorld {
-  id         Int      @id @default(autoincrement())
-  owner      User     @relation(fields: [owner_user_id], references: [id])
+  id            Int      @id @default(autoincrement())
+  owner         User     @relation(fields: [owner_user_id], references: [id], onDelete: Cascade)
   owner_user_id Int
-  name       String
-  created_at DateTime @default(now())
+  name          String
+  created_at    DateTime @default(now())
 
   saves PrivateWorldSave[]
 }
 
 // Named save slots within a private world.
 // slot_name is unique per world — overwriting a slot updates the existing row.
+// onDelete: Cascade — deleting a world removes all of its save slots.
 model PrivateWorldSave {
   id         Int          @id @default(autoincrement())
-  world      PrivateWorld @relation(fields: [world_id], references: [id])
+  world      PrivateWorld @relation(fields: [world_id], references: [id], onDelete: Cascade)
   world_id   Int
   slot_name  String
   state_json Json
@@ -49,8 +52,9 @@ model PrivateWorldSave {
 
 // Per-user settings (spawn rate, AVL colors, etc.).
 // Survives across worlds and save slots.
+// onDelete: Cascade — deleting a user removes their settings row.
 model Settings {
-  user          User @relation(fields: [user_id], references: [id])
+  user          User @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id       Int  @id
   settings_json Json @default("{}")
 }
