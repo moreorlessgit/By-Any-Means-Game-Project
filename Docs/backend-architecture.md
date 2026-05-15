@@ -340,3 +340,95 @@ The global world is **always-live**: there is no Save button on the global end. 
 | Calls | Private until shared | Always private |
 | Save slots | N/A (always live) | Multiple named slots per world |
 | Multiplayer | Yes | No |
+
+---
+
+## Phase 5 Tables (Planned — Not Yet Built)
+
+These are sketches; final column names and types are decided at migration time. All tables follow the FK cascade rules defined in **docs/data-lifecycle.md**.
+
+```sql
+-- Personnel: individual named responders, owned by a user, assigned to a station
+personnel (
+  id                  SERIAL PRIMARY KEY,
+  owner_user_id       INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  station_id          INTEGER REFERENCES stations(id) ON DELETE CASCADE,
+  name                VARCHAR(128) NOT NULL,
+  staffing_type       VARCHAR(16) NOT NULL,            -- 'career' | 'volunteer'
+  rank                VARCHAR(64),
+  preferred_service   VARCHAR(16),                     -- 'fire' | 'ems' | 'either'
+  home_lat            DOUBLE PRECISION,
+  home_lng            DOUBLE PRECISION,
+  home_osm_way_id     BIGINT,
+  work_lat            DOUBLE PRECISION,
+  work_lng            DOUBLE PRECISION,
+  work_osm_way_id     BIGINT,
+  is_customized       BOOLEAN NOT NULL DEFAULT FALSE,  -- player has manually edited; opts out of auto-migration
+  is_super_responder  BOOLEAN NOT NULL DEFAULT FALSE,  -- player-tagged; ignores availability/auto-migration
+  auto_migrated_flag  BOOLEAN NOT NULL DEFAULT FALSE,  -- set when ESN edit forced a home regen; cleared on player ack
+  data_json           JSONB,                           -- schedule, reliability, stats, history
+  created_at          TIMESTAMPTZ DEFAULT NOW()
+)
+
+-- Certifications: lookup table for cert types (FF1, EMT, Paramedic, etc.)
+certifications (
+  id            SERIAL PRIMARY KEY,
+  code          VARCHAR(32) UNIQUE NOT NULL,           -- 'FF1', 'EMT', 'LV_EVOC', etc.
+  display_name  VARCHAR(128) NOT NULL,
+  category      VARCHAR(16) NOT NULL,                  -- 'fire' | 'ems' | 'police' | 'shared'
+  cost_cents    INTEGER NOT NULL,                      -- training cost (mirrors config.js)
+  prereq_codes  TEXT[]                                 -- required prior certs
+)
+
+-- Personnel-certification join
+personnel_certifications (
+  personnel_id      INTEGER REFERENCES personnel(id) ON DELETE CASCADE,
+  certification_id  INTEGER REFERENCES certifications(id),
+  earned_at         TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (personnel_id, certification_id)
+)
+
+-- OSM building cache: per-ESN cached candidate buildings for volunteer home/work placement
+-- TTL 30 days, invalidated on ESN polygon edit; see docs/data-lifecycle.md
+osm_building_cache (
+  id              SERIAL PRIMARY KEY,
+  esn_id          INTEGER REFERENCES esns(id) ON DELETE CASCADE,
+  building_type   VARCHAR(16) NOT NULL,                -- 'house' | 'commercial' | 'industrial' | 'retail'
+  lat             DOUBLE PRECISION NOT NULL,
+  lng             DOUBLE PRECISION NOT NULL,
+  osm_way_id      BIGINT,
+  fetched_at      TIMESTAMPTZ DEFAULT NOW()
+)
+CREATE INDEX ON osm_building_cache (esn_id, building_type);
+
+-- Apparatus: replaces or supplements `units` for Phase 5 with crew requirements
+-- Decision point at 5B start: extend `units` or migrate to a new `apparatus` table.
+-- Either way, the following fields are added:
+--   min_crew, ideal_crew                 INTEGER
+--   required_certs                       TEXT[]  -- cert codes required to staff
+--   ideal_wait_seconds                   INTEGER NULL  -- per-apparatus override of global ideal-crew wait
+--   response_policy                      VARCHAR(32)   -- 'wait_for_ideal' | 'respond_at_min' | 'wait_then_respond' | 'manual'
+```
+
+**Aggregated crew composition broadcast (Phase 4C interaction):**
+
+When a unit is dispatched to a shared call, the owning player's server emits a Socket.IO `unit:dispatched` event whose payload includes an aggregated crew summary, **not** the personnel roster:
+
+```js
+{
+  unitId: 142,
+  incidentId: 137,
+  userId: 5,
+  crewSummary: {
+    total: 4,
+    breakdown: [
+      { role: 'driver_operator', count: 1 },
+      { role: 'firefighter_1',   count: 2 },
+      { role: 'firefighter_1_emt', count: 1 }
+    ],
+    capabilities: ['interior_attack', 'bls_patient_care']  // derived, drives the receiving player's UI
+  }
+}
+```
+
+Individual personnel IDs, names, and full certification lists never cross the wire to other players. This preserves the "your roster is yours" guarantee while giving group members enough info to know what's actually arriving on their shared call.

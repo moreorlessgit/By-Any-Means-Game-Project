@@ -84,3 +84,4 @@ Launch + hosting reference:
 - **docs/conventions.md** — Coding conventions, naming rules, ID prefixes, UI patterns. Pull when writing new code or establishing new patterns.
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.
 - **docs/launch-guide.md** — How to start the backend + frontend, connect from another computer on the LAN, and roll out updates. Pull when the player asks how to launch, host, or update the game.
+- **docs/data-lifecycle.md** — Cleanup, caching, retention, and cascade rules per entity. Pull when adding a new DB table, designing delete behavior, or building cache invalidation. Every new entity type should add an entry here.
