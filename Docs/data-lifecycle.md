@@ -63,7 +63,9 @@ There are five distinct categories of cleanup. Each is handled differently.
 
 The cache exists so we don't hammer the public Overpass API every time a volunteer needs a home or work address.
 
-**Schema (sketch):**
+**Implementation note (Phase 5D ✅):** The cache currently lives on each `esn.osmBuildingCache` and is persisted as part of the save JSON blob (`PrivateWorldSave.state_json`), not in a dedicated Postgres table. The dedicated `osm_building_cache` table sketched below becomes relevant only when Phase 4B forces global-world persistence. Behaviorally the cache rules below all apply.
+
+**Schema (sketch — future table):**
 ```
 osm_building_cache
   id

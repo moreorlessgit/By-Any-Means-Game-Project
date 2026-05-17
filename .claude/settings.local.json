@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  },
   "permissions": {
     "allow": [
       "Bash(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\")",
@@ -30,10 +33,8 @@
       "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/personnel.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('personnel.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
       "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/config.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('config.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
       "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/stations.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('stations.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
-      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/units.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('units.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")"
+      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/units.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('units.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
+      "Bash(dir *.js)"
     ]
-  },
-  "env": {
-    "ENABLE_TOOL_SEARCH": "true"
-}
+  }
 }

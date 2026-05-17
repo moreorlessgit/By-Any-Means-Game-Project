@@ -1265,6 +1265,254 @@ const BAM_CONFIG = {
   personnelHireCostBase: 2000,
 
   // ---------------------------------------------------------------------------
+  // SALARY + TRAINING ECONOMICS  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // salaryBaseAnnual          — Entry-level base annual salary in $. Per-person
+  //                             salary = salaryBaseAnnual × rank.salaryMultiplier.
+  //                             Daily deduction = salaryAnnual / 365.
+  // salaryDeductionInterval   — 'gameDay' default. Runs once per in-game-day
+  //                             rollover inside _tickGameClock. Configurable to
+  //                             'gameHour' or 'realMinute' in the future.
+  // trainingCostMultiplier    — Multiplier applied to a cert's `cost` when an
+  //                             existing person is retrained into that cert.
+  //                             1.0 = parity with the at-hire cost. Players can
+  //                             nudge this if training feels too cheap/expensive.
+  // ---------------------------------------------------------------------------
+  salaryBaseAnnual:        50000,
+  salaryDeductionInterval: 'gameDay',
+  trainingCostMultiplier:  1.0,
+
+  // ---------------------------------------------------------------------------
+  // RANK CONFIG  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // Per-service rank ladders. Each rank:
+  //   key                — internal id. person.rankKey points here.
+  //   label              — display name shown to the player.
+  //   service            — 'fire' | 'ems' | 'police_local' | 'police_county' | 'police_state'
+  //   prereqCerts        — cert codes that must be held (transitively, via
+  //                        expandCertSet) before the player can manually
+  //                        promote the person into this rank. Empty = anyone.
+  //   salaryMultiplier   — multiplier on salaryBaseAnnual for career personnel.
+  //                        Volunteers ignore salaries entirely.
+  //
+  // Promotion is manual + free (player-confirmed 2026-05-17): the player picks
+  // when an eligible person advances. Cert training is the economic cost.
+  // Free-text fallback is preserved on the person via `rank` for backwards-
+  // compat with the 5B free-text rank field.
+  // ---------------------------------------------------------------------------
+  rankConfig: {
+    fire: [
+      { key:'fire_probationary',  label:'Probationary Firefighter', service:'fire', prereqCerts:[],                                salaryMultiplier:0.80 },
+      { key:'fire_firefighter',   label:'Firefighter',              service:'fire', prereqCerts:['ff1'],                           salaryMultiplier:1.00 },
+      { key:'fire_senior_ff',     label:'Senior Firefighter',       service:'fire', prereqCerts:['ff2'],                           salaryMultiplier:1.10 },
+      { key:'fire_driver_op',     label:'Driver/Operator',          service:'fire', prereqCerts:['evoc_large','pump_ops_1'],       salaryMultiplier:1.20 },
+      { key:'fire_lieutenant',    label:'Lieutenant',               service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.35 },
+      { key:'fire_captain',       label:'Captain',                  service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.55 },
+      { key:'fire_battalion',     label:'Battalion Chief',          service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:1.80 },
+      { key:'fire_deputy',        label:'Deputy Chief',             service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.00 },
+      { key:'fire_assistant',     label:'Assistant Chief',          service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.20 },
+      { key:'fire_dept_chief',    label:'Department Chief',         service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.60 },
+      { key:'fire_marshal',       label:'Fire Marshal',             service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.50 },
+      { key:'fire_inspector',     label:'Fire Inspector',           service:'fire', prereqCerts:['ff1'],                           salaryMultiplier:1.25 },
+      { key:'fire_training',      label:'Training Officer',         service:'fire', prereqCerts:['fire_officer_1','ff2'],          salaryMultiplier:1.40 },
+      { key:'fire_safety',        label:'Safety Officer',           service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.40 }
+    ],
+    ems: [
+      { key:'ems_probationary',   label:'Probationary EMS Member',  service:'ems',  prereqCerts:[],                                salaryMultiplier:0.75 },
+      { key:'ems_driver',         label:'EMS Driver',               service:'ems',  prereqCerts:['evoc_small'],                    salaryMultiplier:0.85 },
+      { key:'ems_emr',            label:'EMR',                      service:'ems',  prereqCerts:['emr'],                           salaryMultiplier:0.90 },
+      { key:'ems_emt',            label:'EMT',                      service:'ems',  prereqCerts:['emt'],                           salaryMultiplier:1.00 },
+      { key:'ems_aemt',           label:'Advanced EMT',             service:'ems',  prereqCerts:['aemt'],                          salaryMultiplier:1.15 },
+      { key:'ems_paramedic',      label:'Paramedic',                service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.40 },
+      { key:'ems_senior_emt',     label:'Senior EMT',               service:'ems',  prereqCerts:['emt'],                           salaryMultiplier:1.15 },
+      { key:'ems_senior_medic',   label:'Senior Paramedic',         service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.55 },
+      { key:'ems_fto',            label:'Field Training Officer',   service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.50 },
+      { key:'ems_lieutenant',     label:'EMS Lieutenant',           service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.60 },
+      { key:'ems_captain',        label:'EMS Captain',              service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.80 },
+      { key:'ems_supervisor',     label:'EMS Supervisor',           service:'ems',  prereqCerts:['ems_supervisor'],                salaryMultiplier:1.70 },
+      { key:'ems_duty_officer',   label:'EMS Duty Officer',         service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.85 },
+      { key:'ems_chief',          label:'EMS Chief',                service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:2.20 },
+      { key:'ems_medical_dir',    label:'Medical Director',         service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:2.50 }
+    ],
+    police_local: [
+      { key:'pol_recruit',        label:'Police Recruit',           service:'police_local', prereqCerts:[],                        salaryMultiplier:0.85 },
+      { key:'pol_officer',        label:'Police Officer',           service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.00 },
+      { key:'pol_senior',         label:'Senior Police Officer',    service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.10 },
+      { key:'pol_corporal',       label:'Corporal',                 service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.20 },
+      { key:'pol_sergeant',       label:'Sergeant',                 service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.35 },
+      { key:'pol_lieutenant',     label:'Lieutenant',               service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.55 },
+      { key:'pol_captain',        label:'Captain',                  service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.75 },
+      { key:'pol_deputy',         label:'Deputy Chief',             service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.00 },
+      { key:'pol_assistant',      label:'Assistant Chief',          service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.20 },
+      { key:'pol_chief',          label:'Police Chief',             service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.50 }
+    ],
+    police_county: [
+      { key:'sher_deputy',        label:"Sheriff's Deputy",         service:'police_county', prereqCerts:['patrol_officer'],       salaryMultiplier:1.00 },
+      { key:'sher_senior',        label:'Senior Deputy',            service:'police_county', prereqCerts:['patrol_officer'],       salaryMultiplier:1.15 },
+      { key:'sher_sergeant',      label:'Sergeant Deputy',          service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:1.35 },
+      { key:'sher_lieutenant',    label:'Lieutenant Deputy',        service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:1.55 },
+      { key:'sher_chief',         label:'Chief Deputy',             service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:2.00 },
+      { key:'sher_sheriff',       label:'Sheriff',                  service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:2.50 }
+    ],
+    police_state: [
+      { key:'sp_trooper',         label:'State Trooper',            service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.05 },
+      { key:'sp_first_class',     label:'Trooper First Class',      service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.15 },
+      { key:'sp_corporal',        label:'Trooper Corporal',         service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.25 },
+      { key:'sp_sergeant',        label:'Trooper Sergeant',         service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.45 },
+      { key:'sp_lieutenant',      label:'Trooper Lieutenant',       service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.65 },
+      { key:'sp_captain',         label:'Trooper Captain',          service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.90 },
+      { key:'sp_major',           label:'Major',                    service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.20 },
+      { key:'sp_colonel',         label:'Colonel / Superintendent', service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.70 }
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // SHIFT TEMPLATES  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // Built-in shift schedules selectable in the Station Manage modal's shift
+  // editor. Each station also keeps its own `shifts: []` array of custom
+  // schedules. A person's `shiftId` points to either a built-in (by key) or a
+  // station-custom (by id) shift.
+  //
+  //   key            — internal id used by person.shiftId.
+  //   label          — display name in dropdowns.
+  //   cycleDays      — total days in the repeat cycle (24/48 = 3-day cycle).
+  //   onPattern      — per-cycle-day array of on-hour windows. Each window is
+  //                    [startHour, endHour] in 24-hour time. endHour may exceed
+  //                    24 to indicate the shift carries past midnight (cycle
+  //                    rollover handled by isOnDutyNow).
+  //
+  // Common patterns (US fire/EMS career staffing):
+  //   24/48 — 1 day on, 2 days off, 3-day cycle.
+  //   48/96 — 2 days on, 4 days off, 6-day cycle.
+  //   Day shift  — every day 06:00–18:00.
+  //   Night shift — every day 18:00–06:00 (carries into next day).
+  //   Weekday days — Mon–Fri 08:00–17:00.
+  // ---------------------------------------------------------------------------
+  shiftTemplates: [
+    { key:'shift_24_48',    label:'24/48 (1 on, 2 off)',  cycleDays:3, onPattern:[ [[0,24]], [], [] ] },
+    { key:'shift_48_96',    label:'48/96 (2 on, 4 off)',  cycleDays:6, onPattern:[ [[0,24]], [[0,24]], [], [], [], [] ] },
+    { key:'shift_day',      label:'Day shift (06–18)',     cycleDays:1, onPattern:[ [[6,18]] ] },
+    { key:'shift_night',    label:'Night shift (18–06)',   cycleDays:1, onPattern:[ [[18,30]] ] },
+    { key:'shift_weekday',  label:'Weekday daytime',       cycleDays:7, onPattern:[ [[8,17]], [[8,17]], [[8,17]], [[8,17]], [[8,17]], [], [] ] }
+  ],
+
+  // ---------------------------------------------------------------------------
+  // VOLUNTEER + OSM CONSTANTS  (Phase 5D)
+  // ---------------------------------------------------------------------------
+  // overpassEndpoint           — Public Overpass API. Used to fetch buildings
+  //                              per ESN polygon for volunteer home/work
+  //                              generation. Rate-limited by Overpass — see
+  //                              osmRebuildCooldownSec for per-ESN throttling.
+  // overpassTimeoutMs          — Single-query timeout. Hybrid plan calls for
+  //                              fallback to road-snapped random points on
+  //                              failure/timeout (docs/Phase5.md).
+  // osrmNearestEndpoint        — OSRM's nearest-road API. Used in fallback mode
+  //                              to snap a random polygon point to within a few
+  //                              yards of the nearest roadway, so a fabricated
+  //                              "home" is at least believable as a real address.
+  // osmCacheTtlMs              — Per-ESN cache TTL in REAL-LIFE milliseconds
+  //                              (calendar time, Date.now()-based — not game
+  //                              days). 30 days per docs/data-lifecycle.md §3.
+  // osmRebuildCooldownSec      — Soft per-ESN cooldown so click-happy "Rebuild"
+  //                              presses don't hammer Overpass.
+  // volunteerDefaultReliability— Default reliability roll (0..1) used when a
+  //                              volunteer hasn't been customized. Higher =
+  //                              more likely to respond on any given call.
+  // ambulanceDriverOnlyDefault — Global default for the per-station ambulance
+  //                              driver-only policy. Player-confirmed: FALSE.
+  //                              Ambulances complete crew at the station by
+  //                              default; driver-only response is opt-in.
+  // directToSceneAllowedRoles  — Cert codes whose holders may respond direct
+  //                              to scene (POV) instead of reporting to station
+  //                              first. Per Phase5.md: chiefs, fire police,
+  //                              LEOs, EMS, certified responders.
+  // ---------------------------------------------------------------------------
+  overpassEndpoint:            'https://overpass-api.de/api/interpreter',
+  overpassTimeoutMs:           10000,
+  osrmNearestEndpoint:         'https://router.project-osrm.org/nearest/v1/driving',
+  osmCacheTtlMs:               30 * 24 * 60 * 60 * 1000,
+  osmRebuildCooldownSec:       30,
+  volunteerDefaultReliability: 0.8,
+  ambulanceDriverOnlyDefault:  false,
+  directToSceneAllowedRoles: [
+    'fire_officer_1','fire_officer_2',     // chiefs and officers
+    'fire_police',                          // fire police
+    'patrol_officer','patrol_supervisor',   // LEOs
+    'emt','aemt','paramedic','ccp','phrn',  // EMS
+    'emr'                                   // first responders
+  ],
+
+  // ---------------------------------------------------------------------------
+  // SPAN OF CONTROL  (Phase 5E — NIMS/ICS officer-to-responder ratio)
+  // ---------------------------------------------------------------------------
+  // Ratio = subordinates / officers (officers = Fire Officer 1+, EMS Supervisor,
+  // Patrol Supervisor+). Universal across incident size per player requirement.
+  // Each tier ships with a player-facing tooltip explaining what's happening
+  // and how to fix it — surfaced on the call window status chip.
+  // ---------------------------------------------------------------------------
+  spanOfControlTiers: {
+    bored: {
+      label: 'Command Staff Bored',
+      max:   3,            // ratio <= 3 (officers exceed need)
+      color: '#9ca3af',
+      tooltip: 'More officers on scene than needed. Subordinates are underutilized. Send officers to other incidents or release them.'
+    },
+    ideal: {
+      label: 'Ideal Command Staffing',
+      max:   5,            // ratio 4-5
+      color: '#22c55e',
+      tooltip: 'Officer-to-responder ratio is in the sweet spot (1:4–1:5). Command staffing is healthy.'
+    },
+    task_saturated: {
+      label: 'Command Staff Task Saturated',
+      max:   7,            // ratio 6-7
+      color: '#fbbf24',
+      tooltip: 'Officers are stretched thin (1:6–1:7). Consider sending another officer-qualified responder before the incident grows.'
+    },
+    overwhelmed: {
+      label: 'Command Staff Overwhelmed — Need More Officers',
+      max:   Infinity,     // ratio > 7
+      color: '#e8431a',
+      tooltip: 'Not enough officers to safely manage the incident (above 1:7). Send at least one more Fire Officer 1+ / supervisor immediately.'
+    }
+  },
+  // Cert codes that count as "officer" for span-of-control evaluation.
+  spanOfControlOfficerCerts: [
+    'fire_officer_1','fire_officer_2',
+    'ems_supervisor',
+    'patrol_supervisor'
+  ],
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL STABILIZATION RATES  (Phase 5E — personnel-driven patient mechanic)
+  // ---------------------------------------------------------------------------
+  // Per-game-second stabilization contribution from a provider holding each
+  // EMS cert tier. Distinct from the existing unit-level `stabilizationRates`
+  // block above (line 1073) — that one is the unit-on-scene rate inherited
+  // from earlier phases; this one is the additive contribution from each
+  // ASSIGNED personnel (Phase 5E patient mechanic).
+  //
+  // Multiple providers stack additively on the same patient. One provider can
+  // only be assigned to one patient at a time (slot rule, enforced in
+  // assignPersonToPatient).
+  //
+  // Tuning aims: solo EMT resolves a stable patient in ~3–4 in-game minutes;
+  // a Paramedic ~1.5 min; CCP nearly halves that again.
+  // ---------------------------------------------------------------------------
+  personnelStabilizationRates: {
+    emr:       0.0020,    // ~500 sec to stabilize solo
+    emt:       0.0050,    // ~200 sec
+    aemt:      0.0070,    // ~143 sec
+    paramedic: 0.0110,    // ~91 sec
+    ccp:       0.0140,    // ~71 sec
+    phrn:      0.0140
+  },
+  // Cap on how much rate a single patient can receive (avoids 10-provider
+  // pile-on degenerate cases). 0 = no cap.
+  personnelStabilizationMaxRate: 0.05,
+
+  // ---------------------------------------------------------------------------
   // PERSONNEL NAME POOLS  (Phase 5B)
   // ---------------------------------------------------------------------------
   // Used to auto-generate names for auto-staffed and batch-hired personnel.

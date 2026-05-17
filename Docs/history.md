@@ -280,4 +280,50 @@ Personnel data model and crew gating layer. Volunteers are still 5D; this sub-ph
 
 *Phase 5B complete.* Next: 5C (training UI, career shifts, ranks, salary/training cashflow).
 
-*Last updated: 2026-05-17. Phase 5B complete — career personnel, full cert taxonomy, crew matcher, driver+min gating, Personnel tab.*
+---
+
+## Phase 5C — Training, Career Shifts, Ranks, Cashflow Integration ✅
+
+Economic and lifecycle layer for career personnel. Player-confirmed planning decisions: salary blob persistence (no new Prisma tables), per-game-day deduction, manual + free promotions (cert training is the cost gate), salary preview in three places (cashflow modal header, personnel tab summary bar, Manage Station modal).
+
+- **Rank ladders in `config.js`** — `BAM_CONFIG.rankConfig` per service: fire, ems, police_local, police_county, police_state. Each rank carries `key`, `label`, `service`, `prereqCerts[]`, `salaryMultiplier`. Salary derives from `salaryBaseAnnual × multiplier` (defaults to $50,000 base; player can override per-person via the details modal).
+- **Shift templates in `config.js`** — `BAM_CONFIG.shiftTemplates` ships with 24/48, 48/96, Day (06–18), Night (18–06, carries past midnight), and Weekday Daytime. Stations also keep a per-station `shifts: []` array for custom templates (created in the Shift editor).
+- **Training + promote helpers in `personnel.js`** — `trainPersonnel(ids, certCode)` with cost = `cert.cost × trainingCostMultiplier`, prereq enforcement, equivalency dedupe, consolidated `[TRAINING] …` cashflow line. `promotePersonnel(id, rankKey)` is free, validates cert prereqs against the person's expanded cert set, updates rank label + key + derived salary. `getPromotableRanksFor(p)` powers the picker.
+- **Training modal** — Single + batch. Cert picker grouped by category. Per-row eligibility chips ("eligible" / "needs X" / "already holds"). Live cost block.
+- **Promote modal** — Lists every eligible rank by service group with salary delta vs current. Current rank flagged. Manual + instant.
+- **Shift editor modal** — Opens from Manage Station ("Shifts" button). Lists built-in + custom templates with parsed pattern descriptions. Per-station "add custom" form (label, cycle days, semicolon-separated on-windows). Personnel assignment dropdowns alongside on-duty/off-duty indicators.
+- **On-duty gating in dispatch** — `isOnDutyNow(person)` walks the shift's `onPattern[(day-1) % cycleDays]`, supports past-midnight carry-over via `end > 24`. `getCrewForUnit` filters career personnel by `isOnDutyNow`; volunteers stay always-available until 5D.
+- **Salary tick** — `tickSalaryDeductions()` called from `_tickGameClock` on each game-day rollover. Emits one consolidated `[SALARIES] Day N · N personnel` cashflow line (or `Days A–B · …` if multiple days advanced between ticks). `resetSalaryCycleMarker()` runs on world load so legacy saves aren't back-billed.
+- **Salary preview surfaces (3)** — (1) Cashflow modal header banner with next-cycle total + headcount, (2) Personnel tab summary bar (`💰 Career salaries: $X/day across N personnel`), (3) Manage Station modal personnel block (`Salaries: $Y/day · $Y×365/yr`).
+
+---
+
+## Phase 5D — Volunteer System, OSM Cache, Direct-to-Scene ✅
+
+Heaviest sub-phase. Volunteers respond from OSM-derived home/work locations, with hybrid Overpass-first + road-snapped fallback per the planning session. ESN polygon edits invalidate the cache and auto-migrate stranded volunteers.
+
+- **New module: `volunteers.js`** (root) — owns the OSM building cache, home/work generation, availability rolls, direct-to-scene eligibility, ESN-edit auto-migration, the three map-layer toggles, and a self-contained volunteer-dot animator. Loaded after `personnel.js`.
+- **5D config in `config.js`** — `overpassEndpoint` (public Overpass), `overpassTimeoutMs` (10s with AbortController), `osrmNearestEndpoint` for road-snap fallback, `osmCacheTtlMs` (**30 real-life days** — calendar time, `Date.now()`-based), `osmRebuildCooldownSec` (30s soft per-ESN throttle), `volunteerDefaultReliability` (0.8), `directToSceneAllowedRoles[]` (chiefs / officers / fire police / LEOs / EMS), `ambulanceDriverOnlyDefault` (**false** per player requirement — ambulances complete crew at station by default).
+- **OSM building cache** — Lives on `esn.osmBuildingCache = { fetchedAt, fallbackMode, houses[], commercial[], industrial[], retail[] }`. Saved with ESN through `getESNSaveData`. Distinct field name from the pre-existing `esn._osmCache` (incident spawn — different purpose, intentionally non-clashing).
+- **Hybrid fetch** — `fetchBuildingsForESN(esnId, force)` runs one bounded Overpass query per ESN (houses + commercial/office/retail + industrial in a union). On any failure or timeout, the cache is marked `fallbackMode: true` and `pickRandomBuildingInESN` falls through to `_randomPointInPolygon` (reused from esn.js) snapped to the nearest road via OSRM `/nearest`. Setting status messages distinguish the two paths.
+- **Volunteer hire path** — `Add Person` modal now shows a "Hire as: Career | Volunteer" toggle when the station's `stationType` is `combination` or `volunteer`. On confirm, every new volunteer gets `generateVolunteerHome` + `generateVolunteerWork` kicked off async; markers appear on the map once the fetch settles.
+- **Personnel details modal** — Replaces the 5B stub. Editable name, rank + Promote launcher, certs grid + Train launcher, service preference, salary (career), shift assignment (career). For volunteers: home/work display + Regenerate buttons + **"Set via map click"** buttons that swap to a pick-on-map mode and consume the next map click; PPE-in-vehicle toggle (fire personnel only); super-responder toggle; reliability slider (0–100%); auto-migrated alert banner with an Acknowledge button.
+- **Three independent map-layer toggles** — Added to the existing Leaflet layer panel: "Volunteer Responders" (transient response dots, default ON), "Volunteer Home Locations" (persistent green circle markers, default OFF), "Volunteer Work Locations" (persistent gold circle markers, default OFF). Visibility persists via the Phase 4A settings autosync.
+- **ESN-edit hooks** — Shape edits at `_finishDrawESN` purge `osmBuildingCache` and trigger `autoMigrateVolunteersForESN(esnId)` (skips `isCustomized` + `isSuperResponder` per Phase5.md). Assignment edits at `confirmESNModal` trigger migration only (no purge — coords didn't change). New "Rebuild Building Cache" button in the ESN modal footer for manual refresh.
+- **Dispatch gate** — `getCrewForUnit` now filters volunteers by `isVolunteerAvailableNow` (schedule windows + reliability roll + super-responder + defaultAvailable). Volunteers without a schedule/customization are available subject to the reliability gate.
+- **Volunteer dispatch animator** — `dispatchVolunteer(person, toLatLng, opts)` provides a substrate hook for the post-Phase-5 call resolution overhaul — straight-line scale by `gameSpeed`, marker honors the responder layer toggle, cleans up on arrival, returns a cancellable handle.
+
+---
+
+## Phase 5E — Stats, History, NIMS/ICS, Personnel-Driven Stabilization, Database Health ✅
+
+- **Per-person stats + history** — `person.stats` block (`callsResponded`, `fireCalls`, `emsCalls`, `policeCalls`, `transports`, `saves`, `missedCalls`, `trainingCompleted`, `driveTimeSec`, `commandIncidents`), `person.history[]` (capped to `BAM_CONFIG.statsHistoryCapPerPerson`, default 200). `recordPersonStat(id, key, delta, historyEntry?)` is the single mutation point — called from `onUnitArrived` (credit responders + category counter), `trainPersonnel` (training history), `promotePersonnel` (promotion history).
+- **Personnel details modal — Stats + History sections** — Counters grid + reset-stats button (triple confirm — two prompts plus typed "RESET"). Recent-history viewer with timestamps.
+- **Call window — Personnel tab + Span-of-Control banner** — Third tab on the dispatch modal (Dispatch / 🚑 Transport / 🧑‍🚒 Personnel). Lists every on-scene responder via `getOnSceneRoster`: name, station, apparatus, current task (Driver/Operator, Crew Member, Patient Care — PT XXXX). SoC banner spans all tabs whenever any responder is on scene; chip color + label come from `BAM_CONFIG.spanOfControlTiers` (flat thresholds: ≤3 Bored / 4–5 Ideal / 6–7 Task Saturated / >7 Overwhelmed — universal, not size-scaled). Tooltip explains the tier and how to fix it in plain English.
+- **Patient stabilization (personnel-driven)** — Added `BAM_CONFIG.personnelStabilizationRates` keyed by EMS cert tier (emr / emt / aemt / paramedic / ccp / phrn). New per-tick `tickPersonnelStabilization()` stacks onto the existing `pat.stabilizeProgress` field (legacy per-unit tick still applies) so UI bars and the >=1 stabilized threshold work uniformly across both contribution sources. `assignPersonToPatient(id, patient)` enforces the 1-provider-per-patient invariant; multi-provider stacking on one patient is allowed up to `personnelStabilizationMaxRate`. Per-patient assignment UI on the call-window Personnel tab.
+- **New module: `dbhealth.js`** — Database Health panel rendered as a new sub-tab under Operations Modal → Operations tab (joining DCs / ESNs / Plans / Box Alarms). Four sections, every button labeled with a one-line descriptor: (1) **OSM Cache** with per-ESN row counts, age, fallback-mode badge, per-row Rebuild + Rebuild All with progress feedback, (2) **Orphan Inspector** read-only sweep that should always be empty, (3) **Volunteer Locations** bulk reset for selected stations (skips customized + super), (4) **World Reset** triple-confirmation wipe (two prompts + typed "WIPE WORLD") that clears every entity in the current world but leaves save slots intact.
+- **CLAUDE.md file list** — `volunteers.js` and `dbhealth.js` added.
+
+*Phase 5 complete.* Personnel substrate ready for the post-Phase-5 call resolution overhaul.
+
+*Last updated: 2026-05-17. Phase 5 complete — career + volunteer personnel, training, shifts, ranks, salary tick, OSM cache + hybrid fallback, direct-to-scene helpers, stats + history, span-of-control banner, personnel-driven stabilization, Database Health panel.*

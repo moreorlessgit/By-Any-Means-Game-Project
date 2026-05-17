@@ -34,6 +34,7 @@ let _addPersonModalCerts     = new Set();
 let _addPersonModalCount     = 1;
 let _addPersonModalName      = '';
 let _addPersonModalPref      = 'either';
+let _addPersonModalType      = 'career';   // Phase 5D — 'career' | 'volunteer'
 
 // ── ID GENERATION ───────────────────────────────────────────────────────────
 // Personnel use the `p_` prefix per docs/conventions.md.
@@ -143,23 +144,108 @@ function _defaultRankFromCerts(certs){
   return 'Probationary';
 }
 
+// =============================================================================
+// RANK HELPERS  (Phase 5C)
+// =============================================================================
+
+// Returns the entire rankConfig as a flat array across all services. Used by
+// promote pickers and rank lookups.
+function _allRankDefs(){
+  const cfg = BAM_CONFIG.rankConfig || {};
+  return Object.values(cfg).flat();
+}
+
+// Looks up a single rank definition by its `key`. Returns null if not found
+// (e.g. legacy person with free-text rank only).
+function getRankByKey(rankKey){
+  if(!rankKey) return null;
+  return _allRankDefs().find(r => r.key === rankKey) || null;
+}
+
+// Picks a sensible default rankKey from a cert set + service preference. Mirrors
+// _defaultRankFromCerts but returns a rankConfig key instead of a free-text
+// label, so salary derivation and promote eligibility can use it directly.
+// Service hint:
+//   'fire' | 'ems' | 'police' | 'either'
+// Defaults to fire if 'either' and the cert mix is fire-heavy, otherwise EMS.
+function _defaultRankKeyFromCerts(certs, service){
+  const set = expandCertSet(certs);
+  // Police is unambiguous — if patrol_officer is held, we go police.
+  if(set.has('patrol_officer') || service === 'police'){
+    if(set.has('patrol_supervisor')) return 'pol_sergeant';
+    return 'pol_officer';
+  }
+  // Service preference drives fire-vs-EMS when both are credible.
+  const preferEms = service === 'ems'
+    || (service !== 'fire' && (set.has('paramedic') || set.has('aemt') || set.has('emt')) && !set.has('ff1'));
+  if(preferEms){
+    if(set.has('paramedic'))     return 'ems_paramedic';
+    if(set.has('aemt'))          return 'ems_aemt';
+    if(set.has('emt'))           return 'ems_emt';
+    if(set.has('emr'))           return 'ems_emr';
+    if(set.has('evoc_small'))    return 'ems_driver';
+    return 'ems_probationary';
+  }
+  // Fire side.
+  if(set.has('fire_officer_2'))                       return 'fire_battalion';
+  if(set.has('fire_officer_1'))                       return 'fire_lieutenant';
+  if(set.has('pump_ops_1') && set.has('evoc_large'))  return 'fire_driver_op';
+  if(set.has('ff2'))                                  return 'fire_senior_ff';
+  if(set.has('ff1'))                                  return 'fire_firefighter';
+  return 'fire_probationary';
+}
+
+// Returns the daily salary for a person in $. Career personnel derive from
+// rankKey × salaryBaseAnnual / 365. Volunteers always return 0 (no salary).
+// If `salaryAnnual` is explicitly set on the record it wins (player override).
+function getSalaryDailyFor(person){
+  if(!person) return 0;
+  if(person.type === 'volunteer') return 0;
+  const annual = (person.salaryAnnual != null)
+    ? person.salaryAnnual
+    : _deriveSalaryAnnual(person.rankKey);
+  return annual / 365;
+}
+
+// Computes annual salary in $ for a given rankKey. Returns salaryBaseAnnual if
+// no rank lookup matches (graceful fallback for legacy free-text-only ranks).
+function _deriveSalaryAnnual(rankKey){
+  const base = BAM_CONFIG.salaryBaseAnnual || 0;
+  const def  = getRankByKey(rankKey);
+  if(!def) return base;
+  return Math.round(base * (def.salaryMultiplier || 1.0));
+}
+
 // Creates one personnel record. Does NOT debit money — callers (addPersonnel,
 // batchAddPersonnel, generateStarterRoster) handle cashflow.
-function _createPersonnelRecord(stationId, { name, type='career', rank, certs=[], preference='either' } = {}){
-  const finalCerts = Array.from(new Set(certs)); // dedupe
+function _createPersonnelRecord(stationId, { name, type='career', rank, rankKey, certs=[], preference='either' } = {}){
+  const finalCerts  = Array.from(new Set(certs)); // dedupe
+  const finalRankKey = rankKey || _defaultRankKeyFromCerts(finalCerts, preference);
   const rec = {
     id: _genPersonnelId(),
     name: (name && name.trim()) || _randomPersonName(),
     stationId,
     pinnedUnitId: null,
     type,
-    rank: rank || _defaultRankFromCerts(finalCerts),
+    // Phase 5B free-text rank kept for back-compat / display. If rankKey resolves
+    // we prefer its label; otherwise fall back to the cert-derived free-text rank.
+    rank: rank || (getRankByKey(finalRankKey)?.label) || _defaultRankFromCerts(finalCerts),
+    // Phase 5C — points into BAM_CONFIG.rankConfig. Drives salary + promote.
+    rankKey: finalRankKey,
     certs: finalCerts,
     preference,
     status: 'available',
     currentAssignment: null,
     createdAt: Date.now(),
-    playerEdited: false
+    playerEdited: false,
+    // Phase 5C — shift assignment + salary. shiftId null = always-on (treated
+    // as on-duty until the player assigns a real shift). salaryAnnual is
+    // derived from rankKey at hire time; player can override later.
+    shiftId:      null,
+    salaryAnnual: (type === 'volunteer') ? 0 : _deriveSalaryAnnual(finalRankKey),
+    // Phase 5E — per-person stat counters + career history log.
+    stats: _emptyStats(),
+    history: []
   };
   personnel.push(rec);
   return rec;
@@ -180,21 +266,23 @@ function addPersonnel(stationId, opts = {}){
   return rec;
 }
 
-// Public: hire `count` identical career responders in one transaction.
-// Returns { hired, cost, ok }. If funds are insufficient, hires zero.
-function batchAddPersonnel(stationId, { count = 1, certs = [], preference = 'either' } = {}){
+// Public: hire `count` identical responders in one transaction.
+// Phase 5D — accepts `type` ('career' | 'volunteer'). Volunteers are unpaid;
+// the hire fee covers training+gear. Returns { hired, cost, ok }. If funds are
+// insufficient, hires zero.
+function batchAddPersonnel(stationId, { count = 1, certs = [], preference = 'either', type = 'career' } = {}){
   const cost = calcHireCost({ count, certs });
   if(money < cost){
     setStatus(`Cannot batch-hire — need $${cost.toLocaleString()}, have $${money.toLocaleString()}.`);
     return { hired: [], cost, ok: false };
   }
   updateMoney(-cost);
-  logCashflow(-cost, `Batch hired ${count} responder${count===1?'':'s'}`);
+  logCashflow(-cost, `Batch hired ${count} ${type === 'volunteer' ? 'volunteer' : 'responder'}${count===1?'':'s'}`);
   const hired = [];
   for(let i = 0; i < count; i++){
-    hired.push(_createPersonnelRecord(stationId, { certs, preference }));
+    hired.push(_createPersonnelRecord(stationId, { certs, preference, type }));
   }
-  setStatus(`Hired ${count} responder${count===1?'':'s'} — −$${cost.toLocaleString()}.`);
+  setStatus(`Hired ${count} ${type === 'volunteer' ? 'volunteer' : 'responder'}${count===1?'':'s'} — −$${cost.toLocaleString()}.`);
   return { hired, cost, ok: true };
 }
 
@@ -384,15 +472,22 @@ function _findUnitAndStation(unitId){
 //   • Same station
 //   • status === 'available' (not on another call)
 //   • Either pinned to THIS unit, or not pinned to any unit (free pool)
+//   • Career personnel: must be on-duty per their shift schedule (Phase 5C).
+//   • Volunteers: must pass isVolunteerAvailableNow (Phase 5D) — combines
+//     schedule, reliability roll, super-responder flag, defaultAvailable.
 // Pinned-to-other-unit personnel are reserved and excluded.
 function getCrewForUnit(unitId){
   const { unit, station } = _findUnitAndStation(unitId);
   if(!unit || !station) return [];
-  return personnel.filter(p =>
-       p.stationId === station.id
-    && p.status === 'available'
-    && (p.pinnedUnitId === unitId || p.pinnedUnitId == null)
-  );
+  return personnel.filter(p => {
+    if(p.stationId !== station.id) return false;
+    if(p.status !== 'available') return false;
+    if(p.pinnedUnitId != null && p.pinnedUnitId !== unitId) return false;
+    if(p.type === 'volunteer'){
+      return (typeof isVolunteerAvailableNow === 'function') ? isVolunteerAvailableNow(p) : true;
+    }
+    return isOnDutyNow(p);
+  });
 }
 
 // =============================================================================
@@ -664,7 +759,12 @@ function renderManageStationPersonnelHTML(s){
     catChip('Shared', ratio.byCategory.shared, 'rgba(200,200,200,.4)'),
   ].join('');
 
-  return `<div class="section-title" style="margin-top:14px;">Personnel (Phase 5B)</div>
+  // Phase 5C — per-station salary preview line. Sum of getSalaryDailyFor across
+  // career personnel at this station. Volunteers are $0 so don't pollute the total.
+  const stationDaily = (typeof estimateStationSalaryDaily === 'function')
+    ? estimateStationSalaryDaily(s.id) : 0;
+
+  return `<div class="section-title" style="margin-top:14px;">Personnel</div>
     <div style="display:grid;grid-template-columns:max-content 1fr;gap:4px 10px;font-size:.82rem;align-items:center;">
       <label class="field-label" style="margin:0;">Staffing Type</label>
       <select onchange="setStationStaffingType('${s.id}', this.value)" style="width:160px;">
@@ -679,11 +779,18 @@ function renderManageStationPersonnelHTML(s){
       </div>
       <div style="color:var(--muted);">Categories</div>
       <div>${chips}</div>
+      <div style="color:var(--muted);">Salaries</div>
+      <div style="font-weight:600;">
+        $${stationDaily.toLocaleString()}/day
+        ${stationDaily > 0 ? `<span style="color:var(--muted);font-size:.7rem;"> · $${(stationDaily * 365).toLocaleString()}/yr</span>` : ''}
+      </div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
       <button class="btn-sm" onclick="openAddPersonnelModal('${s.id}', false)">+ Add Person</button>
       <button class="btn-sm" onclick="openAddPersonnelModal('${s.id}', true)">+ Batch Hire</button>
       <button class="btn-sm" onclick="topUpStationRoster('${s.id}')" title="Hire to fill any ideal-crew shortfall across this station's units">Auto-staff to ideal</button>
+      <button class="btn-sm" onclick="openTrainingModal('station', '${s.id}')" title="Open the training modal pre-selected with this station's roster">Train Roster</button>
+      <button class="btn-sm" onclick="openStationShiftEditor('${s.id}')" title="Edit shift templates and assign personnel to shifts at this station">Shifts</button>
       <button class="btn-sm" onclick="openStationPersonnelList('${s.id}')">View Roster</button>
     </div>`;
 }
@@ -837,15 +944,310 @@ function _reassignFromUnitDetails(personnelId, newStationId){
   if(typeof renderStationList === 'function')    renderStationList();
 }
 
-// Stub used by buttons that open the personnel details modal (Step 12 wires the
-// modal). Until that ships, just routes the player to the Personnel tab,
-// pre-scoped to that one person.
+// =============================================================================
+// PERSONNEL DETAILS MODAL  (Phase 5D)
+// =============================================================================
+// Full per-person view + editor. Career personnel see: name, rank, certs,
+// salary, shift assignment, train/promote/reassign. Volunteers ALSO see:
+// home + work (with regenerate + set-via-map-click), PPE toggle (fire only),
+// super-responder toggle, reliability slider, auto-migrated badge with ack.
+
+let _personDetailsId = null;
+
 function openPersonnelDetails(personnelId){
-  // Step 12 will replace this stub with an actual details modal. For now,
-  // surface a brief status line so click targets have feedback.
   const p = getPersonnelById(personnelId);
   if(!p){ setStatus('Personnel record not found.'); return; }
-  setStatus(`Personnel: ${p.name} — ${p.rank || ''} · ${(p.certs || []).join(', ') || 'no certs'}`);
+  _personDetailsId = personnelId;
+  let modal = document.getElementById('person-details-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'person-details-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closePersonnelDetails(); });
+    document.body.appendChild(modal);
+  }
+  _renderPersonnelDetails();
+  modal.classList.add('open');
+}
+
+function closePersonnelDetails(){
+  const modal = document.getElementById('person-details-modal');
+  if(modal) modal.classList.remove('open');
+  _personDetailsId = null;
+}
+
+function _renderPersonnelDetails(){
+  const modal = document.getElementById('person-details-modal');
+  if(!modal) return;
+  const p = getPersonnelById(_personDetailsId);
+  if(!p){ closePersonnelDetails(); return; }
+  const defs = BAM_CONFIG.certifications || {};
+  const station = stations.find(s => s.id === p.stationId);
+
+  // Cert chips with category-color hint.
+  const certColor = { fire:'rgba(224,92,26,.4)', ems:'rgba(46,168,255,.4)', police:'rgba(88,101,242,.4)', shared:'rgba(180,180,180,.3)' };
+  const certHTML  = (p.certs || []).map(c => {
+    const def = defs[c];
+    const bg  = certColor[def?.category] || 'rgba(255,255,255,.08)';
+    return `<span style="background:${bg};padding:2px 7px;border-radius:9px;font-size:.72rem;margin:0 4px 4px 0;display:inline-block;">${_escPersonHtml(def?.label || c)}</span>`;
+  }).join('') || '<span style="color:var(--muted);font-size:.78rem;">(no certifications)</span>';
+
+  // Shift assignment dropdown (career only).
+  const shiftOpts = (p.type !== 'volunteer' && station)
+    ? `<select onchange="_personDetailsSetShift('${p.id}', this.value)" style="font-size:.78rem;">
+        <option value=""${!p.shiftId?' selected':''}>— always on duty —</option>
+        ${getStationShifts(station.id).map(sh =>
+          `<option value="${sh.id}"${p.shiftId===sh.id?' selected':''}>${_escPersonHtml(sh.label)}</option>`
+        ).join('')}
+      </select>`
+    : '';
+
+  // Volunteer block: home/work, PPE, super, reliability, auto-migrated banner.
+  let volBlock = '';
+  if(p.type === 'volunteer'){
+    const homeStr = p.home ? `${p.home.lat.toFixed(5)}, ${p.home.lng.toFixed(5)}${p.home.isFallback ? ' <span style="color:var(--gold);font-size:.7rem;">(road-snap fallback)</span>' : ''}` : '<span style="color:var(--muted);">— not set —</span>';
+    const workStr = p.work ? `${p.work.lat.toFixed(5)}, ${p.work.lng.toFixed(5)}${p.work.isFallback ? ' <span style="color:var(--gold);font-size:.7rem;">(road-snap fallback)</span>' : ''}` : '<span style="color:var(--muted);">— not set —</span>';
+    const reliability = (p.availability?.reliability != null) ? p.availability.reliability : (BAM_CONFIG.volunteerDefaultReliability ?? 0.8);
+    const ppeShow    = (p.certs || []).some(c => c === 'ff1' || c === 'ff2' || c === 'fire_exterior' || c === 'fire_support');
+
+    const ackBanner = p.autoMigratedFlag
+      ? `<div style="margin-top:6px;padding:7px 10px;background:rgba(251,191,36,0.12);border:1px solid var(--gold);border-radius:4px;font-size:.78rem;">
+          ⚠ Home auto-migrated after an ESN polygon change.
+          <button class="btn-sm" style="margin-left:8px;" onclick="_acknowledgeAutoMigration('${p.id}')">Acknowledge</button>
+        </div>`
+      : '';
+
+    volBlock = `
+      <div class="section-title" style="margin-top:14px;">Volunteer Settings</div>
+      ${ackBanner}
+      <div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;font-size:.82rem;align-items:center;">
+        <div style="color:var(--muted);">Home</div>
+        <div>${homeStr}
+          <button class="btn-sm" style="margin-left:6px;" onclick="_volunteerRegenHome('${p.id}')">Regenerate</button>
+          <button class="btn-sm" onclick="beginVolunteerLocationPick('${p.id}','home'); closePersonnelDetails();" title="Click map to set home">Set via map click</button>
+        </div>
+        <div style="color:var(--muted);">Work</div>
+        <div>${workStr}
+          <button class="btn-sm" style="margin-left:6px;" onclick="_volunteerRegenWork('${p.id}')">Regenerate</button>
+          <button class="btn-sm" onclick="beginVolunteerLocationPick('${p.id}','work'); closePersonnelDetails();" title="Click map to set work">Set via map click</button>
+        </div>
+        ${ppeShow ? `
+        <div style="color:var(--muted);">PPE in vehicle</div>
+        <div>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;">
+            <input type="checkbox" ${p.hasPpeInVehicle?'checked':''} onchange="_personDetailsSetPpe('${p.id}', this.checked)"/>
+            Carries turnout gear in POV (enables interior tasks on direct-to-scene)
+          </label>
+        </div>` : ''}
+        <div style="color:var(--muted);">Super responder</div>
+        <div>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;">
+            <input type="checkbox" ${p.isSuperResponder?'checked':''} onchange="_personDetailsSetSuper('${p.id}', this.checked)"/>
+            Ignores availability rolls and auto-migration (player-curated)
+          </label>
+        </div>
+        <div style="color:var(--muted);">Reliability</div>
+        <div>
+          <input type="range" min="0" max="100" value="${Math.round(reliability*100)}"
+                 oninput="_personDetailsSetReliability('${p.id}', this.value); this.nextElementSibling.textContent=this.value+'%';"
+                 style="width:160px;vertical-align:middle;"/>
+          <span style="font-size:.74rem;color:var(--muted);">${Math.round(reliability*100)}%</span>
+        </div>
+      </div>`;
+  }
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:580px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">${_escPersonHtml(p.name)}</h2>
+        <div class="modal-sub">${_escPersonHtml(p.rank || '—')} · ${p.type === 'volunteer' ? 'Volunteer' : 'Career'} · ${_escPersonHtml(station?.name || '(no station)')}</div>
+      </div>
+      <button class="btn-sm danger" onclick="closePersonnelDetails()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+
+      <div class="field-label">Name</div>
+      <div style="display:flex;gap:6px;">
+        <input id="pd-name" type="text" value="${_escPersonHtml(p.name)}" style="flex:1;"/>
+        <button class="btn-sm" onclick="_personDetailsSaveName('${p.id}')">Rename</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 10px;font-size:.82rem;align-items:center;margin-top:10px;">
+        <div style="color:var(--muted);">Status</div>
+        <div>${_escPersonHtml(p.status || 'available')}${p.type !== 'volunteer' ? ` · ${isOnDutyNow(p) ? '<span style="color:var(--green);">on duty</span>' : '<span style="color:var(--muted);">off duty</span>'}` : ''}</div>
+        <div style="color:var(--muted);">Rank</div>
+        <div>${_escPersonHtml(p.rank || '—')}
+          <button class="btn-sm" style="margin-left:6px;" onclick="closePersonnelDetails(); openPromoteModal('${p.id}');">Promote…</button>
+        </div>
+        ${p.type !== 'volunteer' ? `
+        <div style="color:var(--muted);">Salary</div>
+        <div>$${(p.salaryAnnual || 0).toLocaleString()}/yr · $${Math.round(getSalaryDailyFor(p)).toLocaleString()}/day</div>
+        <div style="color:var(--muted);">Shift</div>
+        <div>${shiftOpts}</div>
+        ` : ''}
+        <div style="color:var(--muted);">Service pref</div>
+        <div>
+          <select onchange="_personDetailsSetPref('${p.id}', this.value)" style="font-size:.78rem;">
+            <option value="either"${p.preference==='either'?' selected':''}>Either</option>
+            <option value="fire"${p.preference==='fire'?' selected':''}>Fire</option>
+            <option value="ems"${p.preference==='ems'?' selected':''}>EMS</option>
+            <option value="police"${p.preference==='police'?' selected':''}>Police</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top:14px;">Certifications</div>
+      <div>${certHTML}</div>
+      <div style="margin-top:6px;">
+        <button class="btn-sm" onclick="closePersonnelDetails(); openTrainingModal('${p.id}');">Train…</button>
+      </div>
+
+      ${volBlock}
+
+      <div class="section-title" style="margin-top:14px;">Stats</div>
+      ${(() => {
+        const sum = getCareerSummary(_personDetailsId);
+        const st  = sum?.stats || {};
+        const cells = [
+          ['Calls Responded', st.callsResponded || 0],
+          ['Fire Calls', st.fireCalls || 0],
+          ['EMS Calls', st.emsCalls || 0],
+          ['Police Calls', st.policeCalls || 0],
+          ['Transports', st.transports || 0],
+          ['Saves', st.saves || 0],
+          ['Missed Calls', st.missedCalls || 0],
+          ['Training Completed', st.trainingCompleted || 0],
+          ['Command Incidents', st.commandIncidents || 0]
+        ];
+        return `<div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 10px;font-size:.78rem;">
+          ${cells.map(([l,v]) => `<div><span style="color:var(--muted);">${l}:</span> <b>${v}</b></div>`).join('')}
+        </div>
+        <button class="btn-sm danger" style="margin-top:8px;" onclick="_personDetailsResetStats('${_personDetailsId}')" title="Reset all counters and clear career history (irreversible)">Reset Stats…</button>`;
+      })()}
+
+      <div class="section-title" style="margin-top:14px;">Career History (${(getCareerSummary(_personDetailsId)?.totalEntries || 0)})</div>
+      ${(() => {
+        const sum = getCareerSummary(_personDetailsId);
+        const recent = sum?.recentHistory || [];
+        if(!recent.length) return '<div class="empty-msg">No history yet.</div>';
+        return `<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:.74rem;">
+          ${recent.map(h => {
+            const sec = h.gameSec || 0;
+            const hh  = Math.floor((sec % 86400) / 3600).toString().padStart(2,'0');
+            const mm  = Math.floor((sec % 3600) / 60).toString().padStart(2,'0');
+            return `<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+              <span style="color:var(--muted);">Day ${h.gameDay} ${hh}:${mm}</span>
+              · <span style="color:var(--gold);font-size:.7rem;">${_escPersonHtml(h.type)}</span>
+              ${_escPersonHtml(h.summary || '')}
+            </div>`;
+          }).join('')}
+        </div>`;
+      })()}
+
+      <div class="section-title" style="margin-top:14px;">Actions</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <select onchange="if(this.value){reassignPersonnel('${p.id}', this.value); _renderPersonnelDetails(); if(typeof renderPersonnelTab==='function') renderPersonnelTab();}" style="font-size:.78rem;">
+          <option value="">Reassign…</option>
+          ${stations.filter(s => s.id !== p.stationId).map(s => `<option value="${s.id}">${_escPersonHtml(s.name)}</option>`).join('')}
+        </select>
+        <button class="btn-sm danger" onclick="_personDetailsDelete('${p.id}')">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function _personDetailsSaveName(id){
+  const v = document.getElementById('pd-name')?.value?.trim();
+  if(!v) return;
+  updatePersonnel(id, { name: v });
+  _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+function _personDetailsSetPref(id, v){    updatePersonnel(id, { preference: v });    _renderPersonnelDetails(); }
+function _personDetailsSetShift(id, v){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.shiftId = v || null; p.playerEdited = true;
+  _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+function _personDetailsSetPpe(id, checked){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.hasPpeInVehicle = !!checked; p.isCustomized = true; p.playerEdited = true;
+}
+function _personDetailsSetSuper(id, checked){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.isSuperResponder = !!checked; p.isCustomized = true; p.playerEdited = true;
+}
+function _personDetailsSetReliability(id, val){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  if(!p.availability) p.availability = {};
+  p.availability.reliability = Math.max(0, Math.min(1, parseInt(val, 10) / 100));
+  p.isCustomized = true; p.playerEdited = true;
+}
+
+async function _volunteerRegenHome(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  setStatus('Regenerating home…');
+  await generateVolunteerHome(p);
+  if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+  _renderPersonnelDetails();
+}
+async function _volunteerRegenWork(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  setStatus('Regenerating work…');
+  await generateVolunteerWork(p);
+  if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+  _renderPersonnelDetails();
+}
+
+function _acknowledgeAutoMigration(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.autoMigratedFlag = false; p.playerEdited = true;
+  _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+function _personDetailsResetStats(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  // Triple confirmation per Phase5.md line 275 — three independent prompts so
+  // accidental double-click can't wipe a career log.
+  if(!confirm(`Reset all stats and clear career history for ${p.name}?`)) return;
+  if(!confirm(`Really reset ${p.name}? Every counter and every history entry will be lost.`)) return;
+  const typed = prompt(`Type "RESET" to confirm — this cannot be undone:`);
+  if(typed !== 'RESET'){ setStatus('Reset cancelled.'); return; }
+  resetStats(id);
+  setStatus(`Stats reset for ${p.name}.`);
+  _renderPersonnelDetails();
+}
+
+function _personDetailsDelete(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  if(!confirm(`Delete ${p.name}? This cannot be undone.`)) return;
+  const res = deletePersonnel(id, { force: false });
+  if(res.ok){
+    closePersonnelDetails();
+    if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+    if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+    return;
+  }
+  if(res.conflicts?.includes('on_active_assignment')){
+    if(confirm(`${p.name} is on an active call. Force-delete anyway?`)){
+      deletePersonnel(id, { force: true });
+      closePersonnelDetails();
+      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+    }
+  }
 }
 
 // =============================================================================
@@ -887,6 +1289,15 @@ function renderPersonnelTab(){
   const el = document.getElementById('personnel-list-scroll');
   if(!el) return;
   _populatePersonnelFilters();
+
+  // Phase 5C — career salary summary bar above the list.
+  const sumEl = document.getElementById('personnel-salary-summary');
+  if(sumEl){
+    const est = estimateNextSalaryCycle();
+    sumEl.innerHTML = est.totalDaily > 0
+      ? `💰 Career salaries: <b style="color:var(--text);">$${est.totalDaily.toLocaleString()}/day</b> across <b style="color:var(--text);">${est.count}</b> personnel · next cycle deducts at end of game-day`
+      : '💰 No career salaries — hire career personnel to add ongoing payroll.';
+  }
 
   const defs = BAM_CONFIG.certifications || {};
   // Apply filters.
@@ -943,6 +1354,9 @@ function renderPersonnelTab(){
           </div>
         </div>
         <div style="display:flex;gap:4px;flex-wrap:wrap;">
+          <button class="btn-sm" onclick="openPersonnelDetails('${p.id}')" title="Full details + volunteer settings">Details</button>
+          <button class="btn-sm" onclick="openTrainingModal('${p.id}')" title="Train this responder in a new certification">Train</button>
+          <button class="btn-sm" onclick="openPromoteModal('${p.id}')" title="Promote to an eligible rank (free; cert training gates eligibility)">Promote</button>
           <select onchange="if(this.value){reassignPersonnel('${p.id}', this.value); renderPersonnelTab();}" style="font-size:.74rem;">
             <option value="">Reassign…</option>${reassignOpts}
           </select>
@@ -966,6 +1380,13 @@ function openAddPersonnelModal(stationId, batch = false){
   _addPersonModalCount     = batch ? 3 : 1;
   _addPersonModalName      = '';
   _addPersonModalPref      = 'either';
+  // Phase 5D — default hire type follows station's staffing type. Volunteer-only
+  // stations default to volunteer; combination defaults to volunteer for hires
+  // (career-only stations can't even pick volunteer).
+  const stRec = stations.find(x => x.id === stationId);
+  _addPersonModalType = (stRec?.stationType === 'volunteer' || stRec?.stationType === 'combination')
+    ? 'volunteer'
+    : 'career';
 
   let modal = document.getElementById('add-person-modal');
   if(!modal){
@@ -1015,6 +1436,10 @@ function _addPersonSetCount(n){
 }
 function _addPersonSetName(v){ _addPersonModalName = v; _refreshAddPersonnelCost(); }
 function _addPersonSetPref(v){ _addPersonModalPref = v; }
+function _addPersonSetType(v){
+  _addPersonModalType = (v === 'volunteer') ? 'volunteer' : 'career';
+  _renderAddPersonnelModal();
+}
 
 // Light refresh: only updates the cost line so the player can type a name
 // without losing focus. Heavier rebuilds use _renderAddPersonnelModal().
@@ -1091,6 +1516,19 @@ function _renderAddPersonnelModal(){
                oninput="_addPersonSetName(this.value)" style="width:100%;"/>
       `}
 
+      ${(s.stationType === 'combination' || s.stationType === 'volunteer') ? `
+        <div class="field-label" style="margin-top:10px;">Hire as</div>
+        <select onchange="_addPersonSetType(this.value)" style="width:160px;">
+          ${s.stationType !== 'volunteer' ? `<option value="career"${_addPersonModalType==='career'?' selected':''}>Career (salaried)</option>` : ''}
+          <option value="volunteer"${_addPersonModalType==='volunteer'?' selected':''}>Volunteer (unpaid)</option>
+        </select>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:2px;">
+          ${_addPersonModalType === 'volunteer'
+            ? 'Volunteers respond from home/work (OSM-derived). Auto-generated on hire — editable later.'
+            : 'Career personnel work a station shift and draw a daily salary based on their rank.'}
+        </div>
+      ` : ''}
+
       <div class="field-label" style="margin-top:10px;">Service preference</div>
       <select onchange="_addPersonSetPref(this.value)" style="width:160px;">
         <option value="either"${_addPersonModalPref==='either'?' selected':''}>Either</option>
@@ -1145,19 +1583,37 @@ function _renderAddPersonnelModal(){
 }
 
 // Performs the hire transaction and refreshes the modals/tabs.
+// Volunteer hires kick off async home/work generation (Phase 5D) — the modal
+// closes immediately and the new volunteer's home appears once Overpass (or
+// fallback) returns.
 function _confirmAddPersonnel(){
   const stationId = _addPersonModalStationId;
   if(!stationId) return;
   const certs = [..._addPersonModalCerts];
   const pref  = _addPersonModalPref;
+  const type  = _addPersonModalType;
+  let hired = [];
   if(_addPersonModalBatch){
-    const res = batchAddPersonnel(stationId, { count: _addPersonModalCount, certs, preference: pref });
+    const res = batchAddPersonnel(stationId, { count: _addPersonModalCount, certs, preference: pref, type });
     if(!res.ok) return;
+    hired = res.hired;
   } else {
-    const ok = addPersonnel(stationId, {
-      name: _addPersonModalName, certs, preference: pref, type: 'career'
+    const rec = addPersonnel(stationId, {
+      name: _addPersonModalName, certs, preference: pref, type
     });
-    if(!ok) return;
+    if(!rec) return;
+    hired = [rec];
+  }
+  // Phase 5D — auto-generate home (and work) for every volunteer hire. Async,
+  // best-effort — failures fall back to road-snapped random per volunteers.js.
+  if(type === 'volunteer' && typeof generateVolunteerHome === 'function'){
+    Promise.all(hired.map(async p => {
+      await generateVolunteerHome(p);
+      await generateVolunteerWork(p);
+    })).then(() => {
+      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+    });
   }
   closeAddPersonnelModal();
   if(typeof _renderManageBody === 'function')   _renderManageBody();
@@ -1182,4 +1638,1052 @@ function _personnelTabDelete(id){
       renderPersonnelTab();
     }
   }
+}
+
+// =============================================================================
+// TRAINING + PROMOTE  (Phase 5C)
+// =============================================================================
+
+// Returns the trainable cert codes for a single person — every cert in the
+// taxonomy they don't already hold (directly OR via equivalency).
+function getTrainableCertsFor(person){
+  const defs = BAM_CONFIG.certifications || {};
+  if(!person) return [];
+  const have = expandCertSet(person.certs || []);
+  return Object.keys(defs).filter(c => !have.has(c));
+}
+
+// Returns the cost in $ to train ONE person in a single new cert. Mirrors
+// calcHireCost's cost source but applies the training-cost multiplier.
+function calcTrainingCostFor(certCode){
+  const defs = BAM_CONFIG.certifications || {};
+  const base = defs[certCode]?.cost || 0;
+  const mult = BAM_CONFIG.trainingCostMultiplier ?? 1.0;
+  return Math.round(base * mult);
+}
+
+// Returns the cost to train every person in `personnelIds` in `certCode` once.
+// Skips people who already hold (or satisfy) the cert — those get a $0 line.
+function calcTrainingCostBatch(personnelIds, certCode){
+  const per = calcTrainingCostFor(certCode);
+  let count = 0;
+  personnelIds.forEach(id => {
+    const p = getPersonnelById(id);
+    if(p && !personHasCert(p, certCode)) count++;
+  });
+  return { perPerson: per, count, total: per * count };
+}
+
+// Trains one or more existing personnel in a single new cert. Handles money,
+// cashflow, prereq enforcement, and equivalency dedupe. Returns
+// { ok, trained:[ids], skipped:[ids], cost, reason }.
+//
+// Rules:
+//   • Skips people who already hold (or satisfy) the cert — no cost for them.
+//   • Requires each person to hold every direct prereq of the new cert (after
+//     transitive expansion of what they already have). If a person is missing
+//     a prereq, the entire batch is refused — the player must train the
+//     missing prereq first.
+//   • Deducts a single consolidated cashflow line for the whole batch.
+function trainPersonnel(personnelIds, certCode){
+  const defs = BAM_CONFIG.certifications || {};
+  const certDef = defs[certCode];
+  if(!certDef) return { ok:false, reason:'unknown_cert' };
+
+  const trained = [];
+  const skipped = [];
+  // First pass — separate already-have vs needs-train, validate prereqs.
+  const toTrain  = [];
+  const missingPrereq = [];
+  personnelIds.forEach(id => {
+    const p = getPersonnelById(id);
+    if(!p){ skipped.push(id); return; }
+    if(personHasCert(p, certCode)){ skipped.push(id); return; }
+    // Prereqs must be in the person's expanded set.
+    const have = expandCertSet(p.certs || []);
+    const need = (certDef.prereqs || []).filter(pr => !have.has(pr));
+    if(need.length){ missingPrereq.push({ id, name:p.name, need }); return; }
+    toTrain.push(p);
+  });
+
+  if(missingPrereq.length){
+    const first = missingPrereq[0];
+    const needLabels = first.need.map(c => defs[c]?.label || c).join(', ');
+    setStatus(`Cannot train ${first.name} — missing prereq: ${needLabels}.`);
+    return { ok:false, trained, skipped, cost:0, reason:'missing_prereq', missingPrereq };
+  }
+
+  if(!toTrain.length){
+    setStatus('No personnel selected need this cert.');
+    return { ok:true, trained, skipped, cost:0 };
+  }
+
+  const perPerson = calcTrainingCostFor(certCode);
+  const cost      = perPerson * toTrain.length;
+  if(money < cost){
+    setStatus(`Training requires $${cost.toLocaleString()} — funds insufficient.`);
+    return { ok:false, trained, skipped, cost, reason:'insufficient_funds' };
+  }
+
+  updateMoney(-cost);
+  logCashflow(-cost, `[TRAINING] ${certDef.label} × ${toTrain.length}`);
+  toTrain.forEach(p => {
+    p.certs = Array.from(new Set([...(p.certs || []), certCode]));
+    p.playerEdited = true;
+    trained.push(p.id);
+    // Stats hook for 5E — record training event when stats system is live.
+    if(typeof recordPersonStat === 'function'){
+      recordPersonStat(p.id, 'trainingCompleted', 1, {
+        type: 'training', summary: `Trained: ${certDef.label}`
+      });
+    }
+  });
+  setStatus(`Trained ${toTrain.length} in ${certDef.label} — −$${cost.toLocaleString()}.`);
+  return { ok:true, trained, skipped, cost };
+}
+
+// Returns the rankConfig entries this person is eligible to be promoted into
+// based on their current cert holdings. Includes ranks they already hold
+// (so the picker can show "current" markers). Filtered to their service group
+// when known via `preference`; otherwise spans all services they qualify for.
+function getPromotableRanksFor(person){
+  if(!person) return [];
+  const allRanks = _allRankDefs();
+  const haveExpanded = expandCertSet(person.certs || []);
+
+  // Service group filter — if the person has a single clear preference, scope to it.
+  let allowedServices = null; // null = no filter
+  if(person.preference === 'fire')   allowedServices = ['fire'];
+  if(person.preference === 'ems')    allowedServices = ['ems'];
+  if(person.preference === 'police') allowedServices = ['police_local','police_county','police_state'];
+
+  return allRanks.filter(r => {
+    if(allowedServices && !allowedServices.includes(r.service)) return false;
+    // Eligibility: every prereq cert is in the person's expanded set.
+    return (r.prereqCerts || []).every(c => haveExpanded.has(c));
+  });
+}
+
+// Promotes a person to a new rank. Free — cost is in the cert training that
+// gates eligibility. Updates rank label, rankKey, and salaryAnnual.
+// Returns { ok, reason, person }.
+function promotePersonnel(personnelId, rankKey){
+  const p = getPersonnelById(personnelId);
+  if(!p) return { ok:false, reason:'not_found' };
+  const rankDef = getRankByKey(rankKey);
+  if(!rankDef) return { ok:false, reason:'unknown_rank' };
+  const have = expandCertSet(p.certs || []);
+  const missing = (rankDef.prereqCerts || []).filter(c => !have.has(c));
+  if(missing.length){
+    const defs = BAM_CONFIG.certifications || {};
+    const labels = missing.map(c => defs[c]?.label || c).join(', ');
+    setStatus(`${p.name} is not eligible — needs ${labels}.`);
+    return { ok:false, reason:'missing_prereq', missing };
+  }
+  const oldRank = p.rank;
+  p.rank        = rankDef.label;
+  p.rankKey     = rankDef.key;
+  // Career personnel re-derive salary on promotion; volunteers stay at 0.
+  if(p.type !== 'volunteer') p.salaryAnnual = _deriveSalaryAnnual(rankDef.key);
+  p.playerEdited = true;
+  // Stats hook for 5E.
+  if(typeof recordPersonStat === 'function'){
+    recordPersonStat(p.id, null, 0, {
+      type: 'promotion', summary: `Promoted: ${oldRank || '(none)'} → ${rankDef.label}`
+    });
+  }
+  setStatus(`${p.name} promoted to ${rankDef.label}.`);
+  return { ok:true, person:p };
+}
+
+// =============================================================================
+// TRAINING MODAL  (Phase 5C)
+// =============================================================================
+// Single modal handles BOTH single-person and multi-person training. Opened via:
+//   openTrainingModal([personnelId])         — single person, from row action
+//   openTrainingModal([id1, id2, ...])       — batch, from filtered list
+//   openTrainingModal('station', stationId)  — every available person at station
+// State lives in closure-style module variables for consistency with the
+// existing add-person modal.
+
+let _trainModalPersonIds = [];   // ids selected for training
+let _trainModalCert      = '';   // chosen cert code
+
+function openTrainingModal(personIdsOrScope, scopeId){
+  if(personIdsOrScope === 'station'){
+    _trainModalPersonIds = getPersonnelByStation(scopeId).map(p => p.id);
+  } else if(Array.isArray(personIdsOrScope)){
+    _trainModalPersonIds = personIdsOrScope.slice();
+  } else if(typeof personIdsOrScope === 'string'){
+    _trainModalPersonIds = [personIdsOrScope];
+  } else {
+    _trainModalPersonIds = [];
+  }
+  _trainModalCert = '';
+  let modal = document.getElementById('train-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'train-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closeTrainingModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderTrainingModal();
+  modal.classList.add('open');
+}
+
+function closeTrainingModal(){
+  const modal = document.getElementById('train-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _trainModalSetCert(certCode){
+  _trainModalCert = certCode || '';
+  _renderTrainingModal();
+}
+
+function _trainModalTogglePerson(id, checked){
+  if(checked){
+    if(!_trainModalPersonIds.includes(id)) _trainModalPersonIds.push(id);
+  } else {
+    _trainModalPersonIds = _trainModalPersonIds.filter(x => x !== id);
+  }
+  _renderTrainingModal();
+}
+
+function _renderTrainingModal(){
+  const modal = document.getElementById('train-modal');
+  if(!modal) return;
+  const defs = BAM_CONFIG.certifications || {};
+
+  // Group all certs by category for the picker.
+  const grouped = { fire:[], ems:[], police:[], shared:[] };
+  Object.entries(defs).forEach(([k,c]) => {
+    if(!grouped[c.category]) grouped[c.category] = [];
+    grouped[c.category].push({ id:k, ...c });
+  });
+  const certOptions = ['fire','ems','police','shared'].map(cat => {
+    const items = (grouped[cat] || []).slice().sort((a,b) => a.cost - b.cost);
+    if(!items.length) return '';
+    const opts = items.map(c => `<option value="${c.id}"${_trainModalCert===c.id?' selected':''}>${_escPersonHtml(c.label)} — $${calcTrainingCostFor(c.id).toLocaleString()}</option>`).join('');
+    return `<optgroup label="${cat[0].toUpperCase()+cat.slice(1)}">${opts}</optgroup>`;
+  }).join('');
+
+  // Roster picker — checkboxes for every person currently in the scope set,
+  // OR every person across all stations when the modal was opened wide.
+  // For now we render exactly the ids the player came in with.
+  const people = _trainModalPersonIds
+    .map(id => getPersonnelById(id))
+    .filter(Boolean);
+
+  const certDef = defs[_trainModalCert];
+  // Per-person eligibility for the chosen cert.
+  const evalRow = (p) => {
+    if(!certDef) return { ok:false, label:'(pick a cert)', cls:'muted' };
+    if(personHasCert(p, _trainModalCert)) return { ok:false, label:'already holds', cls:'muted' };
+    const have = expandCertSet(p.certs || []);
+    const missing = (certDef.prereqs || []).filter(pr => !have.has(pr));
+    if(missing.length){
+      const labels = missing.map(c => defs[c]?.label || c).join(', ');
+      return { ok:false, label:'needs ' + labels, cls:'accent' };
+    }
+    return { ok:true, label:'eligible', cls:'green' };
+  };
+  const rosterHTML = people.length ? people.map(p => {
+    const ev = evalRow(p);
+    const cls = ev.cls === 'accent' ? 'var(--accent)' : ev.cls === 'green' ? 'var(--green)' : 'var(--muted)';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.78rem;">
+      <input type="checkbox" checked onchange="_trainModalTogglePerson('${p.id}', this.checked)"/>
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);">· ${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="color:${cls};font-size:.72rem;">${ev.label}</span>
+    </label>`;
+  }).join('') : '<div class="empty-msg">No personnel selected for training.</div>';
+
+  // Cost block + eligibility summary.
+  const costInfo = certDef ? calcTrainingCostBatch(_trainModalPersonIds, _trainModalCert) : { perPerson:0, count:0, total:0 };
+  const canPay   = costInfo.total <= money;
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:560px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Training</h2>
+        <div class="modal-sub">${people.length} selected</div>
+      </div>
+      <button class="btn-sm danger" onclick="closeTrainingModal()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+      <div class="field-label">Certification to train</div>
+      <select onchange="_trainModalSetCert(this.value)" style="width:100%;">
+        <option value="">— pick a cert —</option>${certOptions}
+      </select>
+      ${certDef ? `<div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
+        Prereqs: ${(certDef.prereqs || []).map(c => defs[c]?.label || c).join(', ') || '(none)'}.
+        Equivalency satisfies: ${(certDef.satisfies || []).map(c => defs[c]?.label || c).join(', ') || '(none)'}.
+      </div>` : ''}
+
+      <div class="section-title" style="margin-top:12px;">Personnel</div>
+      <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;">
+        ${rosterHTML}
+      </div>
+
+      <div style="margin-top:14px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:6px;font-size:.8rem;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <span style="color:var(--muted);">Per person</span>
+          <span>$${costInfo.perPerson.toLocaleString()}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px;">
+          <span style="color:var(--muted);">Eligible (will train)</span>
+          <span>${costInfo.count}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;font-weight:700;">
+          <span>Total</span>
+          <span style="color:${canPay ? 'var(--green)' : 'var(--accent)'};">$${costInfo.total.toLocaleString()}</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn-sm" onclick="closeTrainingModal()">Cancel</button>
+      <button class="btn-sm" ${(canPay && costInfo.count > 0) ? '' : 'disabled'} onclick="_confirmTraining()">
+        Train ${costInfo.count} — $${costInfo.total.toLocaleString()}
+      </button>
+    </div>
+  </div>`;
+}
+
+function _confirmTraining(){
+  if(!_trainModalCert || !_trainModalPersonIds.length) return;
+  const res = trainPersonnel(_trainModalPersonIds, _trainModalCert);
+  if(!res.ok) return;
+  closeTrainingModal();
+  if(typeof renderPersonnelTab === 'function')   renderPersonnelTab();
+  if(typeof _renderManageBody === 'function')    _renderManageBody();
+  if(typeof _renderUnitDetails === 'function')   _renderUnitDetails();
+  if(typeof renderStationList === 'function')    renderStationList();
+}
+
+// =============================================================================
+// PROMOTE MODAL  (Phase 5C)
+// =============================================================================
+// Lightweight picker: shows every rank eligible for this one person, plus the
+// current rank for context. Free + instant; the cert training is the gate.
+
+let _promoteModalPersonId = null;
+
+function openPromoteModal(personnelId){
+  _promoteModalPersonId = personnelId;
+  let modal = document.getElementById('promote-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'promote-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closePromoteModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderPromoteModal();
+  modal.classList.add('open');
+}
+
+function closePromoteModal(){
+  const modal = document.getElementById('promote-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _renderPromoteModal(){
+  const modal = document.getElementById('promote-modal');
+  if(!modal) return;
+  const p = getPersonnelById(_promoteModalPersonId);
+  if(!p){ closePromoteModal(); return; }
+
+  const eligible = getPromotableRanksFor(p);
+  // Group by service for readable rendering.
+  const groups = {};
+  eligible.forEach(r => {
+    if(!groups[r.service]) groups[r.service] = [];
+    groups[r.service].push(r);
+  });
+  const serviceLabel = (s) => ({
+    fire:'Fire', ems:'EMS',
+    police_local:'Local Police', police_county:'County Sheriff', police_state:'State Police'
+  })[s] || s;
+
+  const base = BAM_CONFIG.salaryBaseAnnual || 0;
+  const rankRows = (rank) => {
+    const isCurrent = rank.key === p.rankKey;
+    const newSalary = Math.round(base * (rank.salaryMultiplier || 1.0));
+    const salaryDelta = newSalary - (p.salaryAnnual || 0);
+    const deltaStr = salaryDelta === 0 ? '' :
+      `<span style="color:${salaryDelta>0?'var(--accent)':'var(--green)'};font-size:.7rem;">(${salaryDelta>0?'+':''}$${Math.abs(salaryDelta).toLocaleString()}/yr)</span>`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 6px;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div>
+        <div style="font-weight:600;font-size:.84rem;">${_escPersonHtml(rank.label)}${isCurrent?' <span style="font-size:.7rem;color:var(--gold);">(current)</span>':''}</div>
+        <div style="font-size:.7rem;color:var(--muted);">$${newSalary.toLocaleString()}/yr ${deltaStr}</div>
+      </div>
+      ${isCurrent
+        ? ''
+        : `<button class="btn-sm" onclick="_confirmPromote('${rank.key}')">Promote</button>`}
+    </div>`;
+  };
+  const sections = Object.keys(groups).map(svc => `
+    <div class="section-title" style="margin-top:10px;">${serviceLabel(svc)}</div>
+    ${groups[svc].map(rankRows).join('')}
+  `).join('') || '<div class="empty-msg">No eligible ranks. Train them in additional certifications first.</div>';
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:480px;max-width:95vw;max-height:80vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Promote</h2>
+        <div class="modal-sub">${_escPersonHtml(p.name)} · current: ${_escPersonHtml(p.rank || '—')}</div>
+      </div>
+      <button class="btn-sm danger" onclick="closePromoteModal()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:10px 14px;">
+      <div style="font-size:.74rem;color:var(--muted);">Promotion is free — cert training is the cost gate. Eligibility shown is based on current certifications (transitive equivalency applied).</div>
+      ${sections}
+    </div>
+  </div>`;
+}
+
+function _confirmPromote(rankKey){
+  if(!_promoteModalPersonId || !rankKey) return;
+  const res = promotePersonnel(_promoteModalPersonId, rankKey);
+  if(!res.ok) return;
+  // Re-render the modal so eligibility + current marker update.
+  _renderPromoteModal();
+  if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();
+  if(typeof _renderManageBody === 'function')   _renderManageBody();
+  if(typeof _renderUnitDetails === 'function')  _renderUnitDetails();
+  if(typeof renderStationList === 'function')   renderStationList();
+}
+
+// =============================================================================
+// SHIFTS + ON-DUTY EVALUATION  (Phase 5C)
+// =============================================================================
+
+// Returns every shift template available for a station — the global built-ins
+// from BAM_CONFIG.shiftTemplates plus any custom shifts the station owns.
+// Each entry: { key|id, label, cycleDays, onPattern, isCustom }.
+function getStationShifts(stationId){
+  const station = stations.find(s => s.id === stationId);
+  const builtins = (BAM_CONFIG.shiftTemplates || []).map(t => ({ ...t, id: t.key, isCustom: false }));
+  const custom   = (station?.shifts || []).map(s => ({ ...s, isCustom: true }));
+  return [...builtins, ...custom];
+}
+
+// Looks up a shift template (built-in or station-custom) by id/key. Returns
+// null when no match — caller treats null as "always on duty".
+function _findShiftTemplate(shiftId, stationId){
+  if(!shiftId) return null;
+  return getStationShifts(stationId).find(s => (s.id || s.key) === shiftId) || null;
+}
+
+// True if the person is currently on-duty according to their shift schedule.
+//   • Volunteers always return true (5D adds volunteer availability separately).
+//   • Career personnel with no shiftId default to always-on (back-compat with
+//     5B records that never had a shift assigned).
+//   • Otherwise: walks the shift's cycleDay-of-N pattern against gameDay and
+//     gameSeconds, treating hours past 24 as carrying into the next day.
+function isOnDutyNow(person){
+  if(!person) return false;
+  if(person.type === 'volunteer') return true;
+  if(!person.shiftId) return true;
+  // Defensive — index.html owns gameDay/gameSeconds globals.
+  const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+  const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+  const tpl = _findShiftTemplate(person.shiftId, person.stationId);
+  if(!tpl || !tpl.cycleDays || !Array.isArray(tpl.onPattern)) return true;
+  const cycleIdx = ((day - 1) % tpl.cycleDays + tpl.cycleDays) % tpl.cycleDays;
+  const todayWindows = tpl.onPattern[cycleIdx] || [];
+  const hour = sec / 3600;
+  // Check today's windows (some may carry past midnight via endHour > 24).
+  for(const win of todayWindows){
+    const [start, end] = win;
+    if(hour >= start && hour < Math.min(end, 24)) return true;
+  }
+  // Carry-over: check previous cycle day's windows whose end exceeds 24.
+  const prevIdx = (cycleIdx - 1 + tpl.cycleDays) % tpl.cycleDays;
+  const prevWindows = tpl.onPattern[prevIdx] || [];
+  for(const win of prevWindows){
+    const [start, end] = win;
+    if(end > 24 && hour < (end - 24)) return true;
+  }
+  return false;
+}
+
+// =============================================================================
+// SALARY DEDUCTIONS  (Phase 5C)
+// =============================================================================
+// Tracks the last game-day on which salaries were deducted. _tickGameClock
+// invokes tickSalaryDeductions() on every tick; it returns immediately unless
+// gameDay has advanced past this marker.
+
+let _lastSalaryGameDay = null;
+
+// Returns an estimate of the next salary cycle: total $/day, per-station
+// breakdown, and the count of career personnel contributing. Powers all
+// three salary preview surfaces (cashflow header, personnel tab, station modal).
+function estimateNextSalaryCycle(){
+  let totalDaily = 0;
+  let count = 0;
+  const byStation = {};
+  personnel.forEach(p => {
+    const d = getSalaryDailyFor(p);
+    if(d <= 0) return;
+    totalDaily += d;
+    count++;
+    byStation[p.stationId] = (byStation[p.stationId] || 0) + d;
+  });
+  return { totalDaily: Math.round(totalDaily), count, byStation };
+}
+
+// Sums salary $/day for a single station's career personnel. Used by the
+// per-station salary preview line in the Manage Station modal.
+function estimateStationSalaryDaily(stationId){
+  let sum = 0;
+  getPersonnelByStation(stationId).forEach(p => {
+    sum += getSalaryDailyFor(p);
+  });
+  return Math.round(sum);
+}
+
+// Called from _tickGameClock every real second. Deducts salaries once per
+// game-day rollover and emits a single consolidated cashflow line.
+// Safe to call before salary system is initialized (no-ops when there are no
+// career personnel). First call after world load syncs _lastSalaryGameDay
+// without charging so an old save doesn't get back-billed.
+function tickSalaryDeductions(){
+  const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+  if(_lastSalaryGameDay == null){ _lastSalaryGameDay = day; return; }
+  if(day === _lastSalaryGameDay) return;
+  const daysAdvanced = day - _lastSalaryGameDay;
+  _lastSalaryGameDay = day;
+  if(daysAdvanced <= 0) return;
+  const est = estimateNextSalaryCycle();
+  if(est.totalDaily <= 0) return;
+  const total = est.totalDaily * daysAdvanced;
+  if(typeof updateMoney === 'function')  updateMoney(-total);
+  if(typeof logCashflow === 'function')  logCashflow(-total,
+    `[SALARIES] Day${daysAdvanced > 1 ? 's ' + (day - daysAdvanced + 1) + '–' + day : ' ' + day} · ${est.count} personnel`);
+}
+
+// Resets the salary-day marker. Called on world load so the first post-load
+// tick syncs to the loaded gameDay instead of back-billing.
+function resetSalaryCycleMarker(){
+  _lastSalaryGameDay = null;
+}
+
+// =============================================================================
+// SHIFT EDITOR MODAL  (Phase 5C)
+// =============================================================================
+// Per-station shift management. The Shift editor lets the player:
+//   • View built-in shift templates + this station's custom shifts.
+//   • Add a new custom shift (label + cycleDays + on-hour windows per cycle day).
+//   • Assign personnel at this station to a shift (or clear back to always-on).
+//   • Delete a custom shift (built-ins are read-only).
+
+let _shiftEditorStationId = null;
+
+function openStationShiftEditor(stationId){
+  _shiftEditorStationId = stationId;
+  let modal = document.getElementById('shift-editor-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'shift-editor-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closeShiftEditor(); });
+    document.body.appendChild(modal);
+  }
+  _renderShiftEditor();
+  modal.classList.add('open');
+}
+
+function closeShiftEditor(){
+  const modal = document.getElementById('shift-editor-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _renderShiftEditor(){
+  const modal = document.getElementById('shift-editor-modal');
+  if(!modal || !_shiftEditorStationId) return;
+  const s = stations.find(x => x.id === _shiftEditorStationId);
+  if(!s){ closeShiftEditor(); return; }
+
+  const shifts = getStationShifts(s.id);
+  const roster = getPersonnelByStation(s.id).filter(p => p.type !== 'volunteer');
+
+  const shiftRow = (sh) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+    <div>
+      <div style="font-weight:600;font-size:.84rem;">${_escPersonHtml(sh.label)}${sh.isCustom ? ' <span style="font-size:.66rem;color:var(--gold);">custom</span>' : ''}</div>
+      <div style="font-size:.7rem;color:var(--muted);">Cycle: ${sh.cycleDays} day(s) · Pattern: ${_describeShiftPattern(sh)}</div>
+    </div>
+    ${sh.isCustom
+      ? `<button class="btn-sm danger" onclick="_deleteCustomShift('${sh.id}')">Delete</button>`
+      : ''}
+  </div>`;
+
+  // Personnel assignment table: shift dropdown per person.
+  const shiftOpts = ['<option value="">— always on duty —</option>']
+    .concat(shifts.map(sh => `<option value="${sh.id}">${_escPersonHtml(sh.label)}</option>`))
+    .join('');
+
+  const personRows = roster.length ? roster.map(p => {
+    const cur = p.shiftId || '';
+    const onDuty = isOnDutyNow(p);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.8rem;">
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);font-size:.7rem;">${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="font-size:.7rem;color:${onDuty ? 'var(--green)' : 'var(--muted)'};">${onDuty ? 'on duty' : 'off duty'}</span>
+      <select onchange="_assignPersonShift('${p.id}', this.value)" style="font-size:.74rem;">
+        ${shiftOpts.replace(`value="${cur}"`, `value="${cur}" selected`)}
+      </select>
+    </div>`;
+  }).join('') : '<div class="empty-msg">No career personnel at this station.</div>';
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:640px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Shifts — ${_escPersonHtml(s.name)}</h2>
+        <div class="modal-sub">Estimated daily salaries: $${estimateStationSalaryDaily(s.id).toLocaleString()}/day</div>
+      </div>
+      <button class="btn-sm danger" onclick="closeShiftEditor()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+      <div class="section-title">Templates</div>
+      ${shifts.map(shiftRow).join('')}
+      <div style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input id="se-new-label" type="text" placeholder="Shift name (e.g. C-Platoon)" style="flex:1;min-width:160px;"/>
+        <input id="se-new-cycle" type="number" min="1" max="14" value="3" style="width:70px;" title="Cycle days"/>
+        <input id="se-new-pattern" type="text" placeholder="On hours per day (e.g. 0-24;;)"
+               value="0-24;;" style="flex:1;min-width:200px;font-family:var(--mono),monospace;"
+               title="Semicolon-separated on-windows per cycle day. Each day: comma-separated 'start-end' (24h). Empty = off day. Example: 0-24;; = 24/48"/>
+        <button class="btn-sm" onclick="_addCustomShift()">+ Add</button>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+        Pattern syntax: semicolons separate cycle days. Each day = comma-separated <code>start-end</code> windows in 24-hour time. An empty day = off. <code>end</code> > 24 carries past midnight (e.g. <code>18-30</code> = 18:00 today through 06:00 tomorrow).
+      </div>
+
+      <div class="section-title" style="margin-top:14px;">Personnel Assignments</div>
+      ${personRows}
+    </div>
+  </div>`;
+}
+
+// Returns a human-friendly description of a shift's onPattern.
+function _describeShiftPattern(sh){
+  if(!sh.onPattern) return '(custom)';
+  return sh.onPattern.map((day,i) => {
+    if(!day.length) return 'OFF';
+    return day.map(([a,b]) => `${a}-${b}`).join(',');
+  }).join(' / ');
+}
+
+function _addCustomShift(){
+  const s = stations.find(x => x.id === _shiftEditorStationId);
+  if(!s) return;
+  const label = document.getElementById('se-new-label')?.value?.trim();
+  const cycle = parseInt(document.getElementById('se-new-cycle')?.value || '1', 10);
+  const pat   = document.getElementById('se-new-pattern')?.value || '';
+  if(!label){ setStatus('Enter a shift name.'); return; }
+  if(!cycle || cycle < 1){ setStatus('Cycle days must be ≥ 1.'); return; }
+  // Parse pattern: semicolon-separated days. Each day: comma-separated start-end ranges.
+  const onPattern = [];
+  for(let i = 0; i < cycle; i++){
+    const dayChunks = (pat.split(';')[i] || '').trim();
+    if(!dayChunks){ onPattern.push([]); continue; }
+    const wins = dayChunks.split(',').map(w => {
+      const [a,b] = w.split('-').map(x => parseFloat(x.trim()));
+      return (isFinite(a) && isFinite(b)) ? [a,b] : null;
+    }).filter(Boolean);
+    onPattern.push(wins);
+  }
+  s.shifts = s.shifts || [];
+  s.shifts.push({
+    id: 'sh_' + Date.now().toString(36),
+    label,
+    cycleDays: cycle,
+    onPattern
+  });
+  setStatus(`Added custom shift "${label}".`);
+  _renderShiftEditor();
+}
+
+function _deleteCustomShift(shiftId){
+  const s = stations.find(x => x.id === _shiftEditorStationId);
+  if(!s || !s.shifts) return;
+  // Unassign any personnel currently on this shift before removing.
+  getPersonnelByStation(s.id).forEach(p => {
+    if(p.shiftId === shiftId){ p.shiftId = null; p.playerEdited = true; }
+  });
+  s.shifts = s.shifts.filter(sh => sh.id !== shiftId);
+  setStatus('Custom shift deleted.');
+  _renderShiftEditor();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+function _assignPersonShift(personnelId, shiftId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  p.shiftId = shiftId || null;
+  p.playerEdited = true;
+  _renderShiftEditor();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+// =============================================================================
+// STATS + CAREER HISTORY  (Phase 5E)
+// =============================================================================
+// Per-person counters live on person.stats. History (capped, oldest aged out)
+// lives on person.history as a list of { gameSec, gameDay, type, summary,
+// incidentId? } entries. recordPersonStat is the single entry point that
+// callers across dispatch, training, promotion, etc. use to push updates.
+
+// Returns the default-zero stats block. Used at hire time and as a safety
+// backfill when an older save is loaded.
+function _emptyStats(){
+  return {
+    callsResponded:    0,
+    fireCalls:         0,
+    emsCalls:          0,
+    policeCalls:       0,
+    transports:        0,
+    saves:             0,
+    missedCalls:       0,
+    trainingCompleted: 0,
+    driveTimeSec:      0,
+    commandIncidents:  0
+  };
+}
+
+// Public: increments a stat counter on a person AND optionally appends a
+// history entry. statKey may be null to record history only.
+// historyEntry shape: { type, summary, incidentId? } — gameSec/gameDay are
+// stamped here.
+//
+// History is capped at BAM_CONFIG.statsHistoryCapPerPerson (default 200);
+// oldest entries are dropped when the cap is exceeded.
+function recordPersonStat(personnelId, statKey, delta = 1, historyEntry = null){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  if(!p.stats) p.stats = _emptyStats();
+  if(!p.history) p.history = [];
+  if(statKey){
+    p.stats[statKey] = (p.stats[statKey] || 0) + delta;
+  }
+  if(historyEntry){
+    const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+    const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+    p.history.unshift({
+      gameSec: sec, gameDay: day,
+      type: historyEntry.type || 'event',
+      summary: historyEntry.summary || '',
+      incidentId: historyEntry.incidentId || null
+    });
+    const cap = BAM_CONFIG.statsHistoryCapPerPerson || 200;
+    if(p.history.length > cap) p.history = p.history.slice(0, cap);
+  }
+}
+
+// Public: returns a summary block suitable for the personnel details modal.
+// { stats, recentHistory: [first N], totalEntries }.
+function getCareerSummary(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return null;
+  const stats = p.stats || _emptyStats();
+  const history = p.history || [];
+  return {
+    stats,
+    recentHistory: history.slice(0, 50),
+    totalEntries: history.length
+  };
+}
+
+// Public: resets every counter and clears the history log. Triple-confirmation
+// is the caller's responsibility (the Database Health panel + per-person
+// reset button both prompt before calling this).
+function resetStats(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  p.stats = _emptyStats();
+  p.history = [];
+}
+
+// =============================================================================
+// PATIENT STABILIZATION  (Phase 5E)
+// =============================================================================
+// Patient objects gain `stabilization: 0..1` and `assignedProviders: [pid]`.
+// Each game-second tick (called from _tickGameClock) accumulates progress
+// based on the assigned providers' EMS cert levels. Once stabilization >= 1,
+// the patient becomes transport-ready.
+//
+// Rules:
+//   • One provider can only be assigned to one patient at a time (slot rule).
+//   • Multiple providers can stack on a single patient (additive rate, capped
+//     by BAM_CONFIG.stabilizationMaxRate when set).
+//   • Provider rate comes from BAM_CONFIG.stabilizationRates keyed on the
+//     highest EMS cert the provider holds (paramedic > aemt > emt > emr).
+
+// Returns the per-game-second stabilization rate this provider contributes.
+// 0 when they hold no EMS cert. CCP / phrn both treated as ccp tier.
+// Sources rates from BAM_CONFIG.personnelStabilizationRates — distinct from
+// the older unit-on-scene `stabilizationRates` block (per-unit, not per-person).
+function _providerStabilizationRate(person){
+  if(!person) return 0;
+  const rates = BAM_CONFIG.personnelStabilizationRates || {};
+  const certs = expandCertSet(person.certs || []);
+  if(certs.has('ccp'))       return rates.ccp || 0;
+  if(certs.has('phrn'))      return rates.phrn || rates.ccp || 0;
+  if(certs.has('paramedic')) return rates.paramedic || 0;
+  if(certs.has('aemt'))      return rates.aemt || 0;
+  if(certs.has('emt'))       return rates.emt || 0;
+  if(certs.has('emr'))       return rates.emr || 0;
+  return 0;
+}
+
+// Public: returns the total per-second stabilization rate for a patient from
+// PERSONNEL contributions (separate from the unit-on-scene rate computed by
+// the existing tickPatientStabilization in index.html). Caps at
+// BAM_CONFIG.personnelStabilizationMaxRate when set (>0).
+function calcStabilizationRate(patient){
+  if(!patient || !patient.assignedProviders?.length) return 0;
+  let total = 0;
+  patient.assignedProviders.forEach(pid => {
+    total += _providerStabilizationRate(getPersonnelById(pid));
+  });
+  const cap = BAM_CONFIG.personnelStabilizationMaxRate || 0;
+  if(cap > 0) total = Math.min(total, cap);
+  return total;
+}
+
+// Public: assigns a provider to a patient. Enforces 1-provider-per-patient
+// invariant by clearing any prior assignment. Returns { ok, reason }.
+function assignPersonToPatient(personnelId, patient){
+  const p = getPersonnelById(personnelId);
+  if(!p) return { ok:false, reason:'not_found' };
+  if(!patient) return { ok:false, reason:'no_patient' };
+  if(p.assignedPatientId && p.assignedPatientId !== patient.id){
+    // Detach from previous patient first.
+    unassignPersonFromPatient(personnelId);
+  }
+  patient.assignedProviders = patient.assignedProviders || [];
+  if(!patient.assignedProviders.includes(personnelId)){
+    patient.assignedProviders.push(personnelId);
+  }
+  p.assignedPatientId = patient.id;
+  return { ok:true };
+}
+
+// Public: removes the person from their currently-assigned patient (if any).
+// Caller doesn't need to know which patient — we look up via the back-ref.
+function unassignPersonFromPatient(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  const pid = p.assignedPatientId;
+  if(!pid) return;
+  // Find the patient by id across active incidents.
+  if(typeof incidents !== 'undefined'){
+    for(const inc of incidents){
+      const pat = (inc.patients || []).find(x => x.id === pid);
+      if(pat){
+        pat.assignedProviders = (pat.assignedProviders || []).filter(x => x !== personnelId);
+        break;
+      }
+    }
+  }
+  p.assignedPatientId = null;
+}
+
+// Public: per-tick advance of PERSONNEL-driven patient stabilization across
+// every active incident. Adds to the existing per-unit stabilizeProgress
+// already maintained by the legacy tickPatientStabilization in index.html —
+// we contribute via the same `stabilizeProgress` field so the existing UI bars
+// and stabilized-status threshold (>=1) keep working uniformly.
+// Named distinctly from the legacy fn to avoid the global-scope collision.
+function tickPersonnelStabilization(deltaGameSec){
+  if(typeof incidents === 'undefined' || !deltaGameSec) return;
+  incidents.forEach(inc => {
+    if(inc.status === 'resolved') return;
+    (inc.patients || []).forEach(pat => {
+      // Use the existing legacy field name so both contribution sources stack
+      // onto a single progress value — UI bars and status flips already key on
+      // stabilizeProgress >= 1.
+      if(pat.stabilizeProgress == null) pat.stabilizeProgress = 0;
+      if(pat.stabilizeProgress >= 1) return;
+      const rate = calcStabilizationRate(pat);
+      if(rate <= 0) return;
+      pat.stabilizeProgress = Math.min(1, pat.stabilizeProgress + rate * deltaGameSec);
+      if(pat.stabilizeProgress >= 1 && pat.status === 'stabilizing') pat.status = 'stabilized';
+    });
+  });
+}
+
+// =============================================================================
+// SPAN OF CONTROL  (Phase 5E)
+// =============================================================================
+
+// Returns the on-scene span-of-control rating for an incident. Counts officers
+// (Fire Officer 1+, EMS Supervisor, Patrol Supervisor) vs subordinates among
+// every currently-busy responder assigned to the incident.
+//
+// Returns { officerCount, subordinateCount, ratio, tierKey, label, tooltip, color }.
+// The tier is universal — no per-incident-size scaling per player requirement.
+function getSpanOfControlForIncident(incidentId){
+  const officerCerts = BAM_CONFIG.spanOfControlOfficerCerts || [];
+  const tiers = BAM_CONFIG.spanOfControlTiers || {};
+  let officerCount = 0;
+  let totalOnScene = 0;
+  personnel.forEach(p => {
+    if(p.currentAssignment?.callId !== incidentId) return;
+    totalOnScene++;
+    const certs = expandCertSet(p.certs || []);
+    if(officerCerts.some(c => certs.has(c))) officerCount++;
+  });
+  const subordinateCount = Math.max(0, totalOnScene - officerCount);
+  const ratio = (officerCount > 0) ? (subordinateCount / officerCount) : Infinity;
+  // Classify into tier by ratio <= tier.max. Iteration order is bored → ideal
+  // → task_saturated → overwhelmed (insertion order of the object literal).
+  let tierKey = 'overwhelmed';
+  if(officerCount === 0 && subordinateCount === 0){
+    // No one on scene — return a neutral tier so the UI can hide the chip.
+    return { officerCount, subordinateCount, ratio:0, tierKey:'none', label:'', tooltip:'', color:'#6b7280' };
+  }
+  for(const [key, def] of Object.entries(tiers)){
+    if(ratio <= def.max){ tierKey = key; break; }
+  }
+  const def = tiers[tierKey] || {};
+  return {
+    officerCount, subordinateCount, ratio,
+    tierKey,
+    label:   def.label   || tierKey,
+    tooltip: def.tooltip || '',
+    color:   def.color   || '#6b7280'
+  };
+}
+
+// =============================================================================
+// ON-SCENE ROSTER  (Phase 5E)
+// =============================================================================
+
+// Returns a flat list of every responder currently on scene for an incident:
+//   { personId, name, rank, stationId, stationName, apparatusId, apparatusName, currentTask }
+// `currentTask` is derived from the person's assignment + role hints:
+//   • Pinned to a unit → 'Driver/Operator' if they hold the driver cert,
+//     else 'Crew member'
+//   • Assigned to a patient → 'Patient Care — PT <suffix>'
+//   • Otherwise → 'Standby'
+// Public: renders the call-window Personnel tab pane. Lists on-scene roster
+// with station/apparatus/task columns and a per-patient provider-assignment
+// section honoring the 1-provider-per-patient invariant.
+function _renderPersonnelDispatchTab(inc){
+  if(!inc) return '';
+  const roster = getOnSceneRoster(inc.id);
+  const rosterRows = roster.length ? roster.map(r => `
+    <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr auto;gap:8px;align-items:center;padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.78rem;">
+      <span>${_escPersonHtml(r.name)} <span style="color:var(--muted);font-size:.7rem;">${_escPersonHtml(r.rank)}</span></span>
+      <span style="color:var(--muted);">${_escPersonHtml(r.stationName)}</span>
+      <span style="color:var(--muted);">${_escPersonHtml(r.apparatusName || '—')}</span>
+      <span style="color:var(--gold);font-size:.72rem;">${_escPersonHtml(r.currentTask)}</span>
+      <button class="btn-sm" onclick="openPersonnelDetails('${r.personId}')">Details</button>
+    </div>
+  `).join('') : '<div class="empty-msg">No personnel on scene yet. Personnel are credited automatically when their unit arrives.</div>';
+
+  // Per-patient provider assignment.
+  let patientsBlock = '';
+  if((inc.patients || []).length){
+    patientsBlock = `<div class="section-title" style="margin-top:14px;">Patients & Providers</div>`;
+    const candidatePool = personnel.filter(p =>
+         p.currentAssignment?.callId === inc.id
+      && _providerStabilizationRate(p) > 0
+    );
+    inc.patients.forEach(pat => {
+      const assignedIds   = pat.assignedProviders || [];
+      const assignedNames = assignedIds.map(id => getPersonnelById(id)?.name).filter(Boolean).join(', ') || '(none)';
+      const totalRate     = calcStabilizationRate(pat);
+      const stabPct       = Math.round((pat.stabilizeProgress || 0) * 100);
+      const stabColor     = (pat.stabilizeProgress || 0) >= 1 ? 'var(--green)' : 'var(--ems)';
+      const injCfg        = BAM_CONFIG.injuryTypes?.[pat.injuryType];
+      // Pool = on-scene providers NOT already on a different patient
+      // (uniqueness enforced by assignPersonToPatient).
+      const dropOpts = candidatePool
+        .filter(p => !assignedIds.includes(p.id))
+        .map(p => {
+          const conflict = p.assignedPatientId && p.assignedPatientId !== pat.id ? ' (will detach)' : '';
+          return `<option value="${p.id}">${_escPersonHtml(p.name)} — ${_escPersonHtml(p.rank || '')}${conflict}</option>`;
+        }).join('');
+      patientsBlock += `<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:.78rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span><b>${_escPersonHtml(injCfg?.label || pat.injuryType)}</b> · ${_escPersonHtml(pat.status || 'stabilizing')}</span>
+          <span style="color:var(--muted);font-size:.72rem;">+${totalRate.toFixed(4)}/sec from personnel</span>
+        </div>
+        <div class="res-bar-track" style="margin:6px 0;"><div style="width:${stabPct}%;background:${stabColor};height:100%;transition:width 1s linear;"></div></div>
+        <div style="margin-bottom:4px;"><span style="color:var(--muted);">Providers:</span> ${_escPersonHtml(assignedNames)}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+          ${assignedIds.map(id => `<button class="btn-sm" onclick="_dispatchUnassignProvider('${id}', '${pat.id}', '${inc.id}')" title="Unassign this provider">✕ ${_escPersonHtml(getPersonnelById(id)?.name || 'provider')}</button>`).join('')}
+          ${dropOpts ? `<select id="ppa-${pat.id}" style="font-size:.74rem;">
+            <option value="">— assign provider —</option>${dropOpts}
+          </select>
+          <button class="btn-sm" onclick="_dispatchAssignProviderFromSelect('${pat.id}', '${inc.id}')">Assign</button>` : '<span style="color:var(--muted);font-size:.7rem;">No more EMS-cert providers available on scene.</span>'}
+        </div>
+      </div>`;
+    });
+  }
+
+  return `<div class="section-title">On Scene (${roster.length})</div>
+    ${rosterRows}
+    ${patientsBlock}
+  `;
+}
+
+function _dispatchAssignProviderFromSelect(patientId, incidentId){
+  const sel = document.getElementById('ppa-' + patientId);
+  if(!sel || !sel.value) return;
+  const inc = (typeof incidents !== 'undefined') ? incidents.find(x => x.id === incidentId) : null;
+  if(!inc) return;
+  const pat = (inc.patients || []).find(x => x.id === patientId);
+  if(!pat) return;
+  assignPersonToPatient(sel.value, pat);
+  if(typeof renderDispatchBody === 'function'){
+    renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+function _dispatchUnassignProvider(personnelId, patientId, incidentId){
+  unassignPersonFromPatient(personnelId);
+  const inc = (typeof incidents !== 'undefined') ? incidents.find(x => x.id === incidentId) : null;
+  if(inc && typeof renderDispatchBody === 'function'){
+    renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+function getOnSceneRoster(incidentId){
+  return personnel
+    .filter(p => p.currentAssignment?.callId === incidentId)
+    .map(p => {
+      const station = stations.find(s => s.id === p.stationId);
+      const unitId = p.currentAssignment?.unitId;
+      let apparatusName = '';
+      let driverCert = null;
+      if(unitId){
+        for(const s of stations){
+          const u = s.units?.find(x => x.id === unitId);
+          if(u){
+            apparatusName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
+            driverCert = BAM_CONFIG.crewDefaults?.[u.typeKey]?.driverCert || null;
+            break;
+          }
+        }
+      }
+      // Task assignment derivation.
+      let currentTask = 'Standby';
+      if(p.assignedPatientId){
+        currentTask = `Patient Care — ${String(p.assignedPatientId).slice(-4)}`;
+      } else if(driverCert && personHasCert(p, driverCert)){
+        currentTask = 'Driver/Operator';
+      } else if(unitId){
+        currentTask = 'Crew Member';
+      }
+      return {
+        personId: p.id, name: p.name, rank: p.rank || '',
+        stationId: p.stationId, stationName: station?.name || '',
+        apparatusId: unitId || null, apparatusName,
+        currentTask
+      };
+    });
 }

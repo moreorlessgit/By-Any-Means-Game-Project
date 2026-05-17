@@ -102,10 +102,12 @@ Phase 5 introduces individual named personnel, certifications, crew composition 
 **Playtest cadence:** Full system ships before player playtests. Sub-phases below are engineering chunks, not delivery milestones.
 
 - **5A** — Unit List + Unit Details modals + dispatch center unit prefixes (pure UI) ✅
-- **5B** — Career personnel + cert taxonomy + crew slot rules + min/ideal crew dispatch gating
-- **5C** — Training system + career shifts + ranks + cashflow integration
-- **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits
-- **5E** — Stats, career history, NIMS/ICS officer ratios, Database Health panel, polish
+- **5B** — Career personnel + cert taxonomy + crew slot rules + min/ideal crew dispatch gating ✅
+- **5C** — Training system + career shifts + ranks + cashflow integration ✅
+- **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits ✅
+- **5E** — Stats, career history, NIMS/ICS officer ratios, Database Health panel, polish ✅
+
+**Phase 5 complete.** Personnel substrate ready for the post-Phase-5 call resolution overhaul.
 
 **Multiplayer integration:** Personnel records stay private to the owning player. On shared calls (Phase 4C), only aggregated crew composition is broadcast (e.g. "Engine 5 with 4 crew: 1 D/O, 2 FF1, 1 FF1/EMT").
 
@@ -120,7 +122,7 @@ See **docs/Phase5.md** for full design, **docs/data-lifecycle.md** for OSM cache
 
 ---
 
-## Phase 7 — Water Supply and Incdi
+## Phase 7 — Water Supply and Incident Overhaul
 
 - Wet hydrant and dry hydrant placement by player
 - Tanker shuttle logic for areas without hydrant coverage

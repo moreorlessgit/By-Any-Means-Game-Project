@@ -10,13 +10,15 @@ Phase 5 introduces individual named personnel, certifications, crew composition 
 
 ## Sub-Phase Breakdown
 
-| Sub-phase | Scope | Notes |
+| Sub-phase | Scope | Status |
 |---|---|---|
-| **5A** | Unit List window/modal + Unit Details window/modal + dispatch center unit prefixes | Pure UI work; can ship early with placeholder data since no mid-phase playtest |
-| **5B** | Career personnel + certification taxonomy + crew slot rules + min/ideal crew dispatch gating | Establishes the personnel data model and cert/cap gating before dispatch |
-| **5C** | Training system + career shifts + ranks + cashflow integration (salaries, training costs) | Economic side of personnel |
-| **5D** | Volunteer system: home/work via OSM (with DB cache), direct-to-scene response, PPE rules, availability/schedules, auto-migration on ESN edits | Heaviest sub-phase; depends on `osm_building_cache` table and ESN-edit invalidation per docs/data-lifecycle.md |
-| **5E** | Stats tracking, career history, NIMS/ICS officer ratios, Database Health panel additions for personnel cleanup, polish | Closes out the phase with quality-of-life and admin tools |
+| **5A** | Unit List window/modal + Unit Details window/modal + dispatch center unit prefixes | ✅ Complete |
+| **5B** | Career personnel + certification taxonomy + crew slot rules + min/ideal crew dispatch gating | ✅ Complete |
+| **5C** | Training system + career shifts + ranks + cashflow integration (salaries, training costs) | ✅ Complete |
+| **5D** | Volunteer system: home/work via OSM (with DB cache), direct-to-scene response, PPE rules, availability/schedules, auto-migration on ESN edits | ✅ Complete |
+| **5E** | Stats tracking, career history, NIMS/ICS officer ratios, Database Health panel, span-of-control banner, on-scene roster, personnel patient-stabilization | ✅ Complete |
+
+**Persistence note:** Per the planning session for the 5C/5D/5E batch, every new Phase 5 entity (personnel fields, station shifts, ESN OSM cache, stats, history) lives in the save JSON blob (`state_json` on `PrivateWorldSave`). The real Prisma tables sketched in `docs/backend-architecture.md` (personnel, certifications, osm_building_cache) remain deferred until Phase 4B forces global-world persistence.
 
 Within sub-phases, sequence is: **data model → business logic → UI hookup**. Don't over-invest in polish or empty-state UX for intermediate sub-phases — the only "real" surface is the post-5E whole.
 

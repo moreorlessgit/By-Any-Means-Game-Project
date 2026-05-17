@@ -207,6 +207,17 @@ function _finishDrawESN() {
       _applyTooltipStyle(polygon, esn.color, esn.labelSize);
       polygon.on('click', () => openESNModal(esn.id));
       esn.polygon = polygon;
+      // Phase 5D — polygon changed, so the per-ESN OSM building cache is now
+      // stale (its candidates may no longer fall inside the new shape). Purge
+      // and let the next read lazy-refetch. Then auto-migrate volunteers
+      // whose homes now fall outside coverage.
+      if(typeof purgeBuildingCacheForESN === 'function') purgeBuildingCacheForESN(esn.id);
+      if(typeof autoMigrateVolunteersForESN === 'function'){
+        autoMigrateVolunteersForESN(esn.id).then(() => {
+          if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+          if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+        });
+      }
       setStatus(`✅ ESN "${esn.name}" shape updated.`);
       openESNModal(editId);
     }
@@ -337,8 +348,22 @@ function openESNModal(esnId) {
   // Show "Edit Shape" button only when editing an existing ESN
   const editShapeBtn = document.getElementById('esn-edit-shape-btn');
   if (editShapeBtn) editShapeBtn.style.display = existing ? '' : 'none';
+  // Phase 5D — same visibility rule for "Rebuild Building Cache"
+  const rebuildBtn = document.getElementById('esn-rebuild-osm-btn');
+  if (rebuildBtn) rebuildBtn.style.display = existing ? '' : 'none';
   document.getElementById('esn-modal').classList.add('open');
   setTimeout(() => document.getElementById('esn-name-input').focus(), 40);
+}
+
+// Phase 5D — Rebuild the volunteer building cache for a single ESN. Calls
+// fetchBuildingsForESN(force=true). Provides progress feedback via setStatus.
+async function _esnRebuildBuildingCache(esnId){
+  if(!esnId || typeof fetchBuildingsForESN !== 'function') return;
+  const esn = esns.find(e => e.id === esnId);
+  if(!esn) return;
+  setStatus(`Rebuilding OSM building cache for ${esn.name}…`);
+  await fetchBuildingsForESN(esnId, true);
+  // Status line is set by fetchBuildingsForESN itself.
 }
 
 function closeESNModal() {
@@ -584,6 +609,15 @@ function confirmESNModal() {
   if(typeof renderStationList === 'function')       renderStationList();
   if(typeof renderUnitList === 'function')          renderUnitList();
   if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
+  // Phase 5D — assignment changes can also strand volunteers (e.g. a station
+  // dropped from coverage means its volunteers' homes may no longer be valid).
+  // Coords didn't change so we don't purge the OSM cache; just trigger migration.
+  if(editId && typeof autoMigrateVolunteersForESN === 'function'){
+    autoMigrateVolunteersForESN(editId).then(() => {
+      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+    });
+  }
   setStatus(`✅ ESN "${name}" saved.`);
 }
 
@@ -1443,7 +1477,13 @@ function getESNSaveData() {
   return esns.map(e => ({
     id: e.id, name: e.name, coords: e.coords,
     assignments: e.assignments, inService: e.inService,
-    color: e.color, labelSize: e.labelSize
+    color: e.color, labelSize: e.labelSize,
+    // Phase 5D — volunteer home/work building cache. Lives in the save blob
+    // (consistent with Phase 5 persistence rule). TTL is 30 real-life days
+    // (Date.now()-based) per docs/data-lifecycle.md. Distinct from the
+    // separate _osmCache used by spawn (line 754) — different shape, different
+    // purpose, both intentionally non-clashing field names.
+    osmBuildingCache: e.osmBuildingCache || null
   }));
 }
 

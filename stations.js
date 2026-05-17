@@ -265,7 +265,11 @@ function confirmStation(){
     units:[firstUnit], marker, upgrades:[], inService:true,
     preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
     stationType:   'career',        // Phase 5B — career | combination | volunteer
-    idealCrewWaitMs: null           // Phase 5B — station-level override (null = inherit global)
+    idealCrewWaitMs: null,          // Phase 5B — station-level override (null = inherit global)
+    // Phase 5C — custom shift templates owned by this station (in addition to
+    // BAM_CONFIG.shiftTemplates built-ins). Each entry mirrors the built-in
+    // shape: { id, label, cycleDays, onPattern }. Empty = use built-ins only.
+    shifts: []
   };
 
   stations.push(station);
@@ -693,6 +697,7 @@ function recreateStation(s){
     preferredDCId:   s.preferredDCId   || null,       // Phase 5A
     stationType:     s.stationType     || 'career',   // Phase 5B — defaults career on legacy saves
     idealCrewWaitMs: s.idealCrewWaitMs ?? null,       // Phase 5B — null = inherit global
+    shifts:          s.shifts          || [],         // Phase 5C — custom shift templates
     _holdingCells: s._holdingCells || undefined,
     units: s.units.map(u => ({
       ...u, inService: u.inService !== false,

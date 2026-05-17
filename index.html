@@ -881,6 +881,10 @@
             <option value="status">Sort: Status</option>
           </select>
         </div>
+        <!-- Phase 5C — Career salary summary bar. Updated by renderPersonnelTab(). -->
+        <div id="personnel-salary-summary" style="padding:5px 12px;flex-shrink:0;
+                    border-bottom:1px solid var(--border);background:rgba(255,255,255,0.02);
+                    font-size:.74rem;color:var(--muted);"></div>
         <div class="sb-scroll" id="personnel-list-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
           <div class="empty-msg">No personnel hired yet. Place a station to seed a starter roster, or use Add Person.</div>
         </div>
@@ -905,6 +909,8 @@
           <div class="ops-subtab"        id="ops-stab-esns"      onclick="switchOpsSubTab('esns')">ESN Zones</div>
           <div class="ops-subtab"        id="ops-stab-plans"     onclick="switchOpsSubTab('plans')">Response Plans</div>
           <div class="ops-subtab"        id="ops-stab-boxalarms" onclick="switchOpsSubTab('boxalarms')">Box Alarms</div>
+          <!-- Phase 5E — admin tools panel (OSM cache, orphan inspector, volunteer reset, world reset) -->
+          <div class="ops-subtab"        id="ops-stab-dbhealth"  onclick="switchOpsSubTab('dbhealth')">Database Health</div>
         </div>
         <!-- DC sub-pane — Dispatch Centers only -->
         <div id="ops-sub-dcs" class="ops-sub-pane" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
@@ -940,6 +946,12 @@
           </div>
           <div class="sb-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
             <div id="ba-list"><div class="empty-msg">No box alarms yet.</div></div>
+          </div>
+        </div>
+        <!-- Phase 5E — Database Health sub-pane. Rendered by dbhealth.js. -->
+        <div id="ops-sub-dbhealth" class="ops-sub-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+          <div class="sb-scroll" id="dbhealth-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
+            <div class="empty-msg">Loading database health…</div>
           </div>
         </div>
       </div>
@@ -1212,6 +1224,12 @@
       <button class="btn-secondary" onclick="closeESNModal()">Cancel</button>
       <button class="btn-sm" id="esn-edit-shape-btn" style="display:none;padding:9px 14px;"
         onclick="startEditESNShape(document.getElementById('esn-modal').dataset.editId)">Edit Shape</button>
+      <!-- Phase 5D — Rebuild Building Cache: purge + refetch OSM buildings for
+           this ESN. Non-destructive; existing personnel keep their homes. Only
+           shown when editing an existing ESN. -->
+      <button class="btn-sm" id="esn-rebuild-osm-btn" style="display:none;padding:9px 14px;"
+        title="Re-query OpenStreetMap for buildings in this ESN (homes / commercial / industrial / retail). Non-destructive — existing personnel keep their homes."
+        onclick="_esnRebuildBuildingCache(document.getElementById('esn-modal').dataset.editId)">Rebuild Building Cache</button>
       <button class="btn-primary gold" onclick="confirmESNModal()">Save ESN</button>
     </div>
   </div>
@@ -1405,6 +1423,8 @@
 <script src="stations.js"></script>
 <script src="units.js"></script>
 <script src="personnel.js"></script>
+<script src="volunteers.js"></script>
+<script src="dbhealth.js"></script>
 <script src="esn.js"></script>
 <script src="hospitals.js"></script>
 <script src="criminals.js"></script>
@@ -1432,7 +1452,7 @@ let selectedUnitsForDispatch = new Set();
 let _overrideUnderstaffed = new Set();
 let responsePlans = [];  // { id, name, requirements: [['engine'], ...] }
 let _activeTransportRows = [];  // per-row assignments in Transport tab
-let _activeDMTab = 'dispatch';  // 'dispatch' | 'transport' — active tab in dispatch modal
+let _activeDMTab = 'dispatch';  // 'dispatch' | 'transport' | 'personnel' (Phase 5E) — active tab in dispatch modal
 let pendingTransports = [];     // [{id, suspect, facility, queuedAt}] — awaiting player dispatch assignment
 
 // ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
@@ -1552,8 +1572,10 @@ function switchOpsTab(tab){
 
 function switchOpsSubTab(sub){
   _activeOpsSubTab = sub;
-  ['dcs','esns','plans','boxalarms'].forEach(s => {
-    document.getElementById('ops-stab-'+s).classList.toggle('active', s===sub);
+  // Phase 5E — added 'dbhealth' sub-tab.
+  ['dcs','esns','plans','boxalarms','dbhealth'].forEach(s => {
+    const tabEl = document.getElementById('ops-stab-'+s);
+    if(tabEl) tabEl.classList.toggle('active', s===sub);
     const pane = document.getElementById('ops-sub-'+s);
     if(pane) pane.style.display = s===sub ? 'flex' : 'none';
   });
@@ -1561,6 +1583,7 @@ function switchOpsSubTab(sub){
   if(sub === 'esns')      renderESNList();
   if(sub === 'plans')     renderResponsePlanList();
   if(sub === 'boxalarms') renderBoxAlarmList();
+  if(sub === 'dbhealth' && typeof renderDatabaseHealthPanel === 'function') renderDatabaseHealthPanel();
 }
 
 // Response plan and box alarm search filters for the ops modal
@@ -1837,20 +1860,44 @@ function renderDispatchBody(inc, mCfg){
   const body = document.getElementById('dm-body');
   let html = '';
 
-  // ── Tab bar (Dispatch / Transport) — always shown
+  // ── Tab bar (Dispatch / Transport / Personnel) — always shown
   const dTab = _activeDMTab==='dispatch';
+  const tTab = _activeDMTab==='transport';
+  const pTab = _activeDMTab==='personnel';
   html += `<div style="display:flex;border-bottom:1px solid var(--border);margin:-12px -16px 12px;padding:0;">
     <div style="flex:1;padding:8px 12px;text-align:center;font-size:.8rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
       border-bottom:2px solid ${dTab?'var(--accent)':'transparent'};color:${dTab?'var(--accent)':'var(--muted)'};"
       onclick="switchDMTab('dispatch')">Dispatch</div>
     <div style="flex:1;padding:8px 12px;text-align:center;font-size:.8rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
-      border-bottom:2px solid ${!dTab?'var(--ems)':'transparent'};color:${!dTab?'var(--ems)':'var(--muted)'};"
+      border-bottom:2px solid ${tTab?'var(--ems)':'transparent'};color:${tTab?'var(--ems)':'var(--muted)'};"
       onclick="switchDMTab('transport')">🚑 Transport</div>
+    <div style="flex:1;padding:8px 12px;text-align:center;font-size:.8rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
+      border-bottom:2px solid ${pTab?'var(--gold)':'transparent'};color:${pTab?'var(--gold)':'var(--muted)'};"
+      onclick="switchDMTab('personnel')">🧑‍🚒 Personnel</div>
   </div>`;
+
+  // Phase 5E — Span-of-Control banner. Visible across all tabs whenever there
+  // is at least one responder on scene. Tooltip explains the tier in plain
+  // English and how to fix it. Universal — not size-scaled.
+  if(typeof getSpanOfControlForIncident === 'function'){
+    const soc = getSpanOfControlForIncident(inc.id);
+    if(soc.tierKey && soc.tierKey !== 'none'){
+      const ratioTxt = soc.officerCount === 0 ? `${soc.subordinateCount}:0 (no officers)` : `${soc.officerCount}:${soc.subordinateCount}`;
+      html += `<div title="${(soc.tooltip || '').replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 10px;background:${soc.color}22;border:1px solid ${soc.color};border-radius:4px;font-size:.78rem;cursor:help;">
+        <span style="color:${soc.color};font-weight:700;">⛑ ${soc.label}</span>
+        <span style="color:var(--muted);">· Officer:Subordinates ${ratioTxt}</span>
+      </div>`;
+    }
+  }
 
   // ── Transport tab pane
   if(_activeDMTab === 'transport'){
     body.innerHTML = html + renderTransportTab(inc);
+    return;
+  }
+  // ── Personnel tab pane (Phase 5E)
+  if(_activeDMTab === 'personnel'){
+    body.innerHTML = html + _renderPersonnelDispatchTab(inc);
     return;
   }
 
@@ -2443,6 +2490,23 @@ function onUnitArrived(unit, inc){
     renderIncidentList();
     setStatus(`✅ ${unit.name} on scene at ${inc.label}`);
     _refreshDispatchModalIfOpen(inc.id);
+    // Phase 5E — credit every personnel currently assigned to this unit for
+    // arriving on scene. Category (fire/ems/police) is inferred from the
+    // mission key prefix when available.
+    if(typeof recordPersonStat === 'function' && typeof personnel !== 'undefined'){
+      const mKey = inc.missionKey || '';
+      const catKey = mKey.startsWith('fire_') ? 'fireCalls'
+                   : mKey.startsWith('ems_')  ? 'emsCalls'
+                   : (mKey.startsWith('police_') || mKey.startsWith('crime_')) ? 'policeCalls'
+                   : null;
+      personnel.forEach(p => {
+        if(p.currentAssignment?.unitId !== unit.id) return;
+        recordPersonStat(p.id, 'callsResponded', 1, {
+          type: 'on_scene', summary: `On scene: ${inc.label || inc.missionKey}`, incidentId: inc.id
+        });
+        if(catKey) recordPersonStat(p.id, catKey, 1, null);
+      });
+    }
   }
 }
 
@@ -3539,7 +3603,16 @@ function renderCashflowModal(){
   if(!body) return;
   const totalIn  = cashflowLog.filter(e=>e.amount>0).reduce((s,e)=>s+e.amount,0);
   const totalOut = cashflowLog.filter(e=>e.amount<0).reduce((s,e)=>s+e.amount,0);
-  let html = `<div style="display:flex;gap:20px;margin-bottom:12px;flex-wrap:wrap;padding:4px 0;">
+  // Phase 5C — next salary-cycle estimate, surfaced so the player can budget
+  // ahead of the deduction. Reads getSalaryDailyFor across career personnel.
+  const salaryEst = (typeof estimateNextSalaryCycle === 'function')
+    ? estimateNextSalaryCycle() : { totalDaily:0, count:0 };
+  const salaryHeader = salaryEst.totalDaily > 0
+    ? `<div style="margin-bottom:12px;padding:8px 10px;background:rgba(232,67,26,0.08);border:1px solid rgba(232,67,26,0.25);border-radius:4px;font-size:.82rem;">
+        🗓️ <b>Next salary cycle:</b> <span style="color:var(--accent);">-$${salaryEst.totalDaily.toLocaleString()}</span> across <b>${salaryEst.count}</b> career personnel · deducts at end of each game-day
+      </div>`
+    : '';
+  let html = `${salaryHeader}<div style="display:flex;gap:20px;margin-bottom:12px;flex-wrap:wrap;padding:4px 0;">
     <div class="hstat"><div class="v" style="font-size:1rem;">$${money.toLocaleString()}</div><div class="l">Balance</div></div>
     <div class="hstat"><div class="v" style="font-size:1rem;color:var(--green);">+$${totalIn.toLocaleString()}</div><div class="l">Total In</div></div>
     <div class="hstat"><div class="v" style="font-size:1rem;color:var(--accent);">-$${Math.abs(totalOut).toLocaleString()}</div><div class="l">Total Out</div></div>
@@ -4068,6 +4141,15 @@ async function loadSettings(){
     if(s.avlColors) avlColors={...avlColors,...s.avlColors};
     if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
     if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
+    // Phase 5D — restore volunteer layer toggle state.
+    if(s.volunteerLayerVisibility && typeof volunteerLayerVisibility !== 'undefined'){
+      Object.assign(volunteerLayerVisibility, s.volunteerLayerVisibility);
+      // Sync the checkboxes in the layer panel (defensive — panel may not be in DOM yet).
+      const rChk = document.getElementById('vol-resp-chk'); if(rChk) rChk.checked = !!volunteerLayerVisibility.responders;
+      const hChk = document.getElementById('vol-home-chk'); if(hChk) hChk.checked = !!volunteerLayerVisibility.homes;
+      const wChk = document.getElementById('vol-work-chk'); if(wChk) wChk.checked = !!volunteerLayerVisibility.works;
+      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+    }
   }catch(e){
     console.error('Failed to load settings:', e.message);
   }
@@ -4331,6 +4413,18 @@ function _tickGameClock(){
   if(gameSpeed>0){
     gameSeconds+=gameSpeed;
     if(gameSeconds>=86400){ gameSeconds-=86400; gameDay++; }
+  }
+  // Phase 5C — once per game-day rollover, deduct career salaries from the player's
+  // money and emit a consolidated [SALARIES] cashflow line. Safe no-op on worlds
+  // with no career personnel and on the first tick after world load.
+  if(typeof tickSalaryDeductions === 'function') tickSalaryDeductions();
+  // Phase 5E — additive personnel-driven patient stabilization. Stacks onto
+  // the existing per-unit tickPatientStabilization (defined later in this file)
+  // via the same `pat.stabilizeProgress` field, so UI bars and the >=1
+  // stabilized threshold work uniformly across both sources. Named distinctly
+  // to avoid the global-scope name collision.
+  if(gameSpeed > 0 && typeof tickPersonnelStabilization === 'function'){
+    tickPersonnelStabilization(gameSpeed);
   }
   const h=Math.floor(gameSeconds/3600);
   const m=Math.floor((gameSeconds%3600)/60);
@@ -4599,6 +4693,7 @@ function buildSaveData(){
       preferredDCId: s.preferredDCId || null,        // Phase 5A — DC override
       stationType:   s.stationType   || 'career',    // Phase 5B — career | combination | volunteer
       idealCrewWaitMs: s.idealCrewWaitMs ?? null,    // Phase 5B — station-level override (null = inherit global)
+      shifts:        s.shifts        || [],          // Phase 5C — custom shift templates owned by station
       _holdingCells: s._holdingCells || null,
       units:s.units.map(u=>({
         id:u.id,name:u.name,typeKey:u.typeKey, inService:u.inService,
@@ -4747,7 +4842,28 @@ async function loadFromSlot(name){
     responsePlans=data.responsePlans||[];
     cashflowLog=data.cashflowLog||[];
     // Phase 5B — hydrate personnel roster. Defaults to [] on pre-5B saves (back-compat).
-    personnel = (data.personnel || []).map(p => ({ ...p, status: p.status || 'available', currentAssignment: null }));
+    // Phase 5C — backfill rankKey / shiftId / salaryAnnual on legacy 5B records so
+    // promote/salary surfaces work without the player having to touch each person.
+    personnel = (data.personnel || []).map(p => {
+      const certs = p.certs || [];
+      const rankKey = p.rankKey
+        || (typeof _defaultRankKeyFromCerts === 'function'
+              ? _defaultRankKeyFromCerts(certs, p.preference)
+              : null);
+      return {
+        ...p,
+        status:            p.status || 'available',
+        currentAssignment: null,
+        rankKey:           rankKey,
+        shiftId:           p.shiftId      ?? null,
+        salaryAnnual:      p.salaryAnnual ?? (p.type === 'volunteer'
+                              ? 0
+                              : (typeof _deriveSalaryAnnual === 'function' ? _deriveSalaryAnnual(rankKey) : 0)),
+        // Phase 5E — backfill stats + history for legacy records.
+        stats:   p.stats   || (typeof _emptyStats === 'function' ? _emptyStats() : {}),
+        history: p.history || []
+      };
+    });
     data.stations?.forEach(s=>recreateStation(s));
     loadESNData(data.esns);
     loadDCData(data.dispatchCenters);
@@ -4768,6 +4884,9 @@ async function loadFromSlot(name){
     renderPendingTransportBadge();
 
     window.api.activePointer.set(window._activeWorldId, name);
+    // Phase 5C — sync the salary-day marker to the loaded gameDay so the next
+    // tick doesn't back-bill the player for the gap between save and load.
+    if(typeof resetSalaryCycleMarker === 'function') resetSalaryCycleMarker();
     updateMoney(0); renderStationList(); renderIncidentList(); renderStats();
     renderResponsePlanList(); renderBoxAlarmList(); _tickGameClock();
     closeSaveModal();
@@ -5181,6 +5300,11 @@ const LayerControl=L.Control.extend({
       <label><input type="checkbox" checked onchange="setDCLayerVisible(this.checked)"/> Dispatch Centers</label>
       <label><input type="checkbox" checked onchange="setUnitLabelsVisible(this.checked)"/> Unit Labels</label>
       <label><input type="checkbox" id="station-labels-chk" onchange="setStationLabelsVisible(this.checked)"/> Station Labels</label>
+      <!-- Phase 5D — three independent volunteer layer toggles. Defaults from
+           volunteers.js (responders ON, homes OFF, works OFF). -->
+      <label><input type="checkbox" id="vol-resp-chk" checked onchange="setVolunteerLayerVisible('responders', this.checked)"/> Volunteer Responders</label>
+      <label><input type="checkbox" id="vol-home-chk" onchange="setVolunteerLayerVisible('homes', this.checked)"/> Volunteer Home Locations</label>
+      <label><input type="checkbox" id="vol-work-chk" onchange="setVolunteerLayerVisible('works', this.checked)"/> Volunteer Work Locations</label>
     </div>`;
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);
