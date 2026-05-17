@@ -824,6 +824,7 @@
       <div class="ops-tabs" style="flex-shrink:0;">
         <div class="ops-tab active" id="opstab-stations"    onclick="switchOpsTab('stations')">Stations</div>
         <div class="ops-tab"        id="opstab-units"       onclick="switchOpsTab('units')">Units</div>
+        <div class="ops-tab"        id="opstab-personnel"   onclick="switchOpsTab('personnel')">Personnel</div>
         <div class="ops-tab"        id="opstab-facilities"  onclick="switchOpsTab('facilities')">Facilities</div>
         <div class="ops-tab"        id="opstab-operations"  onclick="switchOpsTab('operations')">Operations</div>
       </div>
@@ -858,6 +859,30 @@
         </div>
         <div class="sb-scroll" id="unit-list-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
           <div class="empty-msg">No units yet.</div>
+        </div>
+      </div>
+      <!-- ── Personnel pane (Phase 5B) ── -->
+      <div id="ops-pane-personnel" class="ops-pane" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
+        <div style="padding:8px 12px;flex-shrink:0;border-bottom:1px solid var(--border);
+                    display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <input type="text" id="personnel-search" placeholder="Search personnel…"
+                 style="flex:1;min-width:140px;padding:5px 8px;font-size:.82rem;"
+                 oninput="_personnelTabSetSearch(this.value)"/>
+          <select id="personnel-filter-station" style="font-size:.78rem;padding:5px 6px;"
+                  onchange="_personnelTabSetStation(this.value)"></select>
+          <select id="personnel-filter-cert" style="font-size:.78rem;padding:5px 6px;"
+                  onchange="_personnelTabSetCert(this.value)"></select>
+          <select id="personnel-sort" style="font-size:.78rem;padding:5px 6px;"
+                  onchange="_personnelTabSetSort(this.value)">
+            <option value="station">Sort: Station</option>
+            <option value="name">Sort: Name</option>
+            <option value="rank">Sort: Rank</option>
+            <option value="certs">Sort: Certs</option>
+            <option value="status">Sort: Status</option>
+          </select>
+        </div>
+        <div class="sb-scroll" id="personnel-list-scroll" style="flex:1;overflow-y:auto;padding:8px 12px;">
+          <div class="empty-msg">No personnel hired yet. Place a station to seed a starter roster, or use Add Person.</div>
         </div>
       </div>
       <!-- ── Facilities pane ── -->
@@ -1379,6 +1404,7 @@
 <script src="config.js"></script>
 <script src="stations.js"></script>
 <script src="units.js"></script>
+<script src="personnel.js"></script>
 <script src="esn.js"></script>
 <script src="hospitals.js"></script>
 <script src="criminals.js"></script>
@@ -1401,6 +1427,9 @@ let pendingLatLng= null;
 let _placingFacilityType = null;  // 'hospital' | 'county_jail' | 'state_correctional'
 let activeDispatchId = null;
 let selectedUnitsForDispatch = new Set();
+// Phase 5B — per-unit "Override understaffed" toggle for the current dispatch modal session.
+// Reset whenever the dispatch modal opens or closes. Driver hard-gate cannot be overridden.
+let _overrideUnderstaffed = new Set();
 let responsePlans = [];  // { id, name, requirements: [['engine'], ...] }
 let _activeTransportRows = [];  // per-row assignments in Transport tab
 let _activeDMTab = 'dispatch';  // 'dispatch' | 'transport' — active tab in dispatch modal
@@ -1507,8 +1536,8 @@ function closeOpsModal(){
 
 function switchOpsTab(tab){
   _activeOpsTab = tab;
-  // Phase 5A — added 'units' tab between Stations and Facilities
-  ['stations','units','facilities','operations'].forEach(t => {
+  // Phase 5A — added 'units' tab; Phase 5B — added 'personnel' tab
+  ['stations','units','personnel','facilities','operations'].forEach(t => {
     const tabEl = document.getElementById('opstab-'+t);
     if(tabEl) tabEl.classList.toggle('active', t===tab);
     const pane = document.getElementById('ops-pane-'+t);
@@ -1516,6 +1545,7 @@ function switchOpsTab(tab){
   });
   if(tab === 'stations')   renderStationList();
   if(tab === 'units')      renderUnitList();
+  if(tab === 'personnel' && typeof renderPersonnelTab === 'function') renderPersonnelTab();
   if(tab === 'facilities') renderFacilitiesSidebarList();
   if(tab === 'operations'){ renderDCList(); renderESNList(); }
 }
@@ -1773,6 +1803,7 @@ function openDispatch(incId){
   activeDispatchId = incId;
   _activeDMTab = 'dispatch';
   selectedUnitsForDispatch = new Set(inc.units);
+  _overrideUnderstaffed = new Set();    // Phase 5B — reset override toggles each open
 
   const mCfg = BAM_CONFIG.missions[inc.missionKey];
   document.getElementById('dm-title').textContent = inc.label;
@@ -1971,7 +2002,19 @@ function renderDispatchBody(inc, mCfg){
     const avail       = isAvail || isReturn || isDisp;
     const sel         = selectedUnitsForDispatch.has(unit.id);
     const utCfg       = BAM_CONFIG.unitTypes[unit.typeKey];
-    const cls         = (avail||sel) ? '' : ' unavailable';
+    // Phase 5B — staffing gate. Only evaluated for units that are otherwise dispatchable
+    // (avail or returning/disp). Driver gate is hard; min-crew gate is soft (override).
+    let p5bMin = null, p5bIdeal = null, p5bDriver = true, p5bUnderstaffed = false, p5bNoDriver = false;
+    if(avail && typeof hasMinimumCrew === 'function'){
+      p5bMin   = hasMinimumCrew(unit.id);
+      p5bIdeal = hasIdealCrew(unit.id);
+      p5bDriver = p5bMin.hasDriver;
+      p5bNoDriver     = !p5bDriver;
+      p5bUnderstaffed = p5bDriver && !p5bMin.ok;
+    }
+    const overridden  = _overrideUnderstaffed.has(unit.id);
+    const blockedByCrew = p5bNoDriver || (p5bUnderstaffed && !overridden);
+    const cls         = (avail && !blockedByCrew) || sel ? '' : ' unavailable';
     const selCls      = sel ? ' selected' : '';
     const rowStyle    = isDisp ? ' style="border-left:3px solid #f59e0b;"' : '';
     // For returning units: compute ETA to this call from current position
@@ -1991,17 +2034,37 @@ function renderDispatchBody(inc, mCfg){
       :                                'IN USE';
     // Phase 5A — DC-prefixed display name; ℹ︎ button opens Unit Details without selecting.
     const dispNameAvail = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(unit, station) : unit.name;
+    // Phase 5B — staffing badge + per-row Override checkbox.
+    let staffingBadge = '', overrideUI = '';
+    if(p5bNoDriver){
+      const dCert = BAM_CONFIG.certifications?.[BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert]?.label || 'driver';
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(232,67,26,.18);color:var(--accent);border:1px solid var(--accent);padding:1px 6px;border-radius:9px;margin-left:4px;">🚫 No ${dCert.replace(/\s+EVOC.*$/,'')} driver</span>`;
+    } else if(p5bUnderstaffed){
+      const missingTxt = typeof _formatMissing === 'function' ? _formatMissing(p5bMin.missing) : '';
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(232,67,26,.18);color:var(--accent);border:1px solid var(--accent);padding:1px 6px;border-radius:9px;margin-left:4px;">🔴 Needs ${missingTxt}</span>`;
+      overrideUI = `<label style="display:inline-flex;gap:4px;align-items:center;font-size:.66rem;color:var(--muted);margin-top:2px;cursor:pointer;"
+                       onclick="event.stopPropagation();">
+        <input type="checkbox" ${overridden ? 'checked' : ''}
+          onclick="event.stopPropagation(); _toggleOverrideUnderstaffed('${unit.id}');"/> Override (respond understaffed)
+      </label>`;
+    } else if(p5bMin && p5bMin.ok && !p5bIdeal.ok){
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(251,191,36,.18);color:var(--gold);border:1px solid var(--gold);padding:1px 6px;border-radius:9px;margin-left:4px;">🟡 Min only</span>`;
+    } else if(p5bMin && p5bIdeal.ok){
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(34,197,94,.18);color:var(--green);border:1px solid var(--green);padding:1px 6px;border-radius:9px;margin-left:4px;">🟢 Ideal</span>`;
+    }
     html += `<div class="dm-unit-row${cls}${selCls}"${rowStyle}
-      onclick="toggleDispatchUnit('${unit.id}','${avail||sel}')"
+      onclick="toggleDispatchUnit('${unit.id}','${(avail && !blockedByCrew)||sel}')"
       id="dur_${unit.id}">
       <div>
         <div class="dm-unit-name">${utCfg.icon} ${dispNameAvail}
           <span style="font-size:.7rem;color:var(--muted);cursor:pointer;margin-left:4px;"
             onclick="event.stopPropagation(); openUnitDetails('${unit.id}')"
             title="Unit details">ℹ︎</span>
+          ${staffingBadge}
         </div>
         <div class="dm-unit-station">${station.name} · <span style="background:${unitTypeColors[unit.typeKey]||utCfg.color||'#555'};color:#fff;padding:1px 7px;border-radius:10px;font-size:.75rem;font-weight:600;">${utCfg.label}</span></div>
         <div style="font-size:.8rem;color:var(--muted)">Tags: ${utCfg.tags.join(', ')}</div>
+        ${overrideUI}
       </div>
       <div class="dm-unit-eta" style="text-align:right;line-height:1.4;">${etaTxt}</div>
     </div>`;
@@ -2018,8 +2081,16 @@ function applyAutoDispatch(requirements){
   const inc = incidents.find(x=>x.id===activeDispatchId);
   if(!inc) return;
 
+  // Phase 5B — auto-dispatch always SKIPS understaffed and no-driver units. No
+  // auto-override; the player can manually select+override one at a time if
+  // they really need to send an understaffed apparatus.
   const sorted = getAllUnits()
     .filter(({unit}) => (unit.status==='available'||unit.status==='returning') && unit.inService!==false)
+    .filter(({unit}) => {
+      if(typeof hasMinimumCrew !== 'function') return true;
+      const m = hasMinimumCrew(unit.id);
+      return m.hasDriver && m.ok;
+    })
     .map(({station,unit}) => ({
       station, unit,
       dist: haversineKm(station.lat,station.lng,inc.lat,inc.lng)
@@ -2053,6 +2124,13 @@ function applyAutoDispatch(requirements){
     }
   });
 
+  // Phase 5B — if some slots went unfilled because every nearby unit was understaffed,
+  // surface that to the player so they know to either crew a unit or override manually.
+  const filledCount = used.size;
+  const slotCount   = requirements.length;
+  if(filledCount < slotCount){
+    setStatus(`⚠️ ${slotCount - filledCount} unit slot${slotCount-filledCount===1?'':'s'} could not be auto-filled — no nearby unit with minimum crew.`);
+  }
   renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
 }
 
@@ -2064,17 +2142,57 @@ function toggleDispatchUnit(unitId, available){
   if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
 }
 
+// Phase 5B — toggles the "Override understaffed" flag for a unit in the current
+// dispatch session. Auto-selects the unit when override is enabled, deselects
+// when disabled (player can re-select manually if they intend to leave it).
+function _toggleOverrideUnderstaffed(unitId){
+  if(_overrideUnderstaffed.has(unitId)){
+    _overrideUnderstaffed.delete(unitId);
+    selectedUnitsForDispatch.delete(unitId);
+  } else {
+    _overrideUnderstaffed.add(unitId);
+    selectedUnitsForDispatch.add(unitId);
+  }
+  const inc = incidents.find(x=>x.id===activeDispatchId);
+  if(inc) renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+}
+
 function closeDispatch(){
   document.getElementById('dispatch-modal').classList.remove('open');
   activeDispatchId = null;
   selectedUnitsForDispatch = new Set();
+  _overrideUnderstaffed = new Set();
 }
 
 function executeDispatch(){
   const inc = incidents.find(x=>x.id===activeDispatchId);
   if(!inc) return;
 
-  const toDispatch = [...selectedUnitsForDispatch].filter(uid=>!inc.units.includes(uid));
+  let toDispatch = [...selectedUnitsForDispatch].filter(uid=>!inc.units.includes(uid));
+  // Phase 5B — pre-flight crew gate. Driver missing is a hard block; below-min
+  // crew is allowed only with the per-row Override toggle (or for units in
+  // `dispatched`/`returning` state where personnel are already committed).
+  if(typeof hasMinimumCrew === 'function'){
+    const blocked = [];
+    toDispatch = toDispatch.filter(uid => {
+      const found = getAllUnits().find(({unit}) => unit.id === uid);
+      if(!found) return false;
+      // Skip the gate for units mid-call — they already have their crew assigned and
+      // are being redirected, not freshly staffed.
+      if(found.unit.status === 'dispatched' || found.unit.status === 'returning') return true;
+      const m = hasMinimumCrew(uid);
+      if(!m.hasDriver){ blocked.push({uid, reason:'no qualified driver'}); return false; }
+      if(!m.ok && !_overrideUnderstaffed.has(uid)){ blocked.push({uid, reason:'below minimum crew'}); return false; }
+      return true;
+    });
+    if(blocked.length){
+      const label = blocked.map(b => {
+        const found = getAllUnits().find(({unit}) => unit.id === b.uid);
+        return (found ? (typeof getUnitDisplayName === 'function' ? getUnitDisplayName(found.unit, found.station) : found.unit.name) : b.uid) + ' (' + b.reason + ')';
+      }).join(', ');
+      setStatus(`⚠️ Cannot dispatch: ${label}`);
+    }
+  }
   if(!toDispatch.length){ closeDispatch(); return; }
 
   // Stagger departures by 3 game-seconds per unit (scaled to real time by gameSpeed)
@@ -2089,6 +2207,11 @@ function executeDispatch(){
       const isReturning  = unit.status==='returning';
       const isDispatched = unit.status==='dispatched';
       if(!isAvailable&&!isReturning&&!isDispatched) return;  // on scene — skip
+      // Phase 5B — mark crew as busy on this call so they don't get picked for another unit.
+      // Skip this for mid-call redirects; their crew is already assigned.
+      if(isAvailable && typeof assignPersonnelToUnit === 'function'){
+        assignPersonnelToUnit(uid, inc.id);
+      }
 
       // For returning or enroute units: capture position and stop current animation
       let fromLatLng=null;
@@ -3787,6 +3910,9 @@ function onUnitReturned(unit){
   unit.status='available';
   unit.incidentId=null;
   unit._returnRemSec=0;
+  // Phase 5B — release the crew that was assigned to this unit on the call.
+  // Their status goes back to 'available' for future dispatches.
+  if(typeof releasePersonnelFromUnit === 'function') releasePersonnelFromUnit(unit.id);
   renderStationList();
   setStatus(`${unit.name} returned to station.`);
 }
@@ -4470,11 +4596,20 @@ function buildSaveData(){
     stations: stations.map(s=>({
       id:s.id,name:s.name,type:s.type,lat:s.lat,lng:s.lng,
       upgrades:s.upgrades, inService:s.inService,
+      preferredDCId: s.preferredDCId || null,        // Phase 5A — DC override
+      stationType:   s.stationType   || 'career',    // Phase 5B — career | combination | volunteer
+      idealCrewWaitMs: s.idealCrewWaitMs ?? null,    // Phase 5B — station-level override (null = inherit global)
       _holdingCells: s._holdingCells || null,
       units:s.units.map(u=>({
         id:u.id,name:u.name,typeKey:u.typeKey, inService:u.inService,
         // Reset in-flight statuses on save — units resume as available on load
-        status:(['dispatched','transporting','offloading'].includes(u.status))?'available':u.status
+        status:(['dispatched','transporting','offloading'].includes(u.status))?'available':u.status,
+        // Phase 5B — staffing config per unit. nulls = inherit crewDefaults / station / global.
+        crewMin:             u.crewMin             ?? null,
+        crewIdeal:           u.crewIdeal           ?? null,
+        pinnedPersonnelIds:  u.pinnedPersonnelIds  || [],
+        idealCrewWaitMs:     u.idealCrewWaitMs     ?? null,
+        staffingPolicy:      u.staffingPolicy      || 'wait_then_min'
       }))
     })),
     esns:           getESNSaveData(),
@@ -4485,6 +4620,8 @@ function buildSaveData(){
     jails:          getJailSaveData(),
     suspects:       getSuspectSaveData(),
     cashflowLog:    cashflowLog.slice(0, 200),
+    // Phase 5B — career personnel roster. Volunteers (5D) will share this array.
+    personnel:      (typeof personnel !== 'undefined' ? personnel : []).map(p => ({...p, currentAssignment:null, status: p.status==='busy' ? 'available' : p.status})),
   };
 }
 
@@ -4609,6 +4746,8 @@ async function loadFromSlot(name){
     gameSeconds=data.gameSeconds!=null?data.gameSeconds:(data.gameMinutes!=null?data.gameMinutes*60:8*3600);
     responsePlans=data.responsePlans||[];
     cashflowLog=data.cashflowLog||[];
+    // Phase 5B — hydrate personnel roster. Defaults to [] on pre-5B saves (back-compat).
+    personnel = (data.personnel || []).map(p => ({ ...p, status: p.status || 'available', currentAssignment: null }));
     data.stations?.forEach(s=>recreateStation(s));
     loadESNData(data.esns);
     loadDCData(data.dispatchCenters);

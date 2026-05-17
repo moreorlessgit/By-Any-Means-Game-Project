@@ -392,9 +392,10 @@ function _renderUnitDetails(){
           <div style="color:var(--muted);">Type</div><div>${_escUnitHtml(ut.label || unit.typeKey)}</div>
           <div style="color:var(--muted);">Tags</div><div>${_escUnitHtml(tags)}</div>
           <div style="color:var(--muted);">Provider</div><div>${_escUnitHtml(ut.providerLevel ? ut.providerLevel.toUpperCase() : '—')}</div>
-          <div style="color:var(--muted);">Personnel</div><div>${ut.personnel || '—'} <span style="color:var(--muted);font-size:.72rem;">(staffing in Phase 5B)</span></div>
           <div style="color:var(--muted);">Transport</div><div>${_escUnitHtml(loadText)}</div>
         </div>
+
+        ${typeof renderUnitCrewRosterHTML === 'function' ? renderUnitCrewRosterHTML(unit.id) : ''}
 
         <div class="section-title" style="margin-top:14px;">Dispatch Center</div>
         <div style="font-size:.82rem;">

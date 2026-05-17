@@ -1141,19 +1141,149 @@ const BAM_CONFIG = {
   },
 
   // ---------------------------------------------------------------------------
-  // PERSONNEL CERTIFICATIONS
-  // Used to staff units. Each unit needs personnel meeting minimums.
+  // PERSONNEL CERTIFICATIONS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // Every responder holds zero or more cert codes. Certs drive unit staffing
+  // (which apparatus can roll with which crew) and determine training costs.
+  //
+  //   label     — display name shown in UI
+  //   category  — 'fire' | 'ems' | 'police' | 'shared' (used for grouping/filters)
+  //   cost      — flat $ to train an existing responder OR to add at hire time
+  //   prereqs   — cert codes that must be held before this one can be earned
+  //   satisfies — other cert codes this one automatically counts as. Equivalency
+  //               walks are transitive (paramedic→aemt→emt→emr is one chain).
+  //               These propagate through `expandCertSet()` in personnel.js so a
+  //               Paramedic can fill an "EMT" crew slot, FF2 can fill an "FF1"
+  //               slot, Large EVOC can fill a "Small EVOC" slot, etc.
   // ---------------------------------------------------------------------------
   certifications: {
-    ff1:      { label: 'Firefighter I',     category: 'fire'   },
-    ff2:      { label: 'Firefighter II',    category: 'fire'   },
-    driver:   { label: 'Driver/Operator',   category: 'fire'   },
-    emt:      { label: 'EMT-Basic',         category: 'ems'    },
-    aemt:     { label: 'AEMT',              category: 'ems'    },
-    medic:    { label: 'Paramedic',         category: 'ems'    },
-    leo:      { label: 'Police Officer',    category: 'police' },
-    leo_sup:  { label: 'Police Supervisor', category: 'police' }
+    // ── Fire core ────────────────────────────────────────────────────────────
+    fire_support:        { label: 'Fireground Support',     category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    fire_exterior:       { label: 'Exterior Firefighter',   category: 'fire',   cost: 1500, prereqs: [],                         satisfies: ['fire_support'] },
+    ff1:                 { label: 'Firefighter 1',          category: 'fire',   cost: 3000, prereqs: [],                         satisfies: ['fire_support','fire_exterior'] },
+    ff2:                 { label: 'Firefighter 2',          category: 'fire',   cost: 4500, prereqs: ['ff1'],                    satisfies: ['fire_support','fire_exterior','ff1'] },
+    // EVOC: small covers ambulances and chief cars; large covers heavy apparatus and satisfies small.
+    evoc_small:          { label: 'Small Vehicle EVOC',     category: 'fire',   cost:  800, prereqs: [],                         satisfies: [] },
+    evoc_large:          { label: 'Large Vehicle EVOC',     category: 'fire',   cost: 1500, prereqs: ['evoc_small'],             satisfies: ['evoc_small'] },
+    pump_ops_1:          { label: 'Pump Operator 1',        category: 'fire',   cost: 1500, prereqs: ['evoc_large'],             satisfies: [] },
+    pump_ops_2:          { label: 'Pump Operator 2',        category: 'fire',   cost: 3000, prereqs: ['pump_ops_1'],             satisfies: ['pump_ops_1'] },
+    aerial_operator:     { label: 'Aerial Operator',        category: 'fire',   cost: 4000, prereqs: ['evoc_large'],             satisfies: [] },
+    fire_officer_1:      { label: 'Fire Officer 1',         category: 'fire',   cost: 3500, prereqs: ['ff1'],                    satisfies: [] },
+    fire_officer_2:      { label: 'Fire Officer 2',         category: 'fire',   cost: 5000, prereqs: ['fire_officer_1'],         satisfies: ['fire_officer_1'] },
+    hazmat_awareness:    { label: 'HazMat Awareness',       category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    hazmat_ops:          { label: 'HazMat Operations',      category: 'fire',   cost: 1500, prereqs: ['hazmat_awareness'],       satisfies: ['hazmat_awareness'] },
+    hazmat_tech:         { label: 'HazMat Technician',      category: 'fire',   cost: 5000, prereqs: ['hazmat_ops'],             satisfies: ['hazmat_awareness','hazmat_ops'] },
+    basic_vehicle_rescue:{ label: 'Basic Vehicle Rescue',   category: 'fire',   cost: 1000, prereqs: [],                         satisfies: [] },
+    rescue_tech:         { label: 'Rescue Technician',      category: 'fire',   cost: 4000, prereqs: ['basic_vehicle_rescue'],   satisfies: ['basic_vehicle_rescue'] },
+    wildland_ff:         { label: 'Wildland Firefighter',   category: 'fire',   cost: 1500, prereqs: [],                         satisfies: [] },
+    fire_police:         { label: 'Fire Police',            category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    // ── EMS ladder + specialties ─────────────────────────────────────────────
+    emr:                 { label: 'EMR',                    category: 'ems',    cost:  500, prereqs: [],                         satisfies: [] },
+    emt:                 { label: 'EMT',                    category: 'ems',    cost: 2000, prereqs: [],                         satisfies: ['emr'] },
+    aemt:                { label: 'AEMT',                   category: 'ems',    cost: 3500, prereqs: ['emt'],                    satisfies: ['emt','emr'] },
+    paramedic:           { label: 'Paramedic',              category: 'ems',    cost: 6000, prereqs: ['emt'],                    satisfies: ['aemt','emt','emr'] },
+    ccp:                 { label: 'Critical Care Paramedic',category: 'ems',    cost: 8000, prereqs: ['paramedic'],              satisfies: ['paramedic','aemt','emt','emr'] },
+    phrn:                { label: 'Prehospital RN',         category: 'ems',    cost: 8000, prereqs: [],                         satisfies: ['paramedic','aemt','emt','emr'] },
+    ems_supervisor:      { label: 'EMS Supervisor',         category: 'ems',    cost: 4000, prereqs: ['emt'],                    satisfies: [] },
+    tactical_ems:        { label: 'Tactical EMS',           category: 'ems',    cost: 5000, prereqs: ['emt'],                    satisfies: [] },
+    // ── Police ───────────────────────────────────────────────────────────────
+    patrol_officer:      { label: 'Patrol Officer',         category: 'police', cost: 2000, prereqs: [],                         satisfies: [] },
+    patrol_supervisor:   { label: 'Patrol Supervisor',      category: 'police', cost: 4000, prereqs: ['patrol_officer'],         satisfies: ['patrol_officer'] },
+    fto:                 { label: 'Field Training Officer', category: 'police', cost: 2500, prereqs: ['patrol_officer'],         satisfies: [] },
+    crash_investigation: { label: 'Crash Investigation',    category: 'police', cost: 2500, prereqs: ['patrol_officer'],         satisfies: [] },
+    k9_handler:          { label: 'K9 Handler',             category: 'police', cost: 3000, prereqs: ['patrol_officer'],         satisfies: [] },
+    swat:                { label: 'SWAT',                   category: 'police', cost: 6000, prereqs: ['patrol_officer'],         satisfies: [] },
+    detective:           { label: 'Detective',              category: 'police', cost: 5000, prereqs: ['patrol_officer'],         satisfies: [] },
+    crisis_negotiator:   { label: 'Crisis Negotiator',      category: 'police', cost: 4000, prereqs: ['patrol_officer'],         satisfies: [] },
+    bomb_squad:          { label: 'Bomb Squad',             category: 'police', cost: 7000, prereqs: ['patrol_officer'],         satisfies: [] },
+    // ── Shared across services ──────────────────────────────────────────────
+    bls_first_aid:       { label: 'BLS / First Aid',        category: 'shared', cost:  300, prereqs: [],                         satisfies: [] },
+    drone_operator:      { label: 'Drone Operator',         category: 'shared', cost: 2000, prereqs: [],                         satisfies: [] }
   },
+
+  // ---------------------------------------------------------------------------
+  // CREW DEFAULTS PER UNIT TYPE  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // Defines the minimum and ideal cert "slots" each apparatus needs to roll.
+  //
+  //   driverCert — Hard gate. Apparatus literally cannot move unless at least
+  //                ONE assigned crew member holds this cert (or an equivalent
+  //                via `satisfies`). When null, no driver gate is applied
+  //                (used for aircraft where pilot certification is its own thing).
+  //   min        — Cert slots required to dispatch at minimum staffing.
+  //                Crew-slot rule: one person fills exactly one slot, even if
+  //                multi-cert. So `{evoc_large:1, ff1:1}` requires TWO distinct
+  //                people. The greedy matcher in personnel.js handles which
+  //                person fills which slot using cert equivalency.
+  //   ideal      — Cert slots the player wants on every response. Falling
+  //                short of ideal does NOT block dispatch — it kicks off the
+  //                ideal-wait timer per station/unit/call policy.
+  //
+  // Per-unit overrides (unit.crewMin / unit.crewIdeal) take precedence when set.
+  //
+  // Ambulance rule (player-confirmed 2026-05-17): 2-crew minimum is enforced
+  // by min having TWO distinct slots — driver + patient-care provider.
+  // ---------------------------------------------------------------------------
+  crewDefaults: {
+    // ── Fire ─────────────────────────────────────────────────────────────────
+    engine:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, fire_officer_1:1, ff1:2 } },
+    pumper_tanker:     { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, fire_officer_1:1, ff1:2 } },
+    tanker:            { driverCert: 'evoc_large', min: { evoc_large:1 },                   ideal: { evoc_large:1, ff1:1 } },
+    ladder:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, aerial_operator:1, fire_officer_1:1, ff1:2 } },
+    brush_truck:       { driverCert: 'evoc_small', min: { evoc_small:1, fire_exterior:1 },  ideal: { evoc_small:1, wildland_ff:1, fire_exterior:1 } },
+    rescue:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, ff1:2, rescue_tech:1 } },
+    rescue_engine:     { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, ff1:2, rescue_tech:1 } },
+    // ── EMS ──────────────────────────────────────────────────────────────────
+    als_ambulance:     { driverCert: 'evoc_small', min: { evoc_small:1, paramedic:1 },      ideal: { evoc_small:1, paramedic:1 } },
+    bls_ambulance:     { driverCert: 'evoc_small', min: { evoc_small:1, emt:1 },            ideal: { evoc_small:1, emt:1 } },
+    fly_car:           { driverCert: 'evoc_small', min: { evoc_small:1, emt:1 },            ideal: { evoc_small:1, paramedic:1 } },
+    // ── Police ───────────────────────────────────────────────────────────────
+    patrol:            { driverCert: 'evoc_small', min: { evoc_small:1, patrol_officer:1 }, ideal: { evoc_small:1, patrol_officer:1 } },
+    supervisor:        { driverCert: 'evoc_small', min: { evoc_small:1, patrol_supervisor:1 }, ideal: { evoc_small:1, patrol_supervisor:1 } },
+    k9:                { driverCert: 'evoc_small', min: { evoc_small:1, k9_handler:1 },     ideal: { evoc_small:1, k9_handler:1 } },
+    sheriff_transport: { driverCert: 'evoc_small', min: { evoc_small:1, patrol_officer:1 }, ideal: { evoc_small:1, patrol_officer:2 } },
+    // ── Air Medical ──────────────────────────────────────────────────────────
+    // No driver gate for aircraft — pilot certification is parallel and out of scope for 5B.
+    helicopter:        { driverCert: null,         min: { paramedic:1 },                    ideal: { paramedic:1, ccp:1 } }
+  },
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL / DISPATCH POLICY DEFAULTS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // idealCrewWaitMs        — Global default time a unit will wait for ideal
+  //                          crew once min crew is met, before departing at
+  //                          minimum staffing. Overridable per-station and
+  //                          per-unit (station/unit `idealCrewWaitMs`).
+  // stationStaffingTypes   — Valid values for station.stationType. Career and
+  //                          combination are active in 5B; volunteer behavior
+  //                          (home/work locations, direct-to-scene) lands in 5D.
+  // personnelHireCostBase  — Flat onboarding cost per career responder, before
+  //                          any selected cert training costs are added.
+  // ---------------------------------------------------------------------------
+  idealCrewWaitMs:       10 * 60 * 1000,
+  stationStaffingTypes:  ['career','combination','volunteer'],
+  personnelHireCostBase: 2000,
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL NAME POOLS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // Used to auto-generate names for auto-staffed and batch-hired personnel.
+  // Players can rename any responder at any time.
+  // ---------------------------------------------------------------------------
+  firstNames: [
+    'James','John','Robert','Michael','William','David','Richard','Joseph','Thomas','Charles',
+    'Christopher','Daniel','Matthew','Anthony','Mark','Donald','Steven','Paul','Andrew','Joshua',
+    'Mary','Patricia','Jennifer','Linda','Elizabeth','Barbara','Susan','Jessica','Sarah','Karen',
+    'Nancy','Lisa','Margaret','Betty','Sandra','Ashley','Kimberly','Emily','Donna','Michelle',
+    'Kevin','Brian','Edward','Ronald','Timothy','Jason','Jeffrey','Ryan','Jacob','Gary'
+  ],
+  lastNames: [
+    'Smith','Johnson','Williams','Brown','Jones','Garcia','Miller','Davis','Rodriguez','Martinez',
+    'Hernandez','Lopez','Gonzalez','Wilson','Anderson','Thomas','Taylor','Moore','Jackson','Martin',
+    'Lee','Perez','Thompson','White','Harris','Sanchez','Clark','Ramirez','Lewis','Robinson',
+    'Walker','Young','Allen','King','Wright','Scott','Torres','Nguyen','Hill','Flores',
+    'Green','Adams','Nelson','Baker','Hall','Rivera','Campbell','Mitchell','Carter','Roberts'
+  ],
 
   // ---------------------------------------------------------------------------
   // SERVICE TAG LOOKUP

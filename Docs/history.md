@@ -254,3 +254,30 @@ Pure-UI sub-phase of Phase 5. The personnel data model (Phase 5B) doesn't exist 
 *Phase 5A is the UI skeleton.* No playtest yet — per agreement, Phase 5 ships as a whole at the end of 5E.
 
 *Last updated: 2026-05-15. Phase 5A complete — Unit List, Unit Details, DC prefixes, per-station DC override.*
+
+---
+
+## Phase 5B — Career Personnel, Certifications, Crew Slot Gating ✅
+
+Personnel data model and crew gating layer. Volunteers are still 5D; this sub-phase is career-only. Per agreement, no mid-phase playtest — the staffing surfaces shipped here will be evaluated as part of the full Phase 5 whole.
+
+- **`personnel.js`** (new, root, ~1,185 lines) — owns the `personnel[]` top-level array, cert taxonomy helpers, the greedy crew matcher, auto-staff/batch-hire economics, the Personnel tab in the Operations Modal, and the per-station / per-unit roster summary renderers. Loaded after `units.js`, before `esn.js`.
+- **Cert taxonomy expanded in `config.js`** — `BAM_CONFIG.certifications` rebuilt from the 8-entry Phase 5A stub into the full fire / EMS / police / shared ladder from Phase5.md. Each cert now carries `label`, `category`, `cost`, `prereqs[]`, and `satisfies[]`. `satisfies` is walked transitively by `expandCertSet()` so Paramedic counts as AEMT/EMT/EMR, FF2 counts as FF1/Exterior/Support, Large EVOC counts as Small EVOC, HazMat Tech counts as Ops/Awareness, etc.
+- **Crew defaults in `config.js`** — New `BAM_CONFIG.crewDefaults` keyed by `unitTypes` id. Each entry has `driverCert` (hard gate cert that must be held by at least one crew member or the apparatus literally cannot move), `min` (slot map required to dispatch), and `ideal` (slot map for normal staffing). One person fills exactly one slot — even multi-cert responders count once — and the greedy matcher handles equivalency. Per-unit overrides via `unit.crewMin` / `unit.crewIdeal` take precedence.
+- **Policy defaults** — Added `idealCrewWaitMs` (global default 10 min), `stationStaffingTypes` (`career` / `combination` / `volunteer` — volunteer behavior lands in 5D), and `personnelHireCostBase` ($2,000 flat per career responder, on top of cert training costs). Name pools (`firstNames` / `lastNames`) added for auto-generated rosters; players can rename any responder anytime.
+- **Station schema additions** — `station.stationType` (`career` default), `station.idealCrewWaitMs` (null = inherit global). Cascaded into save/load and `recreateStation()` with legacy-save defaults so pre-5B saves load unchanged.
+- **Unit schema additions** — `unit.crewMin`, `unit.crewIdeal`, `unit.pinnedPersonnelIds[]`, `unit.idealCrewWaitMs`, `unit.staffingPolicy` (default `wait_then_min`). All default to inherit; nulls mean "use crewDefaults / station / global". Save/load round-trip clean.
+- **Starter roster on station create** — `generateStarterRoster()` auto-staffs newly built stations to ideal across all their units at no extra charge (player-confirmed flow). Cashflow modal logs the hire count. Volunteer/combination behavior lands in 5D.
+- **Personnel tab** — New top-level tab in the Operations Modal (Stations | Units | **Personnel** | Facilities | Operations). Filters: search (name/rank/cert), station dropdown, cert dropdown. Sort: by station, name, rank, certs, status.
+- **Add Person modal** — Single-hire and batch-hire flows. Cost = `personnelHireCostBase` + Σ selected cert costs. Hire is blocked if money is short. Player picks station, name (or auto-generate from name pools), preferred service (`fire` / `ems` / `either`), and starting certs.
+- **Crew matcher (`hasMinimumCrew` / `hasIdealCrew`)** — Greedy bipartite slot matcher. Returns `{ ok, hasDriver, missing }`. Equivalency-aware. Used everywhere staffing is evaluated.
+- **Dispatch modal staffing gate** — Each available unit row now shows a staffing badge: 🚫 No driver / 🔴 Needs (missing slots) / 🟡 Min only / 🟢 Ideal. **Driver missing is a hard block.** Below-min crew shows an "Override (respond understaffed)" checkbox per row that lets the player force-dispatch one unit at a time — auto-dispatch never auto-overrides. Mid-call redirects (units already `dispatched` / `returning`) skip the gate because their crew is already committed. `executeDispatch()` enforces the same gate as a pre-flight check.
+- **Auto-dispatch behavior** — Filters out understaffed and no-driver units. Surfaces `⚠️ N unit slot(s) could not be auto-filled` when nearby coverage is short on crew, so the player knows to crew up or override manually.
+- **Crew lifecycle hooks** — `assignPersonnelToUnit()` runs at dispatch and marks the matched crew `status='busy'` on the incident; `releasePersonnelFromUnit()` runs in `onUnitReturned()` and flips them back to `available`. Save data flushes busy → available on persist so save/reload doesn't strand crew.
+- **Manage Station modal additions** — Per-station personnel summary block (rendered via `renderManageStationPersonnelHTML()`) plus a per-unit staffing chip on every unit row. Unit Details modal now embeds the actual crew roster (via `renderUnitCrewRosterHTML()`), replacing the Phase-5A "(staffing in Phase 5B)" placeholder.
+- **Cascade on station delete** — `cascadeDeletePersonnelForStation(stationId, { force:true })` removes all personnel attached to the station and the status line reports the count alongside the refund. Lines up with the force-delete escape hatch in docs/data-lifecycle.md.
+- **Save schema (private worlds)** — `buildSaveData()` adds a top-level `personnel` array; `loadFromSlot()` hydrates it. Pre-5B saves load with `personnel = []` (back-compat). Station/unit staffing fields and `preferredDCId` now round-trip explicitly.
+
+*Phase 5B complete.* Next: 5C (training UI, career shifts, ranks, salary/training cashflow).
+
+*Last updated: 2026-05-17. Phase 5B complete — career personnel, full cert taxonomy, crew matcher, driver+min gating, Personnel tab.*

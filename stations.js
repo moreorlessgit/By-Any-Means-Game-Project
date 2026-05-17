@@ -253,17 +253,32 @@ function confirmStation(){
     status:'available', inService:true, _animGen:0,
     incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[],
     _returnRemSec:0,
+    // Phase 5B — staffing config defaults (null = inherit crewDefaults / station / global)
+    crewMin: null, crewIdeal: null,
+    pinnedPersonnelIds: [], idealCrewWaitMs: null,
+    staffingPolicy: 'wait_then_min'
   };
 
   const station = {
     id, name, type:_placingStationType,
     lat:pendingLatLng.lat, lng:pendingLatLng.lng,
     units:[firstUnit], marker, upgrades:[], inService:true,
-    preferredDCId: null   // Phase 5A — manual DC override (null = auto-pick)
+    preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
+    stationType:   'career',        // Phase 5B — career | combination | volunteer
+    idealCrewWaitMs: null           // Phase 5B — station-level override (null = inherit global)
   };
 
   stations.push(station);
   updateMoney(-total);
+  // Phase 5B — auto-staff the starter roster to ideal at no extra charge. This
+  // is the player-confirmed "seed roster bundled with station creation" flow.
+  // Volunteers (5D) will override this behavior for volunteer/combination types.
+  if(typeof generateStarterRoster === 'function'){
+    const hired = generateStarterRoster(id, { mode:'create' });
+    if(hired.length){
+      logCashflow(0, `Starter roster: ${hired.length} responder${hired.length===1?'':'s'} at ${name}`);
+    }
+  }
   closeStationModal();
   renderStationList();
   renderStats();
@@ -381,6 +396,7 @@ function _renderManageBody(){
     <button class="btn-sm" onclick="renameStation()">Rename</button>
   </div>
   ${_renderManageDCRow(s)}
+  ${typeof renderManageStationPersonnelHTML === 'function' ? renderManageStationPersonnelHTML(s) : ''}
   <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
 
   if(!s.units.length){
@@ -394,6 +410,8 @@ function _renderManageBody(){
     // sees what the unit currently looks like with its DC prefix applied.
     const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
     const showPrefixHint = dispName !== u.name;
+    // Phase 5B — staffing chip (🟢 Ready / 🟡 Min only / 🔴 Understaffed / 🚫 No driver)
+    const staffingChip = (typeof renderUnitStaffingChip === 'function') ? renderUnitStaffingChip(u) : '';
     html += `<div class="manage-unit-row" draggable="true" data-unit-id="${u.id}"
                ondragstart="_unitDragStart(event)"
                ondragover="_unitDragOver(event)"
@@ -403,6 +421,7 @@ function _renderManageBody(){
       <div class="manage-unit-name">
         <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
         ${showPrefixHint ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px;">Display: ${dispName.replace(/"/g,'&quot;')}</div>` : ''}
+        ${staffingChip ? `<div style="margin-top:3px;">${staffingChip}</div>` : ''}
       </div>
       <span class="manage-unit-label">${utCfg?.label || u.typeKey}</span>
       ${statusBadge}
@@ -596,12 +615,21 @@ function deleteStation(){
   });
   s.marker?.remove();
   const refund = BAM_CONFIG.economy.stationCost[s.type] || 0;
+  // Phase 5B — cascade personnel deletion. Force=true so any responder marked
+  // busy on a call gets released along with the station (matches the station
+  // force-delete escape hatch in docs/data-lifecycle.md).
+  let cascadedPersonnel = 0;
+  if(typeof cascadeDeletePersonnelForStation === 'function'){
+    const res = cascadeDeletePersonnelForStation(s.id, { force: true });
+    cascadedPersonnel = res.removed.length;
+  }
   stations = stations.filter(x => x.id !== _activeManageStation);
   updateMoney(refund);
   if(refund > 0) logCashflow(refund, `Station sold: ${s.name}`);
   closeManageStation();
   renderStationList(); renderStats(); renderIncidentList();
-  setStatus(`🗑 Station deleted. Refund: +$${refund.toLocaleString()}`);
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  setStatus(`🗑 Station deleted${cascadedPersonnel ? ` (${cascadedPersonnel} personnel released)` : ''}. Refund: +$${refund.toLocaleString()}`);
 }
 
 // Purchases a station upgrade and installs it.
@@ -662,11 +690,19 @@ function recreateStation(s){
   const station = {
     ...s, marker,
     inService: s.inService !== false,
-    preferredDCId: s.preferredDCId || null,  // Phase 5A
+    preferredDCId:   s.preferredDCId   || null,       // Phase 5A
+    stationType:     s.stationType     || 'career',   // Phase 5B — defaults career on legacy saves
+    idealCrewWaitMs: s.idealCrewWaitMs ?? null,       // Phase 5B — null = inherit global
     _holdingCells: s._holdingCells || undefined,
     units: s.units.map(u => ({
       ...u, inService: u.inService !== false,
       status: ['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
+      // Phase 5B — staffing config defaults. nulls = inherit crewDefaults / station / global.
+      crewMin:            u.crewMin            ?? null,
+      crewIdeal:          u.crewIdeal          ?? null,
+      pinnedPersonnelIds: u.pinnedPersonnelIds || [],
+      idealCrewWaitMs:    u.idealCrewWaitMs    ?? null,
+      staffingPolicy:     u.staffingPolicy     || 'wait_then_min',
       _animGen:0, _returnRemSec:0,
       incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
     }))
