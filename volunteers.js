@@ -265,14 +265,20 @@ function _pickCoverageESN(person){
   const station = stations.find(s => s.id === person.stationId);
   if(!station) return null;
   const service = station.type; // 'fire' | 'ems' | 'police'
+  // Phase 5D bug-fix — exclude ESNs flagged as not-residential (typically
+  // interstate corridors or rural pass-through zones). If everything in the
+  // station's coverage is excluded, fall back to any non-excluded ESN that
+  // geographically contains the station before giving up.
+  const notExcluded = e => !e.excludeFromGeneration;
   const candidates = esns.filter(e => {
+    if(!notExcluded(e)) return false;
     const ids = e.assignments?.[service] || [];
     return ids.includes(station.id);
   });
   if(!candidates.length){
-    // Fallback: any ESN that geographically contains the station, regardless
-    // of explicit assignment.
-    const geo = esns.filter(e => e.coords && _pointInPolygon([station.lat, station.lng], e.coords));
+    const geo = esns.filter(e =>
+      notExcluded(e) && e.coords && _pointInPolygon([station.lat, station.lng], e.coords)
+    );
     if(geo.length) return geo[Math.floor(Math.random() * geo.length)];
     return null;
   }
@@ -337,8 +343,17 @@ function isVolunteerAvailableNow(person){
   if(!person) return false;
   if(person.type !== 'volunteer') return true;
   if(person.isSuperResponder) return true;
-  const a = person.availability;
-  if(!a) return true; // legacy / not configured = available
+  let a = person.availability;
+  if(!a){
+    // Phase 5D bug-fix — legacy volunteers without availability data must still
+    // roll for reliability rather than auto-passing. Lazily seed defaults so
+    // every subsequent check uses the same value (helps with debugging).
+    a = person.availability = {
+      defaultAvailable: true,
+      reliability:      BAM_CONFIG.volunteerDefaultReliability ?? 0.8,
+      schedule:         []
+    };
+  }
   // Schedule check (optional). When schedule entries exist, the volunteer is
   // only considered available within those windows.
   if(Array.isArray(a.schedule) && a.schedule.length){
@@ -431,7 +446,11 @@ async function autoMigrateVolunteersForESN(esnId){
     // Is the home still inside ANY of this station's coverage ESNs?
     const station = stations.find(s => s.id === p.stationId);
     if(!station){ skipped.push(p.id); continue; }
+    // Phase 5D bug-fix — exclude flagged-out ESNs from the "still covered"
+    // check, so flipping the exclude flag on a polygon migrates the volunteers
+    // who currently live inside it to an eligible polygon.
     const coverageEsns = esns.filter(e => {
+      if(e.excludeFromGeneration) return false;
       const ids = e.assignments?.[station.type] || [];
       return ids.includes(station.id);
     });
@@ -541,42 +560,186 @@ function setVolunteerLayerVisible(layer, visible){
 // pressing the "Set via map click" button in the Personnel details modal.
 // The next map click consumes the active intent and stores the lat/lng.
 
-let _mapClickVolunteerTarget = null;  // { personId, kind: 'home'|'work' }
+let _mapClickVolunteerTarget = null;  // { personId, kind, returnToDetails }
 
 // Public: begin pick-on-map mode. Subsequent map click will set the location.
 // Call this from the personnel details modal handlers.
+// Phase 5D bug-fix: also closes every modal that would obscure the map (the
+// Personnel Details modal, plus the Ops modal underneath it), surfaces a
+// floating confirmation toolbar like the ESN draw flow, and remembers that
+// we need to reopen the Personnel Details modal once the pick lands.
 function beginVolunteerLocationPick(personId, kind){
   if(!['home','work'].includes(kind)) return;
-  _mapClickVolunteerTarget = { personId, kind };
+  _mapClickVolunteerTarget = { personId, kind, returnToDetails: true };
+
+  // Stash any open modal state we need to restore later. Then close everything
+  // so the map is visible. We track the Ops tab separately so reopening
+  // returns the player to where they were.
+  const opsModalEl = document.getElementById('ops-modal');
+  _mapClickVolunteerTarget._opsWasOpen = opsModalEl?.classList.contains('open') ? true : false;
+  _mapClickVolunteerTarget._opsTab     = (typeof _activeOpsTab !== 'undefined') ? _activeOpsTab : null;
+  if(typeof closePersonnelDetails === 'function') closePersonnelDetails();
+  if(opsModalEl) opsModalEl.classList.remove('open');
+
   if(typeof setStatus === 'function'){
     setStatus(`Click the map to set ${kind} for this volunteer (Esc to cancel).`);
   }
+  _showVolPickToolbar(kind);
   if(typeof map !== 'undefined' && map){
-    // Cursor crosshair while pick is active.
     const c = map.getContainer();
     if(c) c.style.cursor = 'crosshair';
     map.once('click', _onMapClickForVolunteerPick);
   }
 }
 
+// Build / show the floating "Click map to set [kind]" confirmation bar. It
+// mirrors the styling and behavior of #esn-draw-toolbar so the two map-pick
+// flows feel consistent.
+function _showVolPickToolbar(kind){
+  let bar = document.getElementById('vol-pick-toolbar');
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'vol-pick-toolbar';
+    // Mirror the ESN draw toolbar's look: top-center floating chrome with a
+    // gold top border and monospace font.
+    bar.style.cssText = `
+      position:fixed;top:52px;left:50%;transform:translateX(-50%);
+      z-index:2000;background:var(--panel2);
+      border:1px solid var(--gold);border-top:2px solid var(--gold);
+      border-radius:0 0 4px 4px;padding:7px 14px;
+      display:flex;align-items:center;gap:12px;
+      box-shadow:0 4px 20px rgba(0,0,0,.6);
+      font-family:var(--mono);font-size:.8rem;
+    `;
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = `
+    <span style="color:var(--gold);">📍 Click map to set ${kind}</span>
+    <button class="btn-sm danger" onclick="cancelVolunteerLocationPick()">✕ Cancel (Esc)</button>
+  `;
+  bar.style.display = 'flex';
+}
+
+function _hideVolPickToolbar(){
+  const bar = document.getElementById('vol-pick-toolbar');
+  if(bar) bar.style.display = 'none';
+}
+
+// Public: cancel an in-progress pick. Wired to Esc + the toolbar's Cancel.
+function cancelVolunteerLocationPick(){
+  const target = _mapClickVolunteerTarget;
+  _mapClickVolunteerTarget = null;
+  _hideVolPickToolbar();
+  if(typeof map !== 'undefined' && map){
+    const c = map.getContainer();
+    if(c) c.style.cursor = '';
+    map.off('click', _onMapClickForVolunteerPick);
+  }
+  if(target){
+    _restoreModalsAfterVolPick(target);
+    if(typeof setStatus === 'function') setStatus('Volunteer location pick cancelled.');
+  }
+}
+
+// Reopens whatever modals were dismissed when the pick began.
+function _restoreModalsAfterVolPick(target){
+  if(!target) return;
+  if(target._opsWasOpen && typeof openOpsModal === 'function'){
+    openOpsModal(target._opsTab || 'personnel');
+  }
+  if(target.returnToDetails && target.personId && typeof openPersonnelDetails === 'function'){
+    openPersonnelDetails(target.personId);
+  }
+}
+
 function _onMapClickForVolunteerPick(e){
   const target = _mapClickVolunteerTarget;
   _mapClickVolunteerTarget = null;
+  _hideVolPickToolbar();
   if(typeof map !== 'undefined' && map){
     const c = map.getContainer();
     if(c) c.style.cursor = '';
   }
   if(!target) return;
   const p = personnel.find(x => x.id === target.personId);
-  if(!p) return;
+  if(!p){
+    _restoreModalsAfterVolPick(target);
+    return;
+  }
   const loc = { lat: e.latlng.lat, lng: e.latlng.lng, esnId: null, wayId: null, isFallback: false };
   if(target.kind === 'home') p.home = loc;
   else                       p.work = loc;
   p.isCustomized = true;
   p.playerEdited = true;
-  if(typeof setStatus === 'function') setStatus(`Volunteer ${target.kind} set for ${p.name}.`);
+  if(typeof setStatus === 'function') setStatus(`✅ Volunteer ${target.kind} set for ${p.name}.`);
   refreshVolunteerLocationMarkers();
   if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  _restoreModalsAfterVolPick(target);
+}
+
+// =============================================================================
+// VOLUNTEER STATION-RESPONSE ASSEMBLY  (Phase 5D bug-fix)
+// =============================================================================
+// When an apparatus is dispatched with volunteer crew, those volunteers must
+// travel from their home/work to the station before the apparatus can leave.
+// `triggerVolunteerStationResponse` animates each volunteer to the station
+// and returns a Promise that resolves once every volunteer has arrived OR the
+// per-volunteer maxResponseSec has elapsed (so a no-show doesn't deadlock the
+// call indefinitely).
+//
+// On resolution, every volunteer that successfully arrived has status promoted
+// from 'responding' → 'busy'. Volunteers who failed to arrive within the
+// window get unassigned (status='available', currentAssignment cleared) so
+// the caller can decide what to do (most likely: dispatch what showed up).
+function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
+  if(!Array.isArray(responders) || !responders.length) return Promise.resolve({ arrived: [], noShows: [] });
+  if(!stationLatLng) return Promise.resolve({ arrived: [], noShows: [] });
+  const speedMph     = opts.speedMph     || BAM_CONFIG.volunteerResponseSpeedMph || 35;
+  const maxRealMs    = opts.maxRealMs    || 60000; // safety so a misconfigured volunteer can't hang dispatch
+  const arrived = [];
+  const noShows = [];
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = () => {
+      if(settled) return;
+      settled = true;
+      resolve({ arrived, noShows });
+    };
+    const watchdog = setTimeout(() => {
+      // Anyone still not in `arrived` is a no-show.
+      responders.forEach(p => {
+        if(!arrived.includes(p.id)){
+          p.status = 'available';
+          p.currentAssignment = null;
+          noShows.push(p.id);
+        }
+      });
+      finish();
+    }, maxRealMs);
+    let arrivalsLeft = responders.length;
+    responders.forEach(p => {
+      // Pick a believable origin: explicit currentLocation > random home/work > station fallback.
+      const from = p.currentLocation
+        || (p.work && Math.random() < 0.4 ? { lat: p.work.lat, lng: p.work.lng } : null)
+        || (p.home ? { lat: p.home.lat, lng: p.home.lng } : null)
+        || stationLatLng;
+      dispatchVolunteer(p, stationLatLng, {
+        speedMph,
+        fromLatLng: from,
+        onArrive: () => {
+          if(settled) return;
+          arrived.push(p.id);
+          p.status = 'busy';
+          p.currentLocation = { lat: stationLatLng.lat, lng: stationLatLng.lng };
+          arrivalsLeft--;
+          if(arrivalsLeft <= 0){
+            clearTimeout(watchdog);
+            finish();
+          }
+        }
+      });
+    });
+  });
 }
 
 // =============================================================================

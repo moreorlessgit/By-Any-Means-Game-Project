@@ -1434,6 +1434,10 @@ const BAM_CONFIG = {
   osmCacheTtlMs:               30 * 24 * 60 * 60 * 1000,
   osmRebuildCooldownSec:       30,
   volunteerDefaultReliability: 0.8,
+  // volunteerResponseSpeedMph — Speed used to animate volunteers traveling
+  //                              from home/work to the station before the
+  //                              apparatus departs. Civilian POV speed.
+  volunteerResponseSpeedMph:   35,
   ambulanceDriverOnlyDefault:  false,
   directToSceneAllowedRoles: [
     'fire_officer_1','fire_officer_2',     // chiefs and officers

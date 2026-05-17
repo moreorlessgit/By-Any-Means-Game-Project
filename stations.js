@@ -111,6 +111,8 @@ function renderStationList(){
       const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
       // Pill text: show ETA on returning, destination on transporting/offloading
       let pillTxt = dispName;
+      // Phase 5D bug-fix — awaiting volunteer crew at station before depart
+      if(u.status === 'awaiting_crew') pillTxt = `${dispName} ⏳${u._awaitingCrewCount || 0}`;
       if(isRet)   pillTxt = `${dispName} ↩${formatETA(u._returnRemSec)}`;
       if(isTrans){
         if(isPickup)         pillTxt = `${dispName} 🚔📥`;
@@ -124,6 +126,7 @@ function renderStationList(){
       const cls = uOOS ? 'oos' : (isTrans||isOff ? 'transporting' : u.status);
       // Tooltip text
       let ttip = uOOS ? 'Out of service' : u.status;
+      if(u.status === 'awaiting_crew') ttip = `Awaiting ${u._awaitingCrewCount||0} volunteer${(u._awaitingCrewCount||0)===1?'':'s'} responding to station`;
       if(isRet)   ttip = `Returning — ${formatETA(u._returnRemSec)} to ST`;
       if(isTrans){
         // Resolve destination name across facility types
@@ -211,6 +214,12 @@ function openStationModal(type){
   document.getElementById('sm-title').textContent = `New ${typeLabel}`;
   document.getElementById('sm-name').value = '';
   document.getElementById('sm-unitname').value = '';
+  // Phase 5D bug-fix — reset staffing selector + pregenerate toggle to defaults
+  // each time the modal opens so a previous selection doesn't leak across.
+  const stTypeSel = document.getElementById('sm-stationtype');
+  if(stTypeSel) stTypeSel.value = 'career';
+  const preGen = document.getElementById('sm-pregenstaff');
+  if(preGen) preGen.checked = true;
 
   // Filter units to those compatible with this station's unitCategory
   const unitCategory = typeDef?.unitCategory || type;
@@ -235,6 +244,14 @@ function confirmStation(){
   const unitName    = document.getElementById('sm-unitname').value.trim();
   const unitTypeKey = document.getElementById('sm-unittype').value;
   if(!name || !unitName) return;
+
+  // Phase 5D bug-fix — read staffing selections from the create modal so the
+  // generated roster matches the player's intent up front (volunteer station →
+  // volunteer roster, career → career, etc.).
+  const stTypes  = BAM_CONFIG.stationStaffingTypes || ['career','combination','volunteer'];
+  const stTypeIn = document.getElementById('sm-stationtype')?.value || 'career';
+  const stationType = stTypes.includes(stTypeIn) ? stTypeIn : 'career';
+  const pregenStaff = document.getElementById('sm-pregenstaff')?.checked !== false;
 
   const stCost   = BAM_CONFIG.economy.stationCost[_placingStationType] || 0;
   const unitCost = BAM_CONFIG.unitTypes[unitTypeKey]?.cost || 0;
@@ -264,7 +281,7 @@ function confirmStation(){
     lat:pendingLatLng.lat, lng:pendingLatLng.lng,
     units:[firstUnit], marker, upgrades:[], inService:true,
     preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
-    stationType:   'career',        // Phase 5B — career | combination | volunteer
+    stationType,                    // Phase 5D — picked at creation time
     idealCrewWaitMs: null,          // Phase 5B — station-level override (null = inherit global)
     // Phase 5C — custom shift templates owned by this station (in addition to
     // BAM_CONFIG.shiftTemplates built-ins). Each entry mirrors the built-in
@@ -274,13 +291,13 @@ function confirmStation(){
 
   stations.push(station);
   updateMoney(-total);
-  // Phase 5B — auto-staff the starter roster to ideal at no extra charge. This
-  // is the player-confirmed "seed roster bundled with station creation" flow.
-  // Volunteers (5D) will override this behavior for volunteer/combination types.
-  if(typeof generateStarterRoster === 'function'){
+  // Phase 5D — pregenerate the starter roster only when the player asked for it.
+  // generateStarterRoster reads stationType and seeds career or volunteer (with
+  // home/work) accordingly.
+  if(pregenStaff && typeof generateStarterRoster === 'function'){
     const hired = generateStarterRoster(id, { mode:'create' });
     if(hired.length){
-      logCashflow(0, `Starter roster: ${hired.length} responder${hired.length===1?'':'s'} at ${name}`);
+      logCashflow(0, `Starter roster: ${hired.length} ${stationType === 'volunteer' ? 'volunteer' : 'responder'}${hired.length===1?'':'s'} at ${name}`);
     }
   }
   closeStationModal();

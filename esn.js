@@ -343,6 +343,10 @@ function openESNModal(esnId) {
   const lsEl = document.getElementById('esn-label-size');
   if (lsEl) lsEl.value = existing?.labelSize || 'md';
 
+  // Phase 5D bug-fix — exclude-from-generation toggle
+  const exEl = document.getElementById('esn-exclude-from-gen');
+  if (exEl) exEl.checked = !!existing?.excludeFromGeneration;
+
   _renderESNAssignUI(existing);
   _renderESNBoxAlarms(esnId);
   // Show "Edit Shape" button only when editing an existing ESN
@@ -562,6 +566,7 @@ function confirmESNModal() {
   const editId   = document.getElementById('esn-modal').dataset.editId;
   const color    = document.getElementById('esn-color-custom')?.value || '#f0a500';
   const labelSize = document.getElementById('esn-label-size')?.value || 'md';
+  const excludeFromGeneration = !!document.getElementById('esn-exclude-from-gen')?.checked;
 
   const assignments = { fire: [], ems: [], police: [] };
   // Only coverage checkboxes have data-svctype; the DC checkboxes don't, so this naturally skips them.
@@ -579,6 +584,7 @@ function confirmESNModal() {
       esn.color = color;
       esn.labelSize = labelSize;
       esn.assignments = assignments;
+      esn.excludeFromGeneration = excludeFromGeneration;
       esn.polygon?.setStyle({ color, fillColor: color });
       esn.polygon?.setTooltipContent(`<span style="color:${color};">${name}</span>`);
       _applyTooltipStyle(esn.polygon, color, labelSize);
@@ -593,6 +599,7 @@ function confirmESNModal() {
     }
   } else {
     const newESN = _createESN(name, [...drawCoords], assignments, color, labelSize);
+    if(newESN) newESN.excludeFromGeneration = excludeFromGeneration;
     drawCoords = [];
     // Assign to selected DC
     if(selectedDCId && newESN){
@@ -609,6 +616,9 @@ function confirmESNModal() {
   if(typeof renderStationList === 'function')       renderStationList();
   if(typeof renderUnitList === 'function')          renderUnitList();
   if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
+  // Phase 5E bug-fix — keep the Database Health panel in sync with the live
+  // ESN list (its OSM cache rows are keyed on esn.id).
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
   // Phase 5D — assignment changes can also strand volunteers (e.g. a station
   // dropped from coverage means its volunteers' homes may no longer be valid).
   // Coords didn't change so we don't purge the OSM cache; just trigger migration.
@@ -666,6 +676,7 @@ function deleteESN(id) {
   dispatchCenters.forEach(dc => { dc.assignedESNs = dc.assignedESNs.filter(eid => eid !== id); });
   renderESNList();
   renderDCList();
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
   setStatus('🗑 ESN deleted.');
 }
 

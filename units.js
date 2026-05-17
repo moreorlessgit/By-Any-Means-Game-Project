@@ -14,6 +14,7 @@ let _renameUnitConfirm   = null;   // unused — reserved for two-click rename
 let _unitListSort        = 'station';   // station | type | status | callsign
 let _unitListFilterType  = '';     // '' = all types
 let _unitListFilterStatus= '';     // '' = all statuses
+let _unitListFilterStation = '';   // Phase 5D bug-fix — '' = all stations
 let _unitListSearch      = '';     // free-text search
 
 // =============================================================================
@@ -136,6 +137,9 @@ function _getUnitListRows(){
   }));
 
   // Filters
+  if(_unitListFilterStation){
+    rows = rows.filter(r => r.station.id === _unitListFilterStation);
+  }
   if(_unitListFilterType){
     rows = rows.filter(r => r.unit.typeKey === _unitListFilterType);
   }
@@ -187,13 +191,14 @@ function _statusKey(unit){
 function _humanStatus(unit){
   if(unit.inService === false) return 'OUT OF SERVICE';
   switch(unit.status){
-    case 'available':    return 'Available';
-    case 'dispatched':   return 'Enroute';
-    case 'on_scene':     return 'On Scene';
-    case 'transporting': return 'Transporting';
-    case 'offloading':   return 'Offloading';
-    case 'returning':    return 'Returning';
-    default:             return (unit.status || 'available');
+    case 'available':      return 'Available';
+    case 'awaiting_crew':  return 'Crew Assembling';
+    case 'dispatched':     return 'Enroute';
+    case 'on_scene':       return 'On Scene';
+    case 'transporting':   return 'Transporting';
+    case 'offloading':     return 'Offloading';
+    case 'returning':      return 'Returning';
+    default:               return (unit.status || 'available');
   }
 }
 
@@ -221,6 +226,18 @@ function renderUnitList(){
       <option value="returning">Returning</option>
       <option value="oos">Out of Service</option>`;
     statusSel.dataset.populated = '1';
+  }
+  // Phase 5D bug-fix — station filter, rebuilt every render so newly-placed
+  // stations show up immediately (mirrors the personnel-tab dropdown fix).
+  const stSel = document.getElementById('unit-list-filter-station');
+  if(stSel){
+    const desired = _unitListFilterStation || stSel.value || '';
+    stSel.innerHTML = '<option value="">All stations</option>'
+      + (typeof stations !== 'undefined' ? stations : [])
+          .map(s => `<option value="${s.id}">${_escUnitHtml(s.name)}</option>`).join('');
+    if(desired && (typeof stations !== 'undefined' ? stations : []).some(s => s.id === desired)){
+      stSel.value = desired;
+    }
   }
 
   const rows = _getUnitListRows();
@@ -271,10 +288,11 @@ function renderUnitList(){
 }
 
 // Handlers for filter/sort/search inputs in the Units tab.
-function _unitListSetSort(v){    _unitListSort         = v; renderUnitList(); }
-function _unitListSetType(v){    _unitListFilterType   = v; renderUnitList(); }
-function _unitListSetStatus(v){  _unitListFilterStatus = v; renderUnitList(); }
-function _unitListSetSearch(v){  _unitListSearch       = v; renderUnitList(); }
+function _unitListSetSort(v){    _unitListSort           = v; renderUnitList(); }
+function _unitListSetType(v){    _unitListFilterType     = v; renderUnitList(); }
+function _unitListSetStatus(v){  _unitListFilterStatus   = v; renderUnitList(); }
+function _unitListSetStation(v){ _unitListFilterStation  = v; renderUnitList(); }
+function _unitListSetSearch(v){  _unitListSearch         = v; renderUnitList(); }
 
 // =============================================================================
 // UNIT DETAILS MODAL

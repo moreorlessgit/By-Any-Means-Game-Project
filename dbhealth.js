@@ -46,6 +46,17 @@ function renderDatabaseHealthPanel(){
   `;
 }
 
+// Phase 5E bug-fix — public hook other modules can call to refresh the panel
+// only if it's currently visible. Without this, adding an ESN / hiring a
+// volunteer mid-session left the DB Health panel showing a stale snapshot
+// until the player re-clicked the sub-tab.
+function refreshDatabaseHealthIfVisible(){
+  const pane = document.getElementById('ops-sub-dbhealth');
+  if(!pane) return;
+  if(pane.style.display === 'none') return;
+  renderDatabaseHealthPanel();
+}
+
 // ── OSM CACHE SECTION ───────────────────────────────────────────────────────
 
 function _renderOsmCacheSection(){
