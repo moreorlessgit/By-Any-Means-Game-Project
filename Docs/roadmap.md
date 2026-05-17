@@ -120,7 +120,7 @@ See **docs/Phase5.md** for full design, **docs/data-lifecycle.md** for OSM cache
 
 ---
 
-## Phase 7 — Water Supply
+## Phase 7 — Water Supply and Incdi
 
 - Wet hydrant and dry hydrant placement by player
 - Tanker shuttle logic for areas without hydrant coverage
@@ -151,3 +151,15 @@ See **docs/Phase5.md** for full design, **docs/data-lifecycle.md** for OSM cache
 - Major Feature - Police Units/stations Automatically Patrol ESNs they are assigned to. Car Numbers configurable per ESN. If unable to meet requirements, then split evenly. If still unable to meet requirements, then cars are allotted at random, and patrol between different ESNs assigned.
 - Major Feature - EMS Units can be staged at a location?
 - Bug - ALS PTs transportable by non-ALS units. Rendezvous System is the fix.
+
+---
+
+## Hosting Plan (Infrastructure)
+
+Not a feature phase, but tracked here for visibility.
+
+- **Current:** Local PC, LAN access only. See `docs/launch-guide.md` for daily operation.
+- **Near-term:** Migrate to **Railway Hobby plan** (~$5–10/mo) with a custom domain when ready — small-scale hosting for the player + a few friends. Backend + frontend + Postgres all on Railway. GitHub auto-deploys on push.
+- **Long-term / commercial:** Not committed. Significant architectural work would be needed before paying-customer scale — most notably **self-hosted OSRM and Overpass** (the public APIs aren't commercially usable). Other challenges: Redis adapter for Socket.IO horizontal scaling, sticky sessions, pgBouncer, payment processing, support overhead.
+
+Full detail (cost breakdown, scaling tiers, pre-flight checklist, decision criteria): **`docs/hosting-plan.md`**.
