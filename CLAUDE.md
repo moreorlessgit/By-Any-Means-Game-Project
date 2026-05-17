@@ -30,7 +30,7 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 
 ```
 Frontend (root):
-  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js
+  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js, units.js
   CLAUDE.md, docs/, .gitignore
 
 Backend (server/):

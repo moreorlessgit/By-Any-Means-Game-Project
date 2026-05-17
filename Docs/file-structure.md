@@ -12,6 +12,7 @@
   hospitals.js        — Hospital placement and management, patient transport
   prisons.js          — Jail and prison placement and management, prisoner transport
   stations.js         — Station, unit, and responder management
+  units.js            — Unit-level display layer: DC prefix resolution, Unit List tab, Unit Details modal (Phase 5A+)
   .gitignore          — Excludes server/.env and server/node_modules from git
   CLAUDE.md           — Project briefing and session instructions
   docs/               — Reference documentation (project-brief.md, history.md, roadmap.md, architecture.md, conventions.md, launch-guide.md, this file)
@@ -67,7 +68,8 @@ These will be created only when a system grows too large to logically live in an
 ### Phase 5 — Personnel
 
 ```
-  personnel.js        — Individual responder tracking, certifications, volunteer status
+  units.js            — ✅ LIVE (5A) — display layer + Unit List + Unit Details modal
+  personnel.js        — Individual responder tracking, certifications, volunteer status (Phase 5B+)
 ```
 
 ### Phase 6 — CAD

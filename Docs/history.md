@@ -235,4 +235,22 @@
 
 *Phase 4A complete.* Next: Phase 4B (groups, global stations/units, Socket.IO).
 
-*Last updated: 2026-05-14. Phase 4A Session 4 complete — login overlay, world picker, server-backed save slots, settings auto-sync, one-shot importer.*
+---
+
+## Phase 5A — Unit List, Unit Details, DC Unit Prefixes ✅
+
+Pure-UI sub-phase of Phase 5. The personnel data model (Phase 5B) doesn't exist yet, so the staffing/personnel fields in this UI are intentionally stubbed with "Phase 5B" hints — the surfaces are wired and ready to consume that data once it lands.
+
+- **`units.js`** (new, root) — owns unit-centric display logic that spans stations: prefix resolution, Unit List rendering, and the Unit Details modal. Stations.js stays focused on station-level CRUD and the in-sidebar pill rendering.
+- **DC Unit Prefixes** — Each dispatch center has a `unitPrefix` (string, optional) and a `prefixFormat` (`bracket` | `dash` | `space`). DC create/edit modal exposes both fields. Units at any station whose ESN belongs to that DC display the prefix automatically (e.g. `[SUSQ] E-52`).
+- **Display-name pipeline** — A single helper `getUnitDisplayName(unit, station)` is applied at every visible surface: station-list pills, AVL map labels, map tooltips, dispatch modal (enroute rows + available rows), transport dropdowns, prisoner-transport dispatch rows, Manage Station unit rows, and the new Unit List + Unit Details modal. Internal `unit.name` is unchanged — prefix is purely a display layer.
+- **DC override + conflict notice** — When a station's ESNs are covered by multiple DCs, the Manage Station modal shows a "Dispatch Center for Unit Prefixes" picker; the chosen DC is persisted on `station.preferredDCId`. Until the player picks, a ⚠ DC conflict tag appears on the station in the Manage Station modal and the Unit List, and `getStationDC()` falls back to the first matching DC by creation order so prefixes still render. Clearing the override returns to auto-pick.
+- **Unit List tab** — New top-level tab in the Operations Modal (Stations | **Units** | Facilities | Operations). Filters: search (callsign / station / type / DC), unit type dropdown, status dropdown. Sort: by station, by type, by status, by callsign. Rows are clickable and show DC + prefix + conflict badge inline.
+- **Unit Details modal** — Opens from: station-list pills (left-click), Manage Station unit row (ℹ︎ button), AVL map labels (click the label), dispatch modal enroute row (click the name), dispatch modal available row (ℹ︎ button), prisoner-transport dispatch row (click the name), and Unit List rows. Shows: status with live ETAs (per phase: enroute / on-scene / transporting / offloading / returning), callsign with rename input + display preview, type / tags / provider / personnel placeholder / transport capacity, resolved DC + prefix, conflict notice if any, and actions (toggle service, jump to Manage Station, focus on map when animating).
+- **Station-pill click reassigned** — Pills in the sidebar station list now open Unit Details on left-click. Shift+click preserves the legacy OOS toggle shortcut.
+- **Save schema (private worlds)** — DC payload gains `unitPrefix` and `prefixFormat`; station payload gains `preferredDCId`. Older saves missing these fields default to `''` / `'bracket'` / `null` on load — backward compatible, no migration required.
+- **Live updates** — `_tickGameClock()` calls `_updateUnitDetailsModal()` (re-renders only when modal is open and the rename input isn't focused) and re-renders the Unit List only while the Units tab is visible.
+
+*Phase 5A is the UI skeleton.* No playtest yet — per agreement, Phase 5 ships as a whole at the end of 5E.
+
+*Last updated: 2026-05-15. Phase 5A complete — Unit List, Unit Details, DC prefixes, per-station DC override.*

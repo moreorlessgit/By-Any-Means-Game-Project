@@ -107,17 +107,19 @@ function renderStationList(){
       // Jail transport phases (set by dispatchPrisonerTransport)
       const isJailTrans = isTrans && u.transportDestination?.type === 'jail';
       const isPickup    = isJailTrans && u.transportPhase === 'enroute_pickup';
+      // Phase 5A — display name applies any DC unit prefix
+      const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
       // Pill text: show ETA on returning, destination on transporting/offloading
-      let pillTxt = u.name;
-      if(isRet)   pillTxt = `${u.name} ↩${formatETA(u._returnRemSec)}`;
+      let pillTxt = dispName;
+      if(isRet)   pillTxt = `${dispName} ↩${formatETA(u._returnRemSec)}`;
       if(isTrans){
-        if(isPickup)         pillTxt = `${u.name} 🚔📥`;
-        else if(isJailTrans) pillTxt = `${u.name} 🚔→`;
-        else                 pillTxt = `${u.name} 🚑→`;
+        if(isPickup)         pillTxt = `${dispName} 🚔📥`;
+        else if(isJailTrans) pillTxt = `${dispName} 🚔→`;
+        else                 pillTxt = `${dispName} 🚑→`;
       }
       if(isOff){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
-        pillTxt = remSec > 0 ? `${u.name} 🏥 ${formatETA(remSec)}` : `${u.name} 🏥`;
+        pillTxt = remSec > 0 ? `${dispName} 🏥 ${formatETA(remSec)}` : `${dispName} 🏥`;
       }
       const cls = uOOS ? 'oos' : (isTrans||isOff ? 'transporting' : u.status);
       // Tooltip text
@@ -148,8 +150,9 @@ function renderStationList(){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
         ttip = remSec > 0 ? `Offloading — ${formatETA(remSec)} until clear` : 'Offloading at facility';
       }
-      return `<span class="unit-pill ${cls}" title="${ttip}"
-               onclick="toggleUnitService('${s.id}','${u.id}');event.stopPropagation();">${pillTxt}</span>`;
+      // Phase 5A: click opens Unit Details; shift-click toggles in/out of service (power-user shortcut).
+      return `<span class="unit-pill ${cls}" title="${ttip} — Click for details, Shift+click to toggle service"
+               onclick="event.stopPropagation(); if(event.shiftKey){ toggleUnitService('${s.id}','${u.id}'); } else { openUnitDetails('${u.id}'); }">${pillTxt}</span>`;
     }).join('');
 
     return `<div class="scard${oos?' oos':''}">
@@ -255,7 +258,8 @@ function confirmStation(){
   const station = {
     id, name, type:_placingStationType,
     lat:pendingLatLng.lat, lng:pendingLatLng.lng,
-    units:[firstUnit], marker, upgrades:[], inService:true
+    units:[firstUnit], marker, upgrades:[], inService:true,
+    preferredDCId: null   // Phase 5A — manual DC override (null = auto-pick)
   };
 
   stations.push(station);
@@ -285,6 +289,65 @@ function closeManageStation(){
   _activeManageStation = null;
   _deleteStationConfirm = null;
   _deleteUnitConfirm = null;
+}
+
+// Phase 5A — renders the Dispatch Center / unit prefix row inside the Manage Station modal.
+// Shows the resolved DC, a picker when multiple DCs cover this station, and a conflict
+// warning when more than one DC could apply and the player hasn't picked one yet.
+function _renderManageDCRow(s){
+  if(typeof getCandidateDCs !== 'function') return '';  // units.js not loaded
+  const candidates = getCandidateDCs(s.id);
+  if(!candidates.length){
+    return `<div style="margin-top:10px;font-size:.78rem;color:var(--muted);">
+      📡 No dispatch center covers this station's ESNs. Assign this station to an ESN and that ESN to a DC to receive a unit prefix.
+    </div>`;
+  }
+  const resolved = getStationDC(s);
+  const conflict = hasStationDCConflict(s);
+
+  // Single DC — just show it, no picker needed
+  if(candidates.length === 1){
+    const dc = candidates[0];
+    const pfxText = dc.unitPrefix
+      ? `prefix <span style="color:var(--gold);font-family:var(--mono);">${dc.unitPrefix}</span>`
+      : '<span style="color:var(--muted);">no prefix set</span>';
+    return `<div style="margin-top:10px;font-size:.82rem;">
+      📡 Dispatch Center: <b>${dc.name.replace(/"/g,'&quot;')}</b> · ${pfxText}
+    </div>`;
+  }
+
+  // Multiple candidate DCs — render a picker so the player can choose one explicitly
+  const options = `<option value="">Auto — first match</option>` +
+    candidates.map(dc => `<option value="${dc.id}" ${s.preferredDCId === dc.id ? 'selected' : ''}>
+      ${dc.name.replace(/"/g,'&quot;')}${dc.unitPrefix ? ' [' + dc.unitPrefix + ']' : ''}
+    </option>`).join('');
+
+  return `<div style="margin-top:10px;">
+    <label class="field-label">Dispatch Center for Unit Prefixes</label>
+    <select id="msm-preferred-dc" onchange="setStationPreferredDC('${s.id}', this.value)" style="width:100%;">
+      ${options}
+    </select>
+    <div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
+      ${resolved ? `Active: <span style="color:var(--text);">${resolved.name.replace(/"/g,'&quot;')}</span>${resolved.unitPrefix ? ' · prefix <span style="color:var(--gold);font-family:var(--mono);">' + resolved.unitPrefix + '</span>' : ''}` : ''}
+    </div>
+    ${conflict ? `<div style="margin-top:6px;color:var(--gold);font-size:.78rem;">
+      ⚠ Multiple DCs cover this station's ESNs. Pick one to lock in the prefix.
+    </div>` : ''}
+  </div>`;
+}
+
+// Persists the player's DC choice for prefix resolution and refreshes all unit views.
+function setStationPreferredDC(stationId, dcId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return;
+  s.preferredDCId = dcId || null;
+  renderStationList();
+  if(typeof renderUnitList === 'function')          renderUnitList();
+  if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
+  _renderManageBody();
+  setStatus(dcId
+    ? `Preferred DC set for ${s.name}.`
+    : `Preferred DC cleared for ${s.name} — using first match.`);
 }
 
 // Renders the content inside the manage station modal.
@@ -317,6 +380,7 @@ function _renderManageBody(){
     <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
     <button class="btn-sm" onclick="renameStation()">Rename</button>
   </div>
+  ${_renderManageDCRow(s)}
   <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
 
   if(!s.units.length){
@@ -326,6 +390,10 @@ function _renderManageBody(){
     const utCfg = BAM_CONFIG.unitTypes[u.typeKey];
     const statusBadge = u.status !== 'available'
       ? `<span style="font-size:.6rem;color:var(--gold);">${u.status.replace('_',' ').toUpperCase()}</span>` : '';
+    // Phase 5A — show the prefixed display name as a hint above the rename input so the player
+    // sees what the unit currently looks like with its DC prefix applied.
+    const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
+    const showPrefixHint = dispName !== u.name;
     html += `<div class="manage-unit-row" draggable="true" data-unit-id="${u.id}"
                ondragstart="_unitDragStart(event)"
                ondragover="_unitDragOver(event)"
@@ -334,10 +402,12 @@ function _renderManageBody(){
       <span style="font-size:.9rem;color:var(--muted);margin-right:4px;cursor:grab;" title="Drag to reorder">⠿</span>
       <div class="manage-unit-name">
         <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
+        ${showPrefixHint ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px;">Display: ${dispName.replace(/"/g,'&quot;')}</div>` : ''}
       </div>
       <span class="manage-unit-label">${utCfg?.label || u.typeKey}</span>
       ${statusBadge}
       <button class="btn-sm" onclick="renameUnit('${u.id}')">Save</button>
+      <button class="btn-sm" onclick="openUnitDetails('${u.id}')" title="Unit details">ℹ︎</button>
       ${_deleteUnitConfirm === u.id
         ? `<button class="btn-sm danger" onclick="deleteUnit('${u.id}')" style="border-color:var(--accent);color:var(--accent);background:rgba(232,67,26,.15);">Confirm?</button>`
         : `<button class="btn-sm danger" onclick="deleteUnit('${u.id}')">Delete</button>`}
@@ -563,6 +633,9 @@ function getStationSaveData(){
   return stations.map(s => ({
     id:s.id, name:s.name, type:s.type, lat:s.lat, lng:s.lng,
     upgrades:s.upgrades||[], inService:s.inService,
+    // Phase 5A — manual DC override when multiple DCs serve this station's ESNs.
+    // null means "auto pick first matching DC" (see getStationDC()).
+    preferredDCId: s.preferredDCId || null,
     _holdingCells: s._holdingCells ? {
       installed: true,
       cells: s._holdingCells.cells,
@@ -589,6 +662,7 @@ function recreateStation(s){
   const station = {
     ...s, marker,
     inService: s.inService !== false,
+    preferredDCId: s.preferredDCId || null,  // Phase 5A
     _holdingCells: s._holdingCells || undefined,
     units: s.units.map(u => ({
       ...u, inService: u.inService !== false,
@@ -898,6 +972,8 @@ function seedTestData(){
     stations.push({
       id, name:seed.name, type:seed.type, lat:seed.lat, lng:seed.lng,
       upgrades:[], marker, inService:true,
+      preferredDCId: null,   // Phase 5A — manual DC override
+
       units: seed.units.map((u,i) => ({
         id:'u_seed_'+Date.now()+'_'+i, name:u.name, typeKey:u.typeKey,
         status:'available', inService:true, _animGen:0, _returnRemSec:0,

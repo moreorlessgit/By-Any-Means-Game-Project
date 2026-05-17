@@ -216,6 +216,33 @@
 
 ---
 
+## Unit display names — DC prefix system (Phase 5A)
+
+- `unit.name` is the **internal callsign** (e.g. `E-52`). Never include a prefix here — prefixes are purely a display concern.
+- Every user-visible surface uses `getUnitDisplayName(unit, stationHint)` from `units.js` instead of `unit.name`. The helper resolves the unit's station's dispatch center and applies the DC's `unitPrefix` using `prefixFormat` (`'bracket' | 'dash' | 'space'`). When no DC applies or `unitPrefix` is empty, the raw callsign is returned.
+- DC-to-station resolution lives in `getStationDC(stationOrId)`:
+  - Returns the DC whose `assignedESNs` contain any ESN whose `assignments` (fire/ems/police) include the station id.
+  - If multiple DCs qualify and the station has a `preferredDCId`, that DC wins.
+  - Otherwise the first matching DC by creation order wins.
+- `hasStationDCConflict(station)` is true when ≥2 DCs qualify and no `preferredDCId` is set. The Manage Station modal surfaces a picker; the Unit List surfaces a ⚠ badge. Setting the override resolves the conflict.
+- After any DC edit, ESN-assignment change, or station-DC override change, call:
+  - `renderStationList()` — sidebar pills
+  - `renderUnitList()` — Units tab in the Operations Modal
+  - `refreshAllUnitMapLabels()` — rebuilds every moving unit's AVL label icon so the prefix appears immediately on the map
+- New unit display surfaces should pull from `getUnitDisplayName()`. The only place `unit.name` is read directly is the rename input (so the player edits the raw callsign).
+
+---
+
+## Unit List and Unit Details modal (Phase 5A)
+
+- **Unit List** is a top-level tab in the Operations Modal (Stations | Units | Facilities | Operations). Rendered by `renderUnitList()` in `units.js`. Filters: search / type / status. Sort: station / type / status / callsign. Updated each game-tick only while the Units tab is visible (`_activeOpsTab === 'units'`).
+- **Unit Details** is a single dynamically-created modal (`#unit-details-modal`, built lazily on first `openUnitDetails(unitId)` call). The modal body is fully re-rendered each tick by `_updateUnitDetailsModal()`, EXCEPT when the rename input has focus — that guard prevents clobbering the player's edit.
+- **Open triggers** — Unit Details opens from: sidebar station-list pills (left-click), Manage Station unit row (ℹ︎ button), AVL map labels (click the prefixed callsign), dispatch modal enroute row (click the name), dispatch modal available row (ℹ︎ button), prisoner-transport dispatch row (click the name), and Unit List rows.
+- **Station-pill click was reassigned** from "toggle OOS" to "open Unit Details". Shift+click preserves the legacy OOS shortcut. New OOS toggle lives inside the Unit Details modal.
+- Personnel/staffing fields in the Unit Details modal are intentionally stubbed with "(staffing in Phase 5B)" — the surface is ready, the data isn't yet.
+
+---
+
 ## Station and unit deletion
 
 - Station deletion: full `stationCost[s.type]` refund; two-click confirm (`_deleteStationConfirm` state var)

@@ -101,7 +101,7 @@ Phase 5 introduces individual named personnel, certifications, crew composition 
 
 **Playtest cadence:** Full system ships before player playtests. Sub-phases below are engineering chunks, not delivery milestones.
 
-- **5A** — Unit List + Unit Details modals + dispatch center unit prefixes (pure UI)
+- **5A** — Unit List + Unit Details modals + dispatch center unit prefixes (pure UI) ✅
 - **5B** — Career personnel + cert taxonomy + crew slot rules + min/ideal crew dispatch gating
 - **5C** — Training system + career shifts + ranks + cashflow integration
 - **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits

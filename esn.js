@@ -579,6 +579,11 @@ function confirmESNModal() {
   closeESNModal();
   renderESNList();
   renderDCList();
+  // Phase 5A — ESN coverage assignments drive station-to-DC mapping, so refresh
+  // anything that displays unit prefixes when those assignments change.
+  if(typeof renderStationList === 'function')       renderStationList();
+  if(typeof renderUnitList === 'function')          renderUnitList();
+  if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
   setStatus(`✅ ESN "${name}" saved.`);
 }
 
@@ -973,6 +978,11 @@ function startPlaceDispatchCenter() {
 function _openDCCreateModal(latlng) {
   document.getElementById('dc-latlng').value = `${latlng.lat},${latlng.lng}`;
   document.getElementById('dc-name-input').value = '';
+  // Phase 5A — reset prefix fields for a new DC
+  const pfx = document.getElementById('dc-unit-prefix');
+  if(pfx) pfx.value = '';
+  const fmt = document.getElementById('dc-prefix-format');
+  if(fmt) fmt.value = 'bracket';
   document.getElementById('dc-modal').dataset.editId = '';
   const titleEl = document.getElementById('dc-modal-title');
   if (titleEl) titleEl.textContent = 'New Dispatch Center';
@@ -1020,20 +1030,37 @@ function confirmDCModal() {
     if (dc) {
       dc.name         = name;
       dc.assignedESNs = assignedESNs;
+      // Phase 5A — pull updated prefix + format from modal
+      dc.unitPrefix   = document.getElementById('dc-unit-prefix')?.value.trim() || '';
+      dc.prefixFormat = document.getElementById('dc-prefix-format')?.value      || 'bracket';
       dc.marker?.setIcon(_buildDCIcon(name));
       dc.marker?.bindTooltip(name + ' — Dispatch Center');
     }
     closeDCModal();
     renderDCList();
+    // Re-render any open station-related views so prefix changes appear immediately
+    if(typeof renderStationList === 'function')       renderStationList();
+    if(typeof renderUnitList === 'function')          renderUnitList();
+    if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
     setStatus(`✅ Dispatch Center "${name}" updated.`);
   } else {
     // Creating a new DC
     const [lat, lng] = document.getElementById('dc-latlng').value.split(',').map(Number);
     const id     = 'dc_' + Date.now();
     const marker = _buildDCMarker(id, name, lat, lng);
-    dispatchCenters.push({ id, name, lat, lng, assignedESNs, inService: true, marker });
+    // Phase 5A — DC unit prefix + format come from modal inputs (default to empty/bracket)
+    const unitPrefix   = document.getElementById('dc-unit-prefix')?.value.trim() || '';
+    const prefixFormat = document.getElementById('dc-prefix-format')?.value      || 'bracket';
+    dispatchCenters.push({
+      id, name, lat, lng, assignedESNs, inService: true, marker,
+      unitPrefix, prefixFormat
+    });
     closeDCModal();
     renderDCList();
+    // Refresh views so the new prefix shows immediately
+    if(typeof renderStationList === 'function')       renderStationList();
+    if(typeof renderUnitList === 'function')          renderUnitList();
+    if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
     setStatus(`✅ Dispatch Center "${name}" placed.`);
   }
 }
@@ -1152,6 +1179,11 @@ function openDCEditModal(id) {
   document.getElementById('dc-modal-title').textContent = 'Edit Dispatch Center';
   document.getElementById('dc-name-input').value = dc.name;
   document.getElementById('dc-latlng').value = `${dc.lat},${dc.lng}`;
+  // Phase 5A — pre-fill prefix + format
+  const pfx = document.getElementById('dc-unit-prefix');
+  if(pfx) pfx.value = dc.unitPrefix || '';
+  const fmt = document.getElementById('dc-prefix-format');
+  if(fmt) fmt.value = dc.prefixFormat || 'bracket';
   _renderDCESNList(dc.assignedESNs);
   document.getElementById('dc-modal').classList.add('open');
   setTimeout(() => document.getElementById('dc-name-input').focus(), 40);
@@ -1418,7 +1450,10 @@ function getESNSaveData() {
 function getDCSaveData() {
   return dispatchCenters.map(d => ({
     id: d.id, name: d.name, lat: d.lat, lng: d.lng,
-    assignedESNs: d.assignedESNs, inService: d.inService
+    assignedESNs: d.assignedESNs, inService: d.inService,
+    // Phase 5A — DC-set unit prefix and format
+    unitPrefix:   d.unitPrefix   || '',
+    prefixFormat: d.prefixFormat || 'bracket'
   }));
 }
 
@@ -1450,7 +1485,14 @@ function loadESNData(data) {
 function loadDCData(data) {
   (data || []).forEach(d => {
     const marker = _buildDCMarker(d.id, d.name, d.lat, d.lng);
-    dispatchCenters.push({ ...d, inService: d.inService !== false, marker });
+    // Phase 5A — default prefix fields for older saves missing them
+    dispatchCenters.push({
+      ...d,
+      inService:    d.inService !== false,
+      unitPrefix:   d.unitPrefix   || '',
+      prefixFormat: d.prefixFormat || 'bracket',
+      marker
+    });
   });
   renderDCList();
 }
