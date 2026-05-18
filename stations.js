@@ -270,10 +270,8 @@ function confirmStation(){
     status:'available', inService:true, _animGen:0,
     incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[],
     _returnRemSec:0,
-    // Phase 5B — staffing config defaults (null = inherit crewDefaults / station / global)
-    crewMin: null, crewIdeal: null,
-    pinnedPersonnelIds: [], idealCrewWaitMs: null,
-    staffingPolicy: 'wait_then_min'
+    // Per-unit overrides retired with crewDefaults — seats now own the gate.
+    pinnedPersonnelIds: []
   };
 
   const station = {
@@ -282,11 +280,9 @@ function confirmStation(){
     units:[firstUnit], marker, upgrades:[], inService:true,
     preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
     stationType,                    // Phase 5D — picked at creation time
-    idealCrewWaitMs: null,          // Phase 5B — station-level override (null = inherit global)
-    // Phase 5C — custom shift templates owned by this station (in addition to
-    // BAM_CONFIG.shiftTemplates built-ins). Each entry mirrors the built-in
-    // shape: { id, label, cycleDays, onPattern }. Empty = use built-ins only.
-    shifts: []
+    // station-level idealCrewWaitMs retired — replaced by the global
+    // BAM_CONFIG.volunteerAssemblyMaxGameMin tunable for the new seat-based gate.
+    shifts: []                      // Phase 5C — custom shift templates owned by this station
   };
 
   stations.push(station);
@@ -768,22 +764,24 @@ function recreateStation(s){
     inService: s.inService !== false,
     preferredDCId:   s.preferredDCId   || null,       // Phase 5A
     stationType:     s.stationType     || 'career',   // Phase 5B — defaults career on legacy saves
-    idealCrewWaitMs: s.idealCrewWaitMs ?? null,       // Phase 5B — null = inherit global
     shifts:          s.shifts          || [],         // Phase 5C — custom shift templates
     _holdingCells: s._holdingCells || undefined,
-    units: s.units.map(u => ({
-      ...u, inService: u.inService !== false,
-      status: ['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
-      // Phase 5B — staffing config defaults. nulls = inherit crewDefaults / station / global.
-      crewMin:            u.crewMin            ?? null,
-      crewIdeal:          u.crewIdeal          ?? null,
-      pinnedPersonnelIds: u.pinnedPersonnelIds || [],
-      idealCrewWaitMs:    u.idealCrewWaitMs    ?? null,
-      staffingPolicy:     u.staffingPolicy     || 'wait_then_min',
-      _animGen:0, _returnRemSec:0,
-      incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
-    }))
+    units: s.units.map(u => {
+      // Strip retired fields from legacy saves: crewMin, crewIdeal,
+      // idealCrewWaitMs, staffingPolicy. Seats now own the dispatch gate.
+      const { crewMin:_cm, crewIdeal:_ci, idealCrewWaitMs:_iw, staffingPolicy:_sp, ...rest } = u;
+      return {
+        ...rest, inService: u.inService !== false,
+        status: ['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
+        pinnedPersonnelIds: u.pinnedPersonnelIds || [],
+        _animGen:0, _returnRemSec:0,
+        incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
+      };
+    })
   };
+  // Strip retired station field too — but we already left it off `s` upstream
+  // (the save shape no longer ships it). Defensive delete in case of older saves.
+  delete station.idealCrewWaitMs;
   stations.push(station);
 }
 

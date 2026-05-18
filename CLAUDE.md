@@ -50,6 +50,7 @@ Launch + hosting reference:
 
 - **config.js is the single source of truth.** All tunable values live there; nothing is hardcoded in game logic.
 - **Unit capability uses tag arrays.** Never replace with direct type matching.
+- **Seats own apparatus capacity AND crew requirements.** `BAM_CONFIG.unitTypes[k].seats[]` is the authority — there is NO separate `crewDefaults` block or `maxTransportCapacity` field. Each seat is one of three roles: responder seat (with optional `requiredCert` / `preferredCerts[]` / `niceToHaveCerts[]` / `isDriver`), `isPatientSeat:true` (stretcher), or `isPrisonerSeat:true` (cell/cage). Patient and prisoner seats cannot hold responders. Apparatus rolls when every seat with `requiredCert` is filled.
 - **US customary units only.** Display miles/mph to the player; convert from OSRM before display.
 - **Never delete or overwrite player save data** without explicit confirmation.
 - **Station and unit costs are flat.** No scaling based on count.

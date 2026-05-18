@@ -37,6 +37,15 @@ function _genVolunteerEventId(){
   return 'vol_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
 }
 
+// Absolute game-seconds since game start. `gameSeconds` is an in-day counter
+// (rolls 0 → 86399), `gameDay` is 1-indexed. Use this for any timestamp that
+// must compare correctly across midnight rollover.
+function _absGameSec(){
+  const day = (typeof gameDay     !== 'undefined') ? gameDay     : 1;
+  const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+  return (day - 1) * 86400 + sec;
+}
+
 // =============================================================================
 // OSM BUILDING CACHE
 // =============================================================================
@@ -418,6 +427,16 @@ function recomputeVolunteerAvailabilityHour(){
     }
     if((a.nextRollGameHour || 0) > currentGameHour) return;
 
+    // Crew that just lingered at the station after a failed dispatch — hold
+    // them in 'home / at-station' until their linger window expires so the
+    // hourly roll doesn't immediately send them home (and then re-dispatch
+    // them moments later when a new call comes in).
+    if(a.lingerAtStationUntilGameSec != null && a.lingerAtStationUntilGameSec > _absGameSec()){
+      a.currentState = 'home';
+      a.nextRollGameHour = currentGameHour + 1;
+      return;
+    }
+
     // Super-responder and player-override paths short-circuit the roll.
     if(p.isSuperResponder){
       a.currentState = 'home';
@@ -769,65 +788,127 @@ function _onMapClickForVolunteerPick(e){
 }
 
 // =============================================================================
-// VOLUNTEER STATION-RESPONSE ASSEMBLY  (Phase 5D bug-fix)
+// VOLUNTEER STATION-RESPONSE ASSEMBLY  (seat-based dispatch gate)
 // =============================================================================
 // When an apparatus is dispatched with volunteer crew, those volunteers must
-// travel from their home/work to the station before the apparatus can leave.
-// `triggerVolunteerStationResponse` animates each volunteer to the station
-// and returns a Promise that resolves once every volunteer has arrived OR the
-// per-volunteer maxResponseSec has elapsed (so a no-show doesn't deadlock the
-// call indefinitely).
+// travel from home to the station before the apparatus can leave.
+// `triggerVolunteerStationResponse` animates each volunteer to the station and
+// returns a Promise that resolves when:
+//   • Every responder has arrived (normal completion), OR
+//   • Player tripped force-out via the abort signal, OR
+//   • The game-time watchdog (`volunteerAssemblyMaxGameMin` from config — 10
+//     real-world-dispatch minutes) fires.
 //
-// On resolution, every volunteer that successfully arrived has status promoted
-// from 'responding' → 'busy'. Volunteers who failed to arrive within the
-// window get unassigned (status='available', currentAssignment cleared) so
-// the caller can decide what to do (most likely: dispatch what showed up).
+// At watchdog fire-time the caller's `requiredCheck(arrivedSet)` callback
+// decides whether to roll-with-what-we-have (required seats filled) or ABORT
+// (required seats short). In abort mode:
+//   • The promise resolves with `aborted:true`
+//   • In-flight animations are NOT cancelled — responders continue to the
+//     station because in the real world they keep coming to find out what's
+//     up. When they arrive, they linger at the station for
+//     `volunteerStationLingerGameMin` before the hourly availability roll
+//     resumes (prevents them from immediately heading home only to be
+//     redispatched seconds later).
+//
+// Resolution shape:
+//   { arrived: personId[], noShows: personId[], forced: bool,
+//     aborted: bool, requiredMet: bool }
 function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
-  if(!Array.isArray(responders) || !responders.length) return Promise.resolve({ arrived: [], noShows: [] });
-  if(!stationLatLng) return Promise.resolve({ arrived: [], noShows: [] });
+  if(!Array.isArray(responders) || !responders.length){
+    return Promise.resolve({ arrived: [], noShows: [], forced: false, aborted: false, requiredMet: true });
+  }
+  if(!stationLatLng){
+    return Promise.resolve({ arrived: [], noShows: [], forced: false, aborted: false, requiredMet: false });
+  }
   const speedMph     = opts.speedMph     || BAM_CONFIG.volunteerResponseSpeedMph || 50;
-  const maxRealMs    = opts.maxRealMs    || 60000; // safety so a misconfigured volunteer can't hang dispatch
-  const abortSignal  = opts.abortSignal  || { aborted: false };  // Phase 5 bugfix — force-out support
-  const arrived = [];
-  const noShows = [];
-  const handles = [];  // per-volunteer cancellable handles so force-out can stop pending travel
+  const maxGameSec   = opts.maxGameSec   || ((BAM_CONFIG.volunteerAssemblyMaxGameMin || 10) * 60);
+  const lingerGameSec = opts.lingerGameSec || ((BAM_CONFIG.volunteerStationLingerGameMin || 30) * 60);
+  const abortSignal  = opts.abortSignal  || { aborted: false };
+  // Optional callback the caller passes to evaluate whether required seats
+  // are filled given the arrived-so-far set. Defaults to "always met" so the
+  // function still works for callers that don't care about seat-gating.
+  const requiredCheck = (typeof opts.requiredCheck === 'function')
+    ? opts.requiredCheck : (() => true);
+
+  const arrivedSet = new Set();
+  const handles   = [];   // per-volunteer cancellable handles
 
   return new Promise(resolve => {
     let settled = false;
-    const finish = (forced = false) => {
+    let abortMode = false;   // when true, late-arriving volunteers linger at station
+
+    const startGameSec = _absGameSec();
+
+    function finish(mode){
+      // mode: 'all_arrived' | 'forced' | 'timer_required_met' | 'timer_required_short'
       if(settled) return;
       settled = true;
-      // Cancel any in-flight per-volunteer animations so their marker timers stop.
-      handles.forEach(h => { try { h.cancel?.(); } catch(_){} });
-      // Anyone still not in `arrived` becomes a no-show. On a force-out, they
-      // get released ('available') so the dispatch flow doesn't strand them on
-      // a busy/responding status forever. Cancelled animations leave the
-      // volunteer's currentLocation wherever the polyline last placed them.
+      clearInterval(pollHandle);
+      const requiredMet = (mode === 'all_arrived' || mode === 'forced' || mode === 'timer_required_met');
+      abortMode = (mode === 'timer_required_short');
+      if(!abortMode){
+        // Cancel in-flight animations. Volunteers still en route become no-shows.
+        handles.forEach(h => { try { h.cancel?.(); } catch(_){} });
+        const noShows = [];
+        responders.forEach(p => {
+          if(!arrivedSet.has(p.id)){
+            p.status = 'available';
+            p.currentAssignment = null;
+            noShows.push(p.id);
+          }
+        });
+        resolve({
+          arrived: Array.from(arrivedSet),
+          noShows,
+          forced:  mode === 'forced',
+          aborted: false,
+          requiredMet
+        });
+        return;
+      }
+      // ABORT MODE — required seats not filled in time. Crew that arrived now
+      // (or will arrive) stays at the station for the linger window. Their
+      // status flips to 'available' (no longer on this call), currentAssignment
+      // clears, and `availability.lingerAtStationUntilGameSec` is stamped so
+      // the hourly availability roll holds off until they've had time to settle.
+      const lingerUntil = _absGameSec() + lingerGameSec;
       responders.forEach(p => {
-        if(!arrived.includes(p.id)){
-          p.status = 'available';
-          p.currentAssignment = null;
-          noShows.push(p.id);
+        if(arrivedSet.has(p.id)){
+          _setVolunteerLinger(p, stationLatLng, lingerUntil);
         }
+        // Volunteers still in transit will hit onArrive later — that handler
+        // checks abortMode (closure) and applies the same linger treatment.
       });
-      resolve({ arrived, noShows, forced });
-    };
-    const watchdog = setTimeout(() => finish(false), maxRealMs);
-    // Phase 5 bugfix — abort poller. Cheap setInterval (every 250ms real) that
-    // resolves the promise when the external signal flips. We don't poll
-    // gameSpeed-scaled time here because force-out should respond to the
-    // player's click in real-time even when the game is running fast or paused.
-    const poller = setInterval(() => {
+      // Note: we intentionally do NOT clearInterval the handles in abort mode
+      // — they're tracked by the dispatchVolunteer animation loop which will
+      // self-clean up on arrival.
+      resolve({
+        arrived: Array.from(arrivedSet),
+        noShows: [],   // their trip continues, so they're not no-shows
+        forced:  false,
+        aborted: true,
+        requiredMet: false
+      });
+    }
+
+    // Single poller covers BOTH the abort signal AND the game-time watchdog.
+    // 250ms real-time tick is responsive enough for force-out and cheap enough
+    // to keep running for the whole assembly window.
+    const pollHandle = setInterval(() => {
+      if(settled) return;
       if(abortSignal.aborted){
-        clearInterval(poller);
-        clearTimeout(watchdog);
-        finish(true);
+        finish('forced');
+        return;
+      }
+      const elapsed = _absGameSec() - startGameSec;
+      if(elapsed >= maxGameSec){
+        const reqOk = !!requiredCheck(arrivedSet);
+        finish(reqOk ? 'timer_required_met' : 'timer_required_short');
       }
     }, 250);
 
-    let arrivalsLeft = responders.length;
     responders.forEach(p => {
-      // Origin order: explicit currentLocation > home > station.
+      // Origin: explicit currentLocation > home > station fallback.
       const from = p.currentLocation
         || (p.home ? { lat: p.home.lat, lng: p.home.lng } : null)
         || stationLatLng;
@@ -835,20 +916,55 @@ function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
         speedMph,
         fromLatLng: from,
         onArrive: () => {
-          if(settled) return;
-          arrived.push(p.id);
-          p.status = 'busy';
           p.currentLocation = { lat: stationLatLng.lat, lng: stationLatLng.lng };
-          arrivalsLeft--;
-          if(arrivalsLeft <= 0){
-            clearInterval(poller);
-            clearTimeout(watchdog);
-            finish(false);
+          if(abortMode){
+            // We aborted earlier — this responder still made it. Park them.
+            const lingerUntil = _absGameSec() + lingerGameSec;
+            _setVolunteerLinger(p, stationLatLng, lingerUntil);
+            return;
+          }
+          if(settled) return;   // resolved via force-out or required-met timer
+          arrivedSet.add(p.id);
+          p.status = 'busy';
+          if(arrivedSet.size >= responders.length){
+            finish('all_arrived');
           }
         }
       });
       handles.push(h);
     });
+  });
+}
+
+// Internal helper used by the assembly assembly abort path. Releases a
+// volunteer from a failed dispatch and parks them at the station for the
+// linger window. The hourly availability roll honors lingerAtStationUntilGameSec.
+function _setVolunteerLinger(person, stationLatLng, lingerUntilGameSec){
+  if(!person) return;
+  person.status = 'available';
+  person.currentAssignment = null;
+  person.currentLocation = { lat: stationLatLng.lat, lng: stationLatLng.lng };
+  person.availability = person.availability || {
+    currentState: 'home', currentLocation: null, nextRollGameHour: 0,
+    schedule: [], forceAvailableUntil: null
+  };
+  person.availability.currentState = 'home';   // displayed as "at home / available"
+  person.availability.currentLocation = { lat: stationLatLng.lat, lng: stationLatLng.lng };
+  person.availability.lingerAtStationUntilGameSec = lingerUntilGameSec;
+}
+
+// Called from the game-clock tick to clear expired linger stamps. Cheap O(N).
+// Safe to call every game-tick; the field is only set for volunteers who just
+// failed an assembly. The next hourly availability roll picks fresh state.
+function tickVolunteerStationLinger(){
+  if(typeof personnel === 'undefined' || !personnel.length) return;
+  const now = _absGameSec();
+  personnel.forEach(p => {
+    const a = p.availability;
+    if(!a || a.lingerAtStationUntilGameSec == null) return;
+    if(now >= a.lingerAtStationUntilGameSec){
+      a.lingerAtStationUntilGameSec = null;
+    }
   });
 }
 
@@ -869,8 +985,10 @@ function forceVolunteerCrewDeparture(unitId){
   if(!unit || !station) return { ok:false, reason:'unit_not_found' };
   if(unit.status !== 'awaiting_crew') return { ok:false, reason:'not_awaiting_crew' };
 
-  // Resolve driver cert for this apparatus.
-  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert;
+  // Resolve driver cert for this apparatus (seat-based — pulled from the
+  // first isDriver seat's requiredCert).
+  const driverCert = (typeof getUnitDriverCert === 'function')
+    ? getUnitDriverCert(unit) : null;
   if(driverCert){
     // Find someone at the station with the required cert. "At station" means
     // career personnel on-duty here, OR a volunteer who has already arrived
@@ -984,10 +1102,34 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
     requestAnimationFrame(tick);
   }
 
+  // Origin-freeze safety net. If something prevents _runAnim from starting
+  // within `volunteerOriginFreezeWatchdogGameSec` of dispatch (default 30
+  // game-seconds), force the straight-line fallback so the volunteer stops
+  // sitting on their lawn forever. This guards against OSRM stalls that
+  // never trigger AbortController, requestAnimationFrame paused in a
+  // background tab while gameSpeed advances, etc.
+  let animStarted = false;
+  const freezeWatchdogGameSec = (BAM_CONFIG.volunteerOriginFreezeWatchdogGameSec || 30);
+  const freezeStartAbs = _absGameSec();
+  const freezePoller = setInterval(() => {
+    if(cancelled || animStarted){ clearInterval(freezePoller); return; }
+    const elapsed = _absGameSec() - freezeStartAbs;
+    if(elapsed >= freezeWatchdogGameSec){
+      clearInterval(freezePoller);
+      if(animStarted || cancelled) return;
+      animStarted = true;
+      const fallback = [[from.lat, from.lng], [toLatLng.lat, toLatLng.lng]];
+      const distKm = (typeof haversineKm === 'function')
+        ? haversineKm(from.lat, from.lng, toLatLng.lat, toLatLng.lng)
+        : _haversineKmLocal(from.lat, from.lng, toLatLng.lat, toLatLng.lng);
+      const dur = (distKm / (speedFloorMph * 1.60934)) * 3600;
+      _runAnim(fallback, dur);
+    }
+  }, 500);
+
   // Kick off OSRM route fetch. While waiting the marker just sits at origin.
   (async () => {
-    if(cancelled) return cleanup();   // Phase 5 bugfix v2 — was bare `return`,
-    // which leaked the marker when cancel fired before the fetch started.
+    if(cancelled){ clearInterval(freezePoller); return cleanup(); }
     const distKm = (typeof haversineKm === 'function')
       ? haversineKm(from.lat, from.lng, toLatLng.lat, toLatLng.lng)
       : _haversineKmLocal(from.lat, from.lng, toLatLng.lat, toLatLng.lng);
@@ -999,7 +1141,7 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
       const timer = setTimeout(() => controller.abort(), 6000);
       const resp = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
-      if(cancelled) return cleanup();   // Phase 5 bugfix v2 — cancel during fetch
+      if(cancelled){ clearInterval(freezePoller); return cleanup(); }
       if(!resp.ok) throw new Error('osrm ' + resp.status);
       const data = await resp.json();
       if(data.code !== 'Ok' || !data.routes?.length) throw new Error('no_route');
@@ -1007,9 +1149,15 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
       const osrmDur = data.routes[0].duration;  // seconds at OSRM's predicted average
       // Enforce the speed floor: never travel slower than `speedFloorMph`.
       const durationGameSec = Math.min(osrmDur, floorDurationSec);
+      if(animStarted){ return; }   // freeze watchdog beat us to it
+      animStarted = true;
+      clearInterval(freezePoller);
       _runAnim(coords, durationGameSec);
     } catch(err){
-      if(cancelled) return cleanup();
+      if(cancelled){ clearInterval(freezePoller); return cleanup(); }
+      if(animStarted){ return; }   // freeze watchdog beat us to it
+      animStarted = true;
+      clearInterval(freezePoller);
       // OSRM unreachable / timed out — straight-line fallback at the floor speed.
       const coords = [[from.lat, from.lng], [toLatLng.lat, toLatLng.lng]];
       _runAnim(coords, floorDurationSec);

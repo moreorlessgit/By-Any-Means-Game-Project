@@ -53,274 +53,400 @@ const BAM_CONFIG = {
   // ---------------------------------------------------------------------------
   // UNIT TYPE DEFINITIONS
   // ---------------------------------------------------------------------------
-  // "tags" is the backend capability list. A mission requiring "engine" will
-  // accept ANY unit that has "engine" in its tags.
-  // "stationType" must match the unitCategory of the station type hosting this unit.
-  // "providerLevel" = medical provider level for patient stabilization (null = none).
-  // "maxTransportCapacity" = max patients or suspects this unit can transport at once.
-  // "straightLine" = true for aircraft (bypasses OSRM, uses direct haversine path).
-  // "speedMph" = used for ETA calc on straight-line (aircraft) units.
-  // "seats" = ordered cab seating layout used by the Crew-Select Dispatch
-  //           picker and the Unit Details panel. Each seat:
-  //             id              — unique slot key.
-  //             label           — display name. Rename freely.
-  //             isDriver        — driver/operator seat. The driverCert from
-  //                               crewDefaults[typeKey] is enforced as a hard
-  //                               gate for this seat at dispatch time.
-  //             preferredCerts  — soft hint. Personnel holding any of these
-  //                               get a "fits this seat" badge in the picker.
-  //                               NOT a filter — cross-staffed responders are
-  //                               still selectable.
-  //           Seats live alongside the rest of each apparatus' config so it's
-  //           easy to see capacity + role layout next to min/ideal crew
-  //           defaults in crewDefaults below.
+  // SEATS ARE THE SINGLE SOURCE OF TRUTH for apparatus capacity, crew requirements,
+  // and patient/prisoner transport capacity. There is no separate `maxTransportCapacity`
+  // or `crewDefaults` block — every constraint lives on the seat itself.
+  //
+  // Top-level fields:
+  //   tags          — backend capability list for mission/box-alarm matching.
+  //                   ('transport' / 'transport_prisoner' tags retired — patient/
+  //                   prisoner transport is now expressed via seat flags below
+  //                   and matched via `{ needs:'isPatientSeat' }` in missions.)
+  //   stationType   — must match the unitCategory of the hosting station type.
+  //   providerLevel — medical provider level for patient stabilization (null = none).
+  //   straightLine  — true for aircraft (bypasses OSRM, uses direct haversine path).
+  //   speedMph      — used for ETA calc on straight-line (aircraft) units.
+  //
+  // SEAT SCHEMA — each entry in `seats[]`:
+  //   id              — unique slot key within the apparatus.
+  //   label           — display name. Rename freely.
+  //   isDriver        — true marks the driver/operator seat (label-only flag).
+  //                     A driver seat is ALWAYS hard-required for dispatch.
+  //   requiredCert    — HARD cert gate. The seat MUST be filled by a person
+  //                     who holds this cert (or an equivalent via `satisfies`)
+  //                     for the apparatus to roll. Marking requiredCert also
+  //                     makes the seat required-to-roll. Leave empty/undefined
+  //                     for seats that are nice-to-fill but not blocking.
+  //   preferredCerts  — array of equally-valid preferred certs. Holding any of
+  //                     them scores well for this seat. Not a hard filter.
+  //   niceToHaveCerts — additive scoring bonus per cert held. Stackable —
+  //                     a candidate holding two nice-to-haves outscores one.
+  //   isPatientSeat   — true = stretcher/patient bay. Responders cannot occupy.
+  //                     Counts toward unit's patient transport capacity.
+  //   isPrisonerSeat  — true = prisoner cage/cell. Responders cannot occupy.
+  //                     Counts toward unit's prisoner transport capacity.
+  //
+  // Mutually exclusive: a seat is EITHER a responder seat (with
+  // requiredCert/preferredCerts/niceToHaveCerts) OR a patient seat OR a
+  // prisoner seat. The matcher silently skips isPatientSeat / isPrisonerSeat
+  // seats during crew assignment.
+  //
+  // DISPATCH GATE — apparatus rolls when every seat with `requiredCert`
+  // (which includes every isDriver seat per its own requiredCert) is filled.
+  // All other responder seats are fill-if-available; the ideal-wait timer
+  // ([volunteerAssemblyMaxGameMin] game-minutes) caps how long the apparatus
+  // holds for non-required seats to assemble at the station.
   // ---------------------------------------------------------------------------
   unitTypes: {
     // ── FIRE ──────────────────────────────────────────────────────────────────
     engine: {
-      label:                'Engine',
-      tags:                 ['engine'],
-      stationType:          'fire',
-      cost:                 8000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Engine',
+      tags:           ['engine'],
+      stationType:    'fire',
+      cost:           8000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
-        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1','fire_officer_2'] },
-        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] },
-        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large','pump_ops_1'],
+          niceToHaveCerts:['ff1','ff2'] },
+        { id:'officer', label:'Officer',
+          preferredCerts:['fire_officer_1','fire_officer_2'],
+          niceToHaveCerts:['ff2','emt'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt','aemt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt','aemt'] }
       ],
     },
     pumper_tanker: {
-      label:                'Pumper/Tanker',
-      tags:                 ['engine','tanker'],   // counts as BOTH
-      stationType:          'fire',
-      cost:                 14000,
-      personnel:            3,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Pumper/Tanker',
+      tags:           ['engine','tanker'],   // counts as BOTH
+      stationType:    'fire',
+      cost:           14000,
+      personnel:      3,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
-        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
-        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] }
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large','pump_ops_1'],
+          niceToHaveCerts:['ff1'] },
+        { id:'officer', label:'Officer',
+          preferredCerts:['fire_officer_1'],
+          niceToHaveCerts:['ff2','emt'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt'] }
       ],
     },
     tanker: {
-      label:                'Tanker',
-      tags:                 ['tanker'],
-      stationType:          'fire',
-      cost:                 10000,
-      personnel:            2,
-      color:                '#c94800',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Tanker',
+      tags:           ['tanker'],
+      stationType:    'fire',
+      cost:           10000,
+      personnel:      2,
+      color:          '#c94800',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver', label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large'] },
-        { id:'cab_1',  label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] }
+        { id:'driver', label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large'],
+          niceToHaveCerts:['pump_ops_1','ff1'] },
+        { id:'cab_1',  label:'Cab Seat 1',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt'] }
       ],
     },
     ladder: {
-      label:                'Ladder/Aerial',
-      tags:                 ['ladder','engine'],   // ladder also counts as engine
-      stationType:          'fire',
-      cost:                 18000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Ladder/Aerial',
+      tags:           ['ladder','engine'],   // ladder also counts as engine
+      stationType:    'fire',
+      cost:           18000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','aerial_operator'] },
-        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1','fire_officer_2'] },
-        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] },
-        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large','aerial_operator'],
+          niceToHaveCerts:['ff2'] },
+        { id:'officer', label:'Officer',
+          preferredCerts:['fire_officer_1','fire_officer_2'],
+          niceToHaveCerts:['ff2'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['rescue_tech','emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt'] }
       ],
     },
     brush_truck: {
-      label:                'Brush Truck',
-      tags:                 ['brush'],
-      stationType:          'fire',
-      cost:                 6000,
-      personnel:            2,
-      color:                '#8b4513',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Brush Truck',
+      tags:           ['brush'],
+      stationType:    'fire',
+      cost:           6000,
+      personnel:      2,
+      color:          '#8b4513',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver', label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_small'] },
-        { id:'cab_1',  label:'Cab Seat 1',                     preferredCerts:['wildland_ff','fire_exterior','ff1'] }
+        { id:'driver', label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small'],
+          niceToHaveCerts:['wildland_ff','ff1'] },
+        { id:'cab_1',  label:'Cab Seat 1',
+          preferredCerts:['wildland_ff','fire_exterior','ff1'],
+          niceToHaveCerts:['ff2'] }
       ],
     },
     rescue: {
-      label:                'Heavy Rescue',
-      tags:                 ['rescue'],
-      stationType:          'fire',
-      cost:                 16000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Heavy Rescue',
+      tags:           ['rescue'],
+      stationType:    'fire',
+      cost:           16000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large'] },
-        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
-        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['rescue_tech','ff1'] },
-        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['rescue_tech','ff1'] }
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large'],
+          niceToHaveCerts:['rescue_tech','ff1'] },
+        { id:'officer', label:'Officer',
+          preferredCerts:['fire_officer_1'],
+          niceToHaveCerts:['rescue_tech','ff2'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          preferredCerts:['rescue_tech','ff1'],
+          niceToHaveCerts:['ff2','emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          preferredCerts:['rescue_tech','ff1'],
+          niceToHaveCerts:['ff2','aemt'] }
       ],
     },
     rescue_engine: {
-      label:                'Rescue Engine',
-      tags:                 ['rescue','engine'],   // counts as BOTH
-      stationType:          'fire',
-      cost:                 20000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Rescue Engine',
+      tags:           ['rescue','engine'],   // counts as BOTH
+      stationType:    'fire',
+      cost:           20000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
       seats: [
-        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
-        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
-        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['rescue_tech','ff1'] },
-        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          preferredCerts:['evoc_large','pump_ops_1'],
+          niceToHaveCerts:['rescue_tech'] },
+        { id:'officer', label:'Officer',
+          preferredCerts:['fire_officer_1'],
+          niceToHaveCerts:['rescue_tech','ff2'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          preferredCerts:['rescue_tech','ff1'],
+          niceToHaveCerts:['ff2','emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          preferredCerts:['ff1','ff2'],
+          niceToHaveCerts:['emt','aemt'] }
       ],
     },
     // ── EMS ───────────────────────────────────────────────────────────────────
     als_ambulance: {
-      label:                'ALS Ambulance',
-      tags:                 ['als','bls','transport'],
-      stationType:          'ems',
-      cost:                 9000,
-      personnel:            2,
-      color:                '#2ea8ff',
-      icon:                 '🚑',
-      providerLevel:        'als',
-      maxTransportCapacity: 1,
+      label:          'ALS Ambulance',
+      tags:           ['als','bls'],
+      stationType:    'ems',
+      cost:           9000,
+      personnel:      2,
+      color:          '#2ea8ff',
+      icon:           '🚑',
+      providerLevel:  'als',
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','emt'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['emt','aemt','paramedic'] },
-        { id:'captains_chair',  label:"Captain's Chair",                preferredCerts:['paramedic','aemt'] },
-        { id:'bench',           label:'Bench Seat',                     preferredCerts:['emt','aemt','paramedic'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','emt'],
+          niceToHaveCerts:['aemt','paramedic'] },
+        { id:'captains_chair',  label:"Captain's Chair",
+          requiredCert:'paramedic',   // ALS amb must roll with a medic
+          preferredCerts:['paramedic'],
+          niceToHaveCerts:['ccp','aemt'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['emt','aemt','paramedic'],
+          niceToHaveCerts:['evoc_small'] },
+        { id:'bench',           label:'Bench Seat',
+          preferredCerts:['emt','aemt','paramedic'],
+          niceToHaveCerts:['ff1'] },
+        { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
       ],
     },
     bls_ambulance: {
-      label:                'BLS Ambulance',
-      tags:                 ['bls','transport'],
-      stationType:          'ems',
-      cost:                 7000,
-      personnel:            2,
-      color:                '#1a7fc4',
-      icon:                 '🚑',
-      providerLevel:        'bls',
-      maxTransportCapacity: 1,
+      label:          'BLS Ambulance',
+      tags:           ['bls'],
+      stationType:    'ems',
+      cost:           7000,
+      personnel:      2,
+      color:          '#1a7fc4',
+      icon:           '🚑',
+      providerLevel:  'bls',
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','emt'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['emt','aemt'] },
-        { id:'captains_chair',  label:"Captain's Chair",                preferredCerts:['emt','aemt'] },
-        { id:'bench',           label:'Bench Seat',                     preferredCerts:['emt','emr'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','emt'],
+          niceToHaveCerts:['aemt'] },
+        { id:'captains_chair',  label:"Captain's Chair",
+          requiredCert:'emt',         // BLS amb must roll with an EMT
+          preferredCerts:['emt','aemt'],
+          niceToHaveCerts:['paramedic'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['emt','aemt'],
+          niceToHaveCerts:['emr'] },
+        { id:'bench',           label:'Bench Seat',
+          preferredCerts:['emt','emr'],
+          niceToHaveCerts:['aemt'] },
+        { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
       ],
     },
     fly_car: {
-      label:                'Medic Fly Car',
-      tags:                 ['als'],              // ALS but NO transport
-      stationType:          'ems',
-      cost:                 5000,
-      personnel:            1,
-      color:                '#2ea8ff',
-      icon:                 '🚗',
-      providerLevel:        'als',
-      maxTransportCapacity: 0,
+      label:          'Medic Fly Car',
+      tags:           ['als'],              // ALS but NO transport
+      stationType:    'ems',
+      cost:           5000,
+      personnel:      1,
+      color:          '#2ea8ff',
+      icon:           '🚗',
+      providerLevel:  'als',
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','paramedic','emt'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['paramedic','aemt','emt'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','paramedic','emt'],
+          niceToHaveCerts:['aemt'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['paramedic','aemt','emt'],
+          niceToHaveCerts:['ccp'] }
       ],
     },
     // ── POLICE ────────────────────────────────────────────────────────────────
     patrol: {
-      label:                'Patrol Unit',
-      tags:                 ['patrol','transport_prisoner'],
-      stationType:          'police',
-      cost:                 4000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 2,   // patrol can hold up to 2 suspects
+      label:          'Patrol Unit',
+      tags:           ['patrol'],
+      stationType:    'police',
+      cost:           4000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_officer'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','patrol_officer'],
+          niceToHaveCerts:['patrol_supervisor'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['patrol_officer'],
+          niceToHaveCerts:['patrol_supervisor'] },
+        { id:'rear_left',       label:'Rear (Driver Side)',  isPrisonerSeat:true },
+        { id:'rear_right',      label:'Rear (Passenger Side)', isPrisonerSeat:true }
       ],
     },
     supervisor: {
-      label:                'Supervisor',
-      tags:                 ['patrol','supervisor'],
-      stationType:          'police',
-      cost:                 5000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 1,
+      label:          'Supervisor',
+      tags:           ['patrol','supervisor'],
+      stationType:    'police',
+      cost:           5000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_supervisor','patrol_officer'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer','patrol_supervisor'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','patrol_supervisor','patrol_officer'],
+          niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['patrol_officer','patrol_supervisor'],
+          niceToHaveCerts:[] },
+        { id:'rear_left',       label:'Rear (Driver Side)', isPrisonerSeat:true }
       ],
     },
     k9: {
-      label:                'K9 Unit',
-      tags:                 ['patrol','k9'],
-      stationType:          'police',
-      cost:                 6000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 1,
+      label:          'K9 Unit',
+      tags:           ['patrol','k9'],
+      stationType:    'police',
+      cost:           6000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
       seats: [
-        { id:'driver',          label:'Handler/Driver',  isDriver:true, preferredCerts:['evoc_small','k9_handler'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+        { id:'driver',          label:'Handler/Driver',  isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','k9_handler'],
+          niceToHaveCerts:['patrol_officer'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['patrol_officer'],
+          niceToHaveCerts:[] },
+        { id:'rear_cage',       label:'Rear Cage', isPrisonerSeat:true }
       ],
     },
     sheriff_transport: {
-      label:                'Sheriff Transport Van',
-      tags:                 ['transport_prisoner'],
-      stationType:          'police',
-      cost:                 7000,
-      personnel:            2,
-      color:                '#64748b',
-      icon:                 '🚐',
-      providerLevel:        null,
-      maxTransportCapacity: 6,   // van can hold more suspects
+      label:          'Sheriff Transport Van',
+      tags:           ['transport_van'],
+      stationType:    'police',
+      cost:           7000,
+      personnel:      2,
+      color:          '#64748b',
+      icon:           '🚐',
+      providerLevel:  null,
       seats: [
-        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_officer'] },
-        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          preferredCerts:['evoc_small','patrol_officer'],
+          niceToHaveCerts:['patrol_supervisor'] },
+        { id:'front_passenger', label:'Front Passenger',
+          preferredCerts:['patrol_officer'],
+          niceToHaveCerts:[] },
+        { id:'cell_1', label:'Prisoner Cell 1', isPrisonerSeat:true },
+        { id:'cell_2', label:'Prisoner Cell 2', isPrisonerSeat:true },
+        { id:'cell_3', label:'Prisoner Cell 3', isPrisonerSeat:true },
+        { id:'cell_4', label:'Prisoner Cell 4', isPrisonerSeat:true },
+        { id:'cell_5', label:'Prisoner Cell 5', isPrisonerSeat:true },
+        { id:'cell_6', label:'Prisoner Cell 6', isPrisonerSeat:true }
       ],
     },
     // ── AIR MEDICAL ───────────────────────────────────────────────────────────
     helicopter: {
-      label:                'Medical Helicopter',
-      tags:                 ['als','transport','air_als'],
-      stationType:          'air',   // matches unitCategory 'air' in stationTypeDefs
-      cost:                 80000,
-      personnel:            2,
-      color:                '#f59e0b',
-      icon:                 '🚁',
-      providerLevel:        'als',
-      maxTransportCapacity: 1,
-      straightLine:         true,   // bypasses OSRM; uses direct point-to-point path
-      speedMph:             150,    // used for ETA calc and animation duration
-      // No driverCert in crewDefaults — isDriver here is informational (labels
-      // the pilot seat) but doesn't trip the hard driver gate.
+      label:          'Medical Helicopter',
+      tags:           ['als','air_als'],
+      stationType:    'air',   // matches unitCategory 'air' in stationTypeDefs
+      cost:           80000,
+      personnel:      2,
+      color:          '#f59e0b',
+      icon:           '🚁',
+      providerLevel:  'als',
+      straightLine:   true,    // bypasses OSRM; uses direct point-to-point path
+      speedMph:       150,     // used for ETA calc and animation duration
+      // Pilot seat has no requiredCert — flight ops aren't gated by EVOC.
+      // The hard driver gate is conceptually "we have a pilot" which is
+      // assumed always-available in this game.
       seats: [
-        { id:'pilot',   label:'Pilot',         isDriver:true, preferredCerts:[] },
-        { id:'medic_1', label:'Flight Medic 1',                preferredCerts:['paramedic','ccp'] },
-        { id:'medic_2', label:'Flight Medic 2',                preferredCerts:['ccp','paramedic'] }
+        { id:'pilot',   label:'Pilot',         isDriver:true,
+          preferredCerts:[],
+          niceToHaveCerts:[] },
+        { id:'medic_1', label:'Flight Medic 1',
+          requiredCert:'paramedic',   // air ALS must have a medic on board
+          preferredCerts:['paramedic','ccp'],
+          niceToHaveCerts:['ff1'] },
+        { id:'medic_2', label:'Flight Medic 2',
+          preferredCerts:['ccp','paramedic'],
+          niceToHaveCerts:['aemt'] },
+        { id:'stretcher', label:'Stretcher', isPatientSeat:true }
       ],
     },
   },
@@ -387,7 +513,16 @@ const BAM_CONFIG = {
   // MISSION DEFINITIONS
   // ---------------------------------------------------------------------------
   // spawnWeight: relative probability (higher = more common)
-  // requirements: array of unit TAG groups
+  // requirements: array of REQUIREMENT SLOTS. Each slot is satisfied by ONE unit.
+  //   Two slot shapes:
+  //     1. Tag-based:   { tags:['engine'] }            — any unit holding this tag
+  //                     { tags:['bls','als'] }         — any unit holding ANY of these
+  //     2. Seat-based:  { needs:'isPatientSeat' }      — unit with ≥1 patient seat
+  //                     { needs:'isPrisonerSeat' }     — unit with ≥1 prisoner seat
+  //   A slot may also combine both: { tags:['als'], needs:'isPatientSeat' }.
+  //   Legacy string-array slots (['engine'],['transport']) are supported by the
+  //   matcher with 'transport' → 'isPatientSeat' and 'transport_prisoner' →
+  //   'isPrisonerSeat' so old box-alarm preferences keep working.
   // reward: $ on scene resolution (before transport revenue)
   // patientChance: 0-1 probability that this call generates patients at all
   // patients: array of patient entries — each rolled independently:
@@ -618,7 +753,7 @@ const BAM_CONFIG = {
       category:      'ems',
       spawnMode:     'random',
       spawnWeight:   6,
-      requirements:  [['als'],['transport']],
+      requirements:  [['als'], { needs:'isPatientSeat' }],
       reward:        500,
       patientChance: 1.0,
       patients:      [
@@ -654,7 +789,7 @@ const BAM_CONFIG = {
       category:      'fire',
       spawnMode:     'road_major',
       spawnWeight:   0,
-      requirements:  [['als'],['transport'],['rescue'],['engine']],
+      requirements:  [['als'], { needs:'isPatientSeat' }, ['rescue'], ['engine']],
       reward:        1500,
       patientChance: 1.0,
       patients:      [
@@ -692,7 +827,7 @@ const BAM_CONFIG = {
       category:      'police',
       spawnMode:     'road_any',
       spawnWeight:   0,
-      requirements:  [['patrol'],['transport_prisoner']],
+      requirements:  [['patrol'], { needs:'isPrisonerSeat' }],
       reward:        400,
       patientChance: 0.2,
       patients:      [
@@ -1292,65 +1427,50 @@ const BAM_CONFIG = {
   },
 
   // ---------------------------------------------------------------------------
-  // CREW DEFAULTS PER UNIT TYPE  (Phase 5B)
+  // DISPATCH GATE + CREW SCORING  (seat-based — retired crewDefaults)
   // ---------------------------------------------------------------------------
-  // Defines the minimum and ideal cert "slots" each apparatus needs to roll.
+  // The legacy `crewDefaults` block is retired. Crew requirements now live
+  // on each seat (see unitTypes above): `requiredCert` is the HARD gate,
+  // `preferredCerts` is the soft preference, `niceToHaveCerts` is the
+  // weighted bonus list. The values below tune the auto-assign scoring and
+  // the station-assembly timer.
   //
-  //   driverCert — Hard gate. Apparatus literally cannot move unless at least
-  //                ONE assigned crew member holds this cert (or an equivalent
-  //                via `satisfies`). When null, no driver gate is applied
-  //                (used for aircraft where pilot certification is its own thing).
-  //   min        — Cert slots required to dispatch at minimum staffing.
-  //                Crew-slot rule: one person fills exactly one slot, even if
-  //                multi-cert. So `{evoc_large:1, ff1:1}` requires TWO distinct
-  //                people. The greedy matcher in personnel.js handles which
-  //                person fills which slot using cert equivalency.
-  //   ideal      — Cert slots the player wants on every response. Falling
-  //                short of ideal does NOT block dispatch — it kicks off the
-  //                ideal-wait timer per station/unit/call policy.
+  // SCORING (per candidate, per seat):
+  //   • requiredCert hit          — eligibility filter (not scored)
+  //   • preferredCerts any hit    — +crewScorePreferredHit
+  //   • niceToHaveCerts each hit  — +crewScoreNiceToHaveHit (stacks)
+  //   • career on-duty at station — +crewScoreAtStation
+  //   • volunteer travel penalty  — −crewScoreVolEtaPerMin per ETA minute
   //
-  // Per-unit overrides (unit.crewMin / unit.crewIdeal) take precedence when set.
+  // ASSEMBLY TIMER — `volunteerAssemblyMaxGameMin` game-minutes after the
+  // apparatus is staged. At expiry:
+  //   • Required seats filled → roll with whoever's at the station
+  //   • Required seats short  → ABORT dispatch (release crew, fire
+  //                             crew-failure notification toast); responders
+  //                             still complete the trip to the station and
+  //                             linger there for `volunteerStationLingerGameMin`
+  //                             before normal availability resumes.
   //
-  // Ambulance rule (player-confirmed 2026-05-17): 2-crew minimum is enforced
-  // by min having TWO distinct slots — driver + patient-care provider.
+  // FORCE-OUT — the player's "Send Anyway" button bypasses the timer. The
+  // driver-cert gate is the only block on force-out.
   // ---------------------------------------------------------------------------
-  crewDefaults: {
-    // ── Fire ─────────────────────────────────────────────────────────────────
-    engine:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, fire_officer_1:1, ff1:2 } },
-    pumper_tanker:     { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, fire_officer_1:1, ff1:2 } },
-    tanker:            { driverCert: 'evoc_large', min: { evoc_large:1 },                   ideal: { evoc_large:1, ff1:1 } },
-    ladder:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, aerial_operator:1, fire_officer_1:1, ff1:2 } },
-    brush_truck:       { driverCert: 'evoc_small', min: { evoc_small:1, fire_exterior:1 },  ideal: { evoc_small:1, wildland_ff:1, fire_exterior:1 } },
-    rescue:            { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, ff1:2, rescue_tech:1 } },
-    rescue_engine:     { driverCert: 'evoc_large', min: { evoc_large:1, ff1:1 },            ideal: { evoc_large:1, ff1:2, rescue_tech:1 } },
-    // ── EMS ──────────────────────────────────────────────────────────────────
-    als_ambulance:     { driverCert: 'evoc_small', min: { evoc_small:1, paramedic:1 },      ideal: { evoc_small:1, paramedic:1 } },
-    bls_ambulance:     { driverCert: 'evoc_small', min: { evoc_small:1, emt:1 },            ideal: { evoc_small:1, emt:1 } },
-    fly_car:           { driverCert: 'evoc_small', min: { evoc_small:1, emt:1 },            ideal: { evoc_small:1, paramedic:1 } },
-    // ── Police ───────────────────────────────────────────────────────────────
-    patrol:            { driverCert: 'evoc_small', min: { evoc_small:1, patrol_officer:1 }, ideal: { evoc_small:1, patrol_officer:1 } },
-    supervisor:        { driverCert: 'evoc_small', min: { evoc_small:1, patrol_supervisor:1 }, ideal: { evoc_small:1, patrol_supervisor:1 } },
-    k9:                { driverCert: 'evoc_small', min: { evoc_small:1, k9_handler:1 },     ideal: { evoc_small:1, k9_handler:1 } },
-    sheriff_transport: { driverCert: 'evoc_small', min: { evoc_small:1, patrol_officer:1 }, ideal: { evoc_small:1, patrol_officer:2 } },
-    // ── Air Medical ──────────────────────────────────────────────────────────
-    // No driver gate for aircraft — pilot certification is parallel and out of scope for 5B.
-    helicopter:        { driverCert: null,         min: { paramedic:1 },                    ideal: { paramedic:1, ccp:1 } }
-  },
+  crewScorePreferredHit:                  100, // points for hitting any preferredCert
+  crewScoreNiceToHaveHit:                  25, // points per niceToHave the person holds (stacks)
+  crewScoreAtStation:                      50, // bonus for career-on-duty at the station
+  crewScoreVolEtaPerMin:                    1, // penalty per minute of volunteer ETA
+  volunteerAssemblyMaxGameMin:             10, // hard cap; matches real-world "out the door in 10"
+  volunteerStationLingerGameMin:           30, // crew stays at station after failed assembly
+  volunteerOriginFreezeWatchdogGameSec:    30, // force straight-line if vol hasn't started moving
 
   // ---------------------------------------------------------------------------
   // PERSONNEL / DISPATCH POLICY DEFAULTS  (Phase 5B)
   // ---------------------------------------------------------------------------
-  // idealCrewWaitMs        — Global default time a unit will wait for ideal
-  //                          crew once min crew is met, before departing at
-  //                          minimum staffing. Overridable per-station and
-  //                          per-unit (station/unit `idealCrewWaitMs`).
   // stationStaffingTypes   — Valid values for station.stationType. Career and
   //                          combination are active in 5B; volunteer behavior
   //                          (home/work locations, direct-to-scene) lands in 5D.
   // personnelHireCostBase  — Flat onboarding cost per career responder, before
   //                          any selected cert training costs are added.
   // ---------------------------------------------------------------------------
-  idealCrewWaitMs:       10 * 60 * 1000,
   stationStaffingTypes:  ['career','combination','volunteer'],
   personnelHireCostBase: 2000,
 
@@ -1660,8 +1780,8 @@ const BAM_CONFIG = {
   // ---------------------------------------------------------------------------
   serviceTags: {
     fire:   ['engine','tanker','ladder','rescue','brush'],
-    ems:    ['als','bls','transport','air_als'],
-    police: ['patrol','supervisor','k9','transport_prisoner']
+    ems:    ['als','bls','air_als'],
+    police: ['patrol','supervisor','k9','transport_van']
   },
 
   // ---------------------------------------------------------------------------

@@ -364,11 +364,15 @@ function _renderUnitDetails(){
     etaRows.push(['Offload complete in', formatETA(remSec)]);
   }
 
-  // Capability / loadout snapshot
+  // Capability / loadout snapshot. Transport capacity comes from seats now:
+  // isPatientSeat for patient bays, isPrisonerSeat for cells.
   const tags = (ut.tags || []).join(', ') || '—';
-  const cap  = ut.maxTransportCapacity || 0;
+  const patCap  = (typeof unitPatientCapacity  === 'function') ? unitPatientCapacity(unit)  : 0;
+  const prisCap = (typeof unitPrisonerCapacity === 'function') ? unitPrisonerCapacity(unit) : 0;
   const loadCount = (unit.transportPatients?.length || unit.transportSuspects?.length || 0);
-  const loadText  = cap > 0 ? `${loadCount} / ${cap} loaded` : 'No transport capacity';
+  const loadText  = patCap > 0  ? `${loadCount} / ${patCap} patient seat${patCap===1?'':'s'}`
+                  : prisCap > 0 ? `${loadCount} / ${prisCap} prisoner seat${prisCap===1?'':'s'}`
+                  :               'No transport capacity';
 
   const conflict = hasStationDCConflict(station);
 
@@ -414,8 +418,6 @@ function _renderUnitDetails(){
         </div>
 
         ${_renderUnitSeatingSection(unit)}
-
-        ${typeof renderUnitCrewRosterHTML === 'function' ? renderUnitCrewRosterHTML(unit.id) : ''}
 
         <div class="section-title" style="margin-top:14px;">Dispatch Center</div>
         <div style="font-size:.82rem;">
@@ -528,73 +530,196 @@ function _escUnitHtml(str){
 }
 
 // =============================================================================
-// SEATING LAYOUT  (informational — Unit Details modal)
+// SEATING LAYOUT + CREW  (merged — Unit Details modal)
 // =============================================================================
-// Reads the seating layout from BAM_CONFIG.unitTypes[typeKey].seats and the
-// dispatch crew minimums from crewDefaults. Read-only for now; the same data
-// drives the Crew-Select Dispatch picker, and will eventually host assigned-
-// seat persistence and per-seat equipment loadouts.
+// One unified per-seat section. Each seat row shows:
+//   • Seat label + isDriver tag + requiredCert/preferredCerts/niceToHave chips
+//   • Patient/prisoner seats render as informational rows (no responder)
+//   • If a responder is assigned to that seatId, their name + status badge +
+//     cert chips render inside the row. Empty responder seats show the
+//     player which certs would be a good fit.
+// Below the seat list:
+//   • Aggregate staffing chip (🚫 / 🔴 / 🟡 / 🟢)
+//   • At-station: pin editor (Pin from pool dropdown)
+//   • Missing-summary line for whichever level isn't met
 function _renderUnitSeatingSection(unit){
   if(!unit) return '';
   const layout = (typeof getSeatingLayoutForUnit === 'function')
     ? getSeatingLayoutForUnit(unit) : null;
   if(!layout || !Array.isArray(layout.seats) || !layout.seats.length) return '';
 
-  const crewCfg    = BAM_CONFIG.crewDefaults?.[unit.typeKey] || {};
-  const certDefs   = BAM_CONFIG.certifications || {};
-  const driverCert = crewCfg.driverCert || null;
+  const certDefs = BAM_CONFIG.certifications || {};
+  const onCall = (typeof _unitIsOnCall === 'function') ? _unitIsOnCall(unit) : false;
+  const assignedCrew = (typeof getAssignedCrewForUnit === 'function')
+    ? getAssignedCrewForUnit(unit.id) : [];
+  const pinned = (typeof getPinnedPersonnelForUnit === 'function')
+    ? getPinnedPersonnelForUnit(unit.id) : [];
 
-  // Format min/ideal crew as cert chips so the player can compare at a glance.
-  const fmtReq = (reqMap) => {
-    const entries = Object.entries(reqMap || {});
-    if(!entries.length) return '<span style="color:var(--muted);">none</span>';
-    return entries.map(([cert, n]) => {
-      const lbl = certDefs[cert]?.label || cert;
-      return `<span class="cs-cert-chip">${n}× ${_escUnitHtml(lbl)}</span>`;
-    }).join('');
+  // Build a seatId → person lookup. On-call rides preferred; at-station
+  // shows pins. Personnel with currentAssignment.seatId === this unit's
+  // seat get top priority. Pinned-no-seatId entries are listed at the end
+  // (they ride, but haven't been bound to a specific seat yet).
+  const occupantBySeat = {};
+  const unboundOnCall  = [];
+  if(onCall){
+    assignedCrew.forEach(p => {
+      const sid = p.currentAssignment?.seatId;
+      if(sid && !occupantBySeat[sid]) occupantBySeat[sid] = p;
+      else if(!sid) unboundOnCall.push(p);
+    });
+  } else {
+    pinned.forEach(p => {
+      const sid = p.pinnedSeatId;
+      if(sid && !occupantBySeat[sid]) occupantBySeat[sid] = p;
+      else unboundOnCall.push(p);
+    });
+  }
+
+  // Per-person status badge.
+  const _statusBadge = (p) => {
+    const s = p.status || 'available';
+    if(s === 'responding') return `<span style="font-size:.66rem;color:var(--gold);background:rgba(251,191,36,0.18);padding:1px 6px;border-radius:9px;margin-left:6px;">responding</span>`;
+    if(s === 'busy')       return `<span style="font-size:.66rem;color:var(--green);background:rgba(34,197,94,0.18);padding:1px 6px;border-radius:9px;margin-left:6px;">on board</span>`;
+    return `<span style="font-size:.66rem;color:var(--muted);margin-left:6px;">${_escUnitHtml(s)}</span>`;
+  };
+
+  const _personCertChips = (p) => {
+    return (p.certs || []).slice(0, 5).map(c =>
+      `<span class="cs-cert-chip">${_escUnitHtml(certDefs[c]?.label || c)}</span>`
+    ).join('');
   };
 
   const seatsHtml = layout.seats.map((seat, idx) => {
+    // Patient seat — informational, never holds a responder.
+    if(seat.isPatientSeat){
+      return `<div class="cs-seat-row" style="background:rgba(46,168,255,.05);cursor:default;">
+        <div style="flex:1;min-width:0;">
+          <div class="cs-seat-label">${idx + 1}. ${_escUnitHtml(seat.label)}
+            <span style="color:#2ea8ff;font-size:.65rem;letter-spacing:1px;margin-left:6px;">🚑 PATIENT</span>
+          </div>
+          <div style="font-size:.72rem;color:var(--muted);font-style:italic;margin-top:2px;">Stretcher — responders cannot occupy</div>
+        </div>
+      </div>`;
+    }
+    // Prisoner seat — informational.
+    if(seat.isPrisonerSeat){
+      return `<div class="cs-seat-row" style="background:rgba(88,101,242,.05);cursor:default;">
+        <div style="flex:1;min-width:0;">
+          <div class="cs-seat-label">${idx + 1}. ${_escUnitHtml(seat.label)}
+            <span style="color:#5865f2;font-size:.65rem;letter-spacing:1px;margin-left:6px;">🔒 PRISONER</span>
+          </div>
+          <div style="font-size:.72rem;color:var(--muted);font-style:italic;margin-top:2px;">Cell — responders cannot occupy</div>
+        </div>
+      </div>`;
+    }
+    // Responder seat. Top half: seat metadata. Bottom: occupant or empty hint.
     const isDriverSeat = !!seat.isDriver;
     const driverTag = isDriverSeat
       ? `<span style="color:var(--gold);font-size:.65rem;letter-spacing:1px;margin-left:6px;">★ DRIVER</span>`
       : '';
-    const driverCertChip = (isDriverSeat && driverCert)
-      ? `<span class="cs-cert-chip driver">${_escUnitHtml(certDefs[driverCert]?.label || driverCert)}</span>`
+    const reqCertChip = seat.requiredCert
+      ? `<span class="cs-cert-chip driver" title="HARD-required for dispatch">⚠ ${_escUnitHtml(certDefs[seat.requiredCert]?.label || seat.requiredCert)}</span>`
       : '';
-    const prefChips = (seat.preferredCerts || []).map(c =>
-      `<span class="cs-cert-chip">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
-    const noPrefHint = (!driverCertChip && !prefChips)
+    const prefChips = (seat.preferredCerts || [])
+      .filter(c => c !== seat.requiredCert)
+      .map(c => `<span class="cs-cert-chip" title="Preferred">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
+    const niceChips = (seat.niceToHaveCerts || [])
+      .map(c => `<span class="cs-cert-chip" style="opacity:.6;" title="Nice to have">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
+    const noPrefHint = (!reqCertChip && !prefChips && !niceChips)
       ? '<span style="color:var(--muted);font-size:.72rem;font-style:italic;">No cert preference</span>'
       : '';
-    return `<div class="cs-seat-row${isDriverSeat ? ' driver' : ''}" style="cursor:default;">
-      <div style="flex:1;min-width:0;">
+
+    // Occupant block (if any).
+    const occupant = occupantBySeat[seat.id];
+    let occupantHtml;
+    if(occupant){
+      occupantHtml = `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);">
+        <div style="display:flex;align-items:center;flex-wrap:wrap;">
+          <span style="font-weight:700;">${_escUnitHtml(occupant.name)}</span>
+          <span style="font-size:.7rem;color:var(--muted);margin-left:6px;">${_escUnitHtml(occupant.rank || '')}</span>
+          ${_statusBadge(occupant)}
+        </div>
+        <div style="margin-top:3px;">${_personCertChips(occupant)}</div>
+      </div>`;
+    } else {
+      occupantHtml = `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.06);font-size:.74rem;color:var(--muted);font-style:italic;">
+        — unfilled —
+      </div>`;
+    }
+
+    return `<div class="cs-seat-row${isDriverSeat ? ' driver' : ''}" style="cursor:default;flex-direction:column;align-items:stretch;">
+      <div>
         <div class="cs-seat-label">
           ${idx + 1}. ${_escUnitHtml(seat.label)}${driverTag}
         </div>
-        <div style="margin-top:3px;">${driverCertChip}${prefChips}${noPrefHint}</div>
+        <div style="margin-top:3px;">${reqCertChip}${prefChips}${niceChips}${noPrefHint}</div>
       </div>
+      ${occupantHtml}
     </div>`;
   }).join('');
 
-  // "Crew Standards" sub-card surfaces min/ideal alongside seats. The two
-  // concepts are decoupled (seats = capacity; min/ideal = dispatch gate) but
-  // the player thinks about them together, so render them side-by-side.
-  return `<div class="section-title" style="margin-top:14px;">Seating Layout (${layout.seats.length} seats)</div>
+  // Unbound on-call crew (rare — defensive against legacy saves whose
+  // currentAssignment doesn't carry a seatId).
+  const unboundHtml = unboundOnCall.length
+    ? `<div style="margin-top:8px;padding:6px 8px;background:rgba(255,255,255,.03);border:1px dashed var(--border);border-radius:3px;">
+        <div style="font-size:.7rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:3px;">${onCall ? 'Riding (no seat)' : 'Pinned (no seat)'}</div>
+        ${unboundOnCall.map(p => `<div style="font-size:.78rem;">${_escUnitHtml(p.name)} <span style="color:var(--muted);">${_escUnitHtml(p.rank || '')}</span></div>`).join('')}
+      </div>`
+    : '';
+
+  // Staffing chip + summary.
+  const chip = (typeof renderUnitStaffingChip === 'function') ? renderUnitStaffingChip(unit) : '';
+  const r = (typeof hasRequiredSeatsFilled === 'function') ? hasRequiredSeatsFilled(unit.id) : null;
+  let summaryLine = '';
+  if(r){
+    if(!r.hasDriver){
+      const dCertId = (typeof getUnitDriverCert === 'function') ? getUnitDriverCert(unit) : null;
+      summaryLine = `<span style="font-size:.74rem;color:var(--accent);">🚫 No qualified driver — need ${_escUnitHtml(certDefs[dCertId]?.label || dCertId || 'driver')}.</span>`;
+    } else if(r.unfilledRequired.length){
+      const names = r.unfilledRequired.map(s => s.label).join(', ');
+      summaryLine = `<span style="font-size:.74rem;color:var(--accent);">🔴 Required seats unfilled: ${_escUnitHtml(names)}.</span>`;
+    } else if(r.unfilledOptional.length){
+      const names = r.unfilledOptional.map(s => s.label).join(', ');
+      summaryLine = `<span style="font-size:.74rem;color:var(--gold);">🟡 Optional seats empty: ${_escUnitHtml(names)}.</span>`;
+    } else {
+      summaryLine = `<span style="font-size:.74rem;color:var(--green);">🟢 All responder seats filled.</span>`;
+    }
+  }
+
+  // Pin editor — only visible at-station. Pinning mid-call is a no-op because
+  // the matcher already committed crew at dispatch.
+  let pinEditor = '';
+  if(!onCall && typeof personnel !== 'undefined'){
+    const station = (function(){
+      for(const s of (typeof stations !== 'undefined' ? stations : [])){
+        if(s.units?.some(u => u.id === unit.id)) return s;
+      }
+      return null;
+    })();
+    if(station){
+      const pool = personnel.filter(p =>
+        p.stationId === station.id && !p.pinnedUnitId && p.status === 'available');
+      const poolOpts = pool.length
+        ? `<option value="">— pin from pool —</option>` + pool.map(p =>
+            `<option value="${p.id}">${_escUnitHtml(p.name)} (${_escUnitHtml(p.rank || 'responder')})</option>`
+          ).join('')
+        : `<option value="">— no available pool members —</option>`;
+      pinEditor = `<div style="margin-top:8px;display:flex;gap:6px;align-items:center;">
+          <select id="udm-pin-select" style="flex:1;">${poolOpts}</select>
+          <button class="btn-sm" onclick="_unitDetailsPinFromPool('${unit.id}')">Pin</button>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+          Pinned personnel ride this unit first; the matcher fills the remaining seats from the station pool at dispatch time.
+        </div>`;
+    }
+  }
+
+  const headerTitle = onCall ? 'Seating &amp; Crew On Board' : 'Seating &amp; Crew Roster';
+  return `<div class="section-title" style="margin-top:14px;">${headerTitle} (${layout.seats.length} seats)</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">${chip}${summaryLine}</div>
     ${seatsHtml}
-    <div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:3px;">
-      <div style="font-size:.7rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Dispatch Crew Standards</div>
-      <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-size:.78rem;align-items:start;">
-        <div style="color:var(--muted);">Driver</div>
-        <div>${driverCert
-          ? `<span class="cs-cert-chip driver">${_escUnitHtml(certDefs[driverCert]?.label || driverCert)}</span>`
-          : '<span style="color:var(--muted);">No driver gate</span>'}</div>
-        <div style="color:var(--muted);">Min crew</div>
-        <div>${fmtReq(crewCfg.min)}</div>
-        <div style="color:var(--muted);">Ideal crew</div>
-        <div>${fmtReq(crewCfg.ideal)}</div>
-      </div>
-    </div>`;
+    ${unboundHtml}
+    ${pinEditor}`;
 }
 
 // =============================================================================
@@ -614,8 +739,8 @@ function _renderAwaitingCrewBlock(unit, station){
   const arrived = responders.filter(p => p.status === 'busy').length;
 
   // Determine driver-gate status. We need at least one person at the station
-  // with the apparatus's driver cert.
-  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert;
+  // with the apparatus's driver cert. Driver cert now lives on the driver seat.
+  const driverCert = (typeof getUnitDriverCert === 'function') ? getUnitDriverCert(unit) : null;
   let driverOk = true, driverLabel = '';
   if(driverCert){
     driverLabel = BAM_CONFIG.certifications?.[driverCert]?.label || driverCert;

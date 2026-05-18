@@ -1801,9 +1801,21 @@ async function spawnIncident(manual=false){
       BAM_CONFIG.unitTypes[unit.typeKey]?.tags.forEach(t => availableTags.add(t));
   });
 
+  // Seat-aware requirement satisfaction:
+  //   • Tag-based slots (array or { tags:[…] }) — any owned unit holding one of the tags
+  //   • Seat-based slots ({ needs:'isPatientSeat' | 'isPrisonerSeat' }) — any owned unit
+  //     whose seats array has at least one matching flag.
+  const ownedUnits = getAllUnits().filter(({unit}) => unit.inService !== false).map(x => x.unit);
+  const reqSatisfiedByOwned = (req) => {
+    return ownedUnits.some(u => (typeof unitMatchesRequirement === 'function')
+      ? unitMatchesRequirement(u, req)
+      : (Array.isArray(req)
+          ? req.some(t => (BAM_CONFIG.unitTypes[u.typeKey]?.tags || []).includes(t))
+          : false));
+  };
   const pool = Object.entries(BAM_CONFIG.missions).filter(([,m]) => {
     if(m.spawnWeight <= 0) return false;
-    return m.requirements.every(reqGroup => reqGroup.some(tag => availableTags.has(tag)));
+    return m.requirements.every(reqSatisfiedByOwned);
   });
 
   if(!pool.length) return;
@@ -1844,11 +1856,16 @@ async function spawnIncident(manual=false){
       }catch(e){ /* snap failed, keep random point */ }
     }
   } else {
-    // Phase 1 fallback: spawn within radius of stations capable of this call
-    const neededTags = new Set(mCfg.requirements.flat());
-    const eligible   = stations.filter(s =>
+    // Phase 1 fallback: spawn within radius of stations capable of this call.
+    // Station is eligible iff at least one of its units satisfies AT LEAST
+    // ONE of the mission's slot requirements (cheaper than full slot matching).
+    const eligible = stations.filter(s =>
       s.inService !== false &&
-      s.units.some(u => BAM_CONFIG.unitTypes[u.typeKey]?.tags.some(t => neededTags.has(t)))
+      s.units.some(u => (mCfg.requirements || []).some(req =>
+        (typeof unitMatchesRequirement === 'function')
+          ? unitMatchesRequirement(u, req)
+          : (Array.isArray(req) && req.some(t => (BAM_CONFIG.unitTypes[u.typeKey]?.tags || []).includes(t)))
+      ))
     );
     const ref = eligible.length
       ? eligible[Math.floor(Math.random()*eligible.length)]
@@ -1858,10 +1875,13 @@ async function spawnIncident(manual=false){
     lng = ref.lng + (radKm/111)*(Math.random()*2-1);
   }
 
-  // Generate patients — only if transport-capable units exist and EMS covers this area.
+  // Generate patients — only if a patient-transport-capable unit exists and
+  // EMS covers this area. Seat-based: any owned unit with ≥1 isPatientSeat.
   const hasTransport = getAllUnits().some(({unit}) =>
     unit.inService !== false &&
-    BAM_CONFIG.unitTypes[unit.typeKey]?.tags.some(t => ['transport','bls','als','air_als'].includes(t))
+    (typeof unitCanTransportPatient === 'function'
+      ? unitCanTransportPatient(unit)
+      : ((BAM_CONFIG.unitTypes[unit.typeKey]?.tags || []).some(t => ['bls','als','air_als'].includes(t))))
   );
   const hasEMSCoverage = esns.length === 0 ||
     (esnId && esns.find(e => e.id === esnId)?.assignments?.ems?.length > 0);
@@ -2217,7 +2237,8 @@ function renderDispatchBody(inc, mCfg){
     // Phase 5B — staffing badge + per-row Override checkbox.
     let staffingBadge = '', overrideUI = '';
     if(p5bNoDriver){
-      const dCert = BAM_CONFIG.certifications?.[BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert]?.label || 'driver';
+      const dCertId = (typeof getUnitDriverCert === 'function') ? getUnitDriverCert(unit) : null;
+      const dCert = BAM_CONFIG.certifications?.[dCertId]?.label || 'driver';
       staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(232,67,26,.18);color:var(--accent);border:1px solid var(--accent);padding:1px 6px;border-radius:9px;margin-left:4px;">🚫 No ${dCert.replace(/\s+EVOC.*$/,'')} driver</span>`;
     } else if(p5bUnderstaffed){
       const missingTxt = typeof _formatMissing === 'function' ? _formatMissing(p5bMin.missing) : '';
@@ -2228,9 +2249,9 @@ function renderDispatchBody(inc, mCfg){
           onclick="event.stopPropagation(); _toggleOverrideUnderstaffed('${unit.id}');"/> Override (respond understaffed)
       </label>`;
     } else if(p5bMin && p5bMin.ok && !p5bIdeal.ok){
-      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(251,191,36,.18);color:var(--gold);border:1px solid var(--gold);padding:1px 6px;border-radius:9px;margin-left:4px;">🟡 Min only</span>`;
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(251,191,36,.18);color:var(--gold);border:1px solid var(--gold);padding:1px 6px;border-radius:9px;margin-left:4px;">🟡 Seats short</span>`;
     } else if(p5bMin && p5bIdeal.ok){
-      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(34,197,94,.18);color:var(--green);border:1px solid var(--green);padding:1px 6px;border-radius:9px;margin-left:4px;">🟢 Ideal</span>`;
+      staffingBadge = `<span style="display:inline-block;font-size:.66rem;font-weight:700;background:rgba(34,197,94,.18);color:var(--green);border:1px solid var(--green);padding:1px 6px;border-radius:9px;margin-left:4px;">🟢 Fully staffed</span>`;
     }
     html += `<div class="dm-unit-row${cls}${selCls}"${rowStyle}
       onclick="toggleDispatchUnit('${unit.id}','${(avail && !blockedByCrew)||sel}')"
@@ -2410,23 +2431,32 @@ function _csAutoSeedAssignments(unitId, candidates){
   })();
   if(!unit) return {};
   const layout = getSeatingLayoutForUnit(unit);
-  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert || null;
+  // Seat-based auto-seed: required seats first (driver + any seat with
+  // requiredCert), then optional seats. Within each, the picker prefers a
+  // candidate matching the seat's preferredCerts. Patient/prisoner seats are
+  // skipped — responders cannot occupy them.
+  const responderSeats = (layout.seats || []).filter(s =>
+    !s.isPatientSeat && !s.isPrisonerSeat);
   const used = new Set();
   const out  = {};
-  // Sort seats so driver(s) are filled first
-  const seatsByPriority = (layout.seats || []).slice().sort((a, b) =>
-    (b.isDriver ? 1 : 0) - (a.isDriver ? 1 : 0));
-  // Candidates already come sorted station → home → roaming.
+  const seatsByPriority = responderSeats.slice().sort((a, b) => {
+    // requiredCert seats first, then preferredCerts-bearing, then bare
+    const score = (s) => (s.requiredCert ? 2 : 0) + ((s.preferredCerts || []).length ? 1 : 0);
+    return score(b) - score(a);
+  });
   seatsByPriority.forEach(seat => {
-    const needs = seat.isDriver
-      ? (driverCert ? [driverCert] : [])
-      : (seat.preferredCerts || []);
     let pick = null;
-    if(needs.length){
-      pick = candidates.find(p => !used.has(p.id) &&
-        needs.some(c => personHasCert(p, c)));
+    if(seat.requiredCert){
+      pick = candidates.find(p => !used.has(p.id) && personHasCert(p, seat.requiredCert));
+      if(!pick) return;  // can't fill required seat — leave empty so banner flags it
+    } else {
+      const needs = seat.preferredCerts || [];
+      if(needs.length){
+        pick = candidates.find(p => !used.has(p.id) &&
+          needs.some(c => personHasCert(p, c)));
+      }
+      if(!pick) pick = candidates.find(p => !used.has(p.id));
     }
-    if(!pick) pick = candidates.find(p => !used.has(p.id));
     if(pick){
       out[seat.id] = pick.id;
       used.add(pick.id);
@@ -2452,14 +2482,14 @@ function _renderCrewSelectUnitCard(unitId){
   const dispName  = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(unit, station) : unit.name;
   const assignments = _csAssignments[unitId] || {};
   const candidates  = _csCandidates[unitId]  || [];
-  // Evaluate the current crew against min/ideal slots
-  const personIds   = Object.values(assignments).filter(Boolean);
-  const evalRes     = (typeof evaluateCrewSelection === 'function')
-    ? evaluateCrewSelection(unitId, personIds)
+  // Evaluate as a seat map so the picker scores each seat assignment against
+  // its requiredCert/preferredCerts. The evaluator returns a banner-friendly
+  // shape: hasDriver / minMet / idealMet / missing / idealMissing.
+  const evalRes = (typeof evaluateCrewSelection === 'function')
+    ? evaluateCrewSelection(unitId, assignments)
     : { ok:true, hasDriver:true, minMet:true, idealMet:true, missing:{}, idealMissing:{} };
 
-  // Banner color + text — surfaces the staffing state BEFORE dispatch so the
-  // player doesn't have to back out to fix it.
+  // Banner — surfaces staffing state before dispatch.
   let bannerCls = 'ok', bannerHtml = '';
   if(!evalRes.hasDriver){
     bannerCls = 'error';
@@ -2469,7 +2499,7 @@ function _renderCrewSelectUnitCard(unitId){
     const missTxt = typeof _formatMissing === 'function' ? _formatMissing(evalRes.missing) : '';
     const overridden = _csOverrides.has(unitId);
     bannerCls = overridden ? 'warn' : 'error';
-    bannerHtml = `${overridden ? '🟡' : '🔴'} <b>Below minimum crew</b> — needs ${missTxt || 'additional certified responders'}.
+    bannerHtml = `${overridden ? '🟡' : '🔴'} <b>Required seat${Object.keys(evalRes.missing||{}).length===1?'':'s'} unfilled</b> — needs ${missTxt || 'a properly-certified responder'}.
       <label style="display:inline-flex;gap:4px;align-items:center;font-size:.74rem;margin-left:6px;cursor:pointer;">
         <input type="checkbox" ${overridden ? 'checked' : ''}
           onclick="_csToggleOverride('${unitId}')"/> Override (respond understaffed)
@@ -2477,19 +2507,43 @@ function _renderCrewSelectUnitCard(unitId){
   } else if(!evalRes.idealMet){
     const missTxt = typeof _formatMissing === 'function' ? _formatMissing(evalRes.idealMissing) : '';
     bannerCls = 'warn';
-    bannerHtml = `🟡 <b>Minimum crew met</b>, ideal short: ${missTxt || '—'}. Dispatchable.`;
+    bannerHtml = `🟡 <b>Required seats filled.</b> Optional seats empty: ${missTxt || '—'}. Dispatchable.`;
   } else {
     bannerCls = 'ok';
-    bannerHtml = `🟢 <b>Ideal crew met.</b> Ready to dispatch.`;
+    bannerHtml = `🟢 <b>Every seat filled.</b> Ready to dispatch.`;
   }
 
   // Seats column
   const driverCert = evalRes.driverCert;
+  const responderSeatsCount = (layout.seats || []).filter(s => !s.isPatientSeat && !s.isPrisonerSeat).length;
+  const filledCount = Object.values(assignments).filter(Boolean).length;
   const seatsHtml = (layout.seats || []).map(seat => {
+    // Patient/prisoner seats render as informational chips — not selectable.
+    if(seat.isPatientSeat){
+      return `<div class="cs-seat-row" style="opacity:.85;background:rgba(46,168,255,.05);">
+        <div style="flex:1;min-width:0;">
+          <div class="cs-seat-label">${_escCsHtml(seat.label)}
+            <span style="color:#2ea8ff;font-size:.65rem;letter-spacing:1px;margin-left:6px;">🚑 PATIENT</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--muted);font-style:italic;">Stretcher — responders cannot occupy</div>
+        </div>
+      </div>`;
+    }
+    if(seat.isPrisonerSeat){
+      return `<div class="cs-seat-row" style="opacity:.85;background:rgba(88,101,242,.05);">
+        <div style="flex:1;min-width:0;">
+          <div class="cs-seat-label">${_escCsHtml(seat.label)}
+            <span style="color:#5865f2;font-size:.65rem;letter-spacing:1px;margin-left:6px;">🔒 PRISONER</span>
+          </div>
+          <div style="font-size:.7rem;color:var(--muted);font-style:italic;">Cell — responders cannot occupy</div>
+        </div>
+      </div>`;
+    }
+    // Responder seat — render the picker.
     const occupantId = assignments[seat.id] || null;
     const occupant   = occupantId ? personnel.find(p => p.id === occupantId) : null;
-    // Build the per-seat occupant dropdown — every unassigned candidate +
-    // current occupant (so re-selecting is a no-op).
+    const reqCert    = seat.requiredCert || null;
+    // Per-seat dropdown — only candidates who satisfy requiredCert (if any).
     const optHtml = [
       `<option value="">— empty —</option>`,
       ...candidates.map(p => {
@@ -2502,18 +2556,24 @@ function _renderCrewSelectUnitCard(unitId){
           : meta.state === 'home'    ? `Home ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
           : meta.state === 'roaming' ? `Roaming ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
           : '';
-        return `<option value="${p.id}"${sel}>${_escCsHtml(p.name)} — ${_escCsHtml(p.rank||'—')} (${locTxt})</option>`;
+        // Mark candidates that fail the requiredCert — still selectable so
+        // the player can see the gap but the banner will flag it.
+        const failsReq = reqCert && !personHasCert(p, reqCert);
+        const prefix = failsReq ? '⚠ ' : '';
+        return `<option value="${p.id}"${sel}>${prefix}${_escCsHtml(p.name)} — ${_escCsHtml(p.rank||'—')} (${locTxt})</option>`;
       })
     ].join('');
     const isDriverSeat = !!seat.isDriver;
     let occupantHtml = '';
     if(occupant){
-      const isDriverOK = !isDriverSeat || !driverCert || personHasCert(occupant, driverCert);
+      const occCertSet = (typeof expandCertSet === 'function') ? expandCertSet(occupant.certs || []) : new Set(occupant.certs || []);
+      const reqOk = !reqCert || occCertSet.has(reqCert);
       const certBadges = (occupant.certs || []).slice(0, 5).map(c => {
         const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
-        const fits = (seat.preferredCerts || []).includes(c) ||
-                     (isDriverSeat && driverCert && c === driverCert);
-        const cls = fits ? 'fits' : (isDriverSeat && driverCert && c === driverCert ? 'driver' : '');
+        const isReq  = reqCert && c === reqCert;
+        const isPref = (seat.preferredCerts || []).includes(c);
+        const isNice = (seat.niceToHaveCerts || []).includes(c);
+        const cls = isReq ? 'driver' : (isPref ? 'fits' : (isNice ? 'fits' : ''));
         return `<span class="cs-cert-chip ${cls}">${_escCsHtml(lbl)}</span>`;
       }).join('');
       const meta   = occupant._pickerMeta || {};
@@ -2523,7 +2583,7 @@ function _renderCrewSelectUnitCard(unitId){
         : '';
       occupantHtml = `<div>
         <div class="cs-seat-occupant">
-          <span style="color:${isDriverOK ? 'var(--green)' : 'var(--accent)'};font-weight:700;">${_escCsHtml(occupant.name)}</span>
+          <span style="color:${reqOk ? 'var(--green)' : 'var(--accent)'};font-weight:700;">${_escCsHtml(occupant.name)}</span>
           <span class="cs-loc-chip ${meta.state || 'station'}">${_escCsHtml(locTxt)}</span>
         </div>
         <div style="margin-top:2px;">${certBadges}</div>
@@ -2533,12 +2593,20 @@ function _renderCrewSelectUnitCard(unitId){
     }
     const filledCls = occupant ? ' filled' : '';
     const driverCls = isDriverSeat ? ' driver' : '';
-    const preferLbl = (seat.preferredCerts || []).map(c =>
+    const reqLabel  = reqCert ? (BAM_CONFIG.certifications?.[reqCert]?.label || reqCert) : null;
+    const prefLbl   = (seat.preferredCerts || []).map(c =>
       BAM_CONFIG.certifications?.[c]?.label || c).join(', ');
+    const niceLbl   = (seat.niceToHaveCerts || []).map(c =>
+      BAM_CONFIG.certifications?.[c]?.label || c).join(', ');
+    const seatHints = [
+      reqLabel ? `<span class="seat-hint" style="color:var(--accent);"><b>Required:</b> ${_escCsHtml(reqLabel)}</span>` : '',
+      prefLbl  ? `<span class="seat-hint">Prefers: ${_escCsHtml(prefLbl)}</span>` : '',
+      niceLbl  ? `<span class="seat-hint" style="color:var(--muted);">Nice: ${_escCsHtml(niceLbl)}</span>` : ''
+    ].filter(Boolean).join(' · ');
     return `<div class="cs-seat-row${filledCls}${driverCls}">
       <div style="flex:1;min-width:0;">
         <div class="cs-seat-label">${_escCsHtml(seat.label)}${isDriverSeat ? ' <span style="color:var(--gold);font-size:.65rem;">★ DRIVER</span>' : ''}
-          ${preferLbl ? `<span class="seat-hint">Prefers: ${_escCsHtml(preferLbl)}</span>` : ''}
+          ${seatHints ? `<div style="font-size:.7rem;margin-top:1px;">${seatHints}</div>` : ''}
         </div>
         ${occupantHtml}
       </div>
@@ -2561,10 +2629,13 @@ function _renderCrewSelectUnitCard(unitId){
       : '';
     const certChips = (p.certs || []).slice(0, 6).map(c => {
       const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
-      // "fits" if any seat's preferredCerts include this cert, or driver-cert
-      const fits = (layout.seats || []).some(s =>
-        (s.preferredCerts || []).includes(c) ||
-        (s.isDriver && driverCert && c === driverCert));
+      // "fits" if any responder seat's preferredCerts/niceToHaves/requiredCert include this cert
+      const fits = (layout.seats || []).some(s => {
+        if(s.isPatientSeat || s.isPrisonerSeat) return false;
+        return s.requiredCert === c
+          || (s.preferredCerts  || []).includes(c)
+          || (s.niceToHaveCerts || []).includes(c);
+      });
       const drv  = driverCert && c === driverCert;
       const cls  = drv ? 'driver' : (fits ? 'fits' : '');
       return `<span class="cs-cert-chip ${cls}">${_escCsHtml(lbl)}</span>`;
@@ -2591,7 +2662,7 @@ function _renderCrewSelectUnitCard(unitId){
         <div class="cs-unit-name">${utCfg.icon || ''} ${_escCsHtml(dispName)}
           <span class="cs-unit-sub">· ${_escCsHtml(layout.label || utCfg.label || '')}</span>
         </div>
-        <div class="cs-unit-sub">${_escCsHtml(station.name)} · ${personIds.length}/${(layout.seats||[]).length} seats filled</div>
+        <div class="cs-unit-sub">${_escCsHtml(station.name)} · ${filledCount}/${responderSeatsCount} responder seats filled</div>
       </div>
     </div>
     <div class="cs-warn-banner ${bannerCls}">${bannerHtml}</div>
@@ -2625,28 +2696,34 @@ function _csUnassignSeat(unitId, seatId){
   _renderCrewSelectBody();
 }
 
-// Click a roster row → place them in the next empty seat. Driver seat first
-// if the person is driver-cert qualified and the driver seat is empty.
+// Click a roster row → place them in the next empty seat.
+//   Priority: required seats they're qualified for → preferredCerts-matching
+//   seats → niceToHaveCerts-matching → any empty responder seat.
+// Patient/prisoner seats are excluded — responders cannot occupy them.
 function _csQuickAssign(unitId, personId){
   const found = getAllUnits().find(x => x.unit.id === unitId);
   if(!found) return;
-  const unit       = found.unit;
-  const layout     = getSeatingLayoutForUnit(unit);
-  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert || null;
-  const person     = personnel.find(p => p.id === personId);
+  const unit   = found.unit;
+  const layout = getSeatingLayoutForUnit(unit);
+  const person = personnel.find(p => p.id === personId);
   if(!person) return;
   if(!_csAssignments[unitId]) _csAssignments[unitId] = {};
   const a = _csAssignments[unitId];
-  // Drop them from any existing seat first.
   Object.keys(a).forEach(sid => { if(a[sid] === personId) delete a[sid]; });
-  // Prefer empty driver seat if person is driver-certified.
-  if(driverCert && personHasCert(person, driverCert)){
-    const drvSeat = (layout.seats || []).find(s => s.isDriver && !a[s.id]);
-    if(drvSeat){ a[drvSeat.id] = personId; _renderCrewSelectBody(); return; }
-  }
-  // Otherwise, first empty seat whose preferredCerts match (best-fit).
-  const fits = (layout.seats || []).find(s => !a[s.id] && !s.isDriver &&
+  const responderSeats = (layout.seats || []).filter(s => !s.isPatientSeat && !s.isPrisonerSeat);
+  // 1) Empty required seat the person is qualified for.
+  const reqSeat = responderSeats.find(s => s.requiredCert && !a[s.id] && personHasCert(person, s.requiredCert));
+  if(reqSeat){ a[reqSeat.id] = personId; _renderCrewSelectBody(); return; }
+  // 2) Empty preferredCerts-matching seat (skip required seats they can't fill).
+  const prefSeat = responderSeats.find(s => !s.requiredCert && !a[s.id] &&
     (s.preferredCerts || []).some(c => personHasCert(person, c)));
+  if(prefSeat){ a[prefSeat.id] = personId; _renderCrewSelectBody(); return; }
+  // 3) Empty niceToHave-matching seat.
+  const niceSeat = responderSeats.find(s => !s.requiredCert && !a[s.id] &&
+    (s.niceToHaveCerts || []).some(c => personHasCert(person, c)));
+  if(niceSeat){ a[niceSeat.id] = personId; _renderCrewSelectBody(); return; }
+  // 4) Any empty responder seat at all.
+  const fits = responderSeats.find(s => !a[s.id]);
   if(fits){ a[fits.id] = personId; _renderCrewSelectBody(); return; }
   // Else: first empty seat at all.
   const any = (layout.seats || []).find(s => !a[s.id]);
@@ -2667,12 +2744,11 @@ function _updateCrewSelectConfirmState(){
   if(!btn) return;
   const reasons = [];
   _csUnitIds.forEach(uid => {
-    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
-    const ev  = (typeof evaluateCrewSelection === 'function')
-      ? evaluateCrewSelection(uid, ids)
+    const ev = (typeof evaluateCrewSelection === 'function')
+      ? evaluateCrewSelection(uid, _csAssignments[uid] || {})
       : { hasDriver:true, minMet:true };
     if(!ev.hasDriver){ reasons.push(uid + ' (no driver)'); return; }
-    if(!ev.minMet && !_csOverrides.has(uid)){ reasons.push(uid + ' (below min)'); return; }
+    if(!ev.minMet && !_csOverrides.has(uid)){ reasons.push(uid + ' (required seat unfilled)'); return; }
   });
   btn.disabled = reasons.length > 0;
   btn.title = reasons.length
@@ -2687,19 +2763,21 @@ function confirmCrewDispatch(){
   if(!inc){ setStatus('⚠️ No active incident.'); return; }
   // Gate one more time defensively.
   for(const uid of _csUnitIds){
-    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
-    const ev  = evaluateCrewSelection(uid, ids);
+    const seatMap = _csAssignments[uid] || {};
+    const ev = evaluateCrewSelection(uid, seatMap);
     if(!ev.hasDriver){ setStatus('⚠️ Cannot dispatch — at least one apparatus has no qualified driver.'); return; }
-    if(!ev.minMet && !_csOverrides.has(uid)){ setStatus('⚠️ Cannot dispatch — at least one apparatus is below minimum crew without override.'); return; }
+    if(!ev.minMet && !_csOverrides.has(uid)){ setStatus('⚠️ Cannot dispatch — required seat unfilled on at least one apparatus.'); return; }
   }
   // Commit each crew. assignSpecificCrewToUnit mutates personnel status so the
   // existing executeDispatch loop will detect them as already-assigned and
   // skip auto-fill. Volunteers go to status='responding' so the awaiting_crew
   // gate triggers and they animate to the station before the apparatus rolls.
   _csUnitIds.forEach(uid => {
-    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
+    const seatMap = _csAssignments[uid] || {};
     if(typeof assignSpecificCrewToUnit === 'function'){
-      assignSpecificCrewToUnit(uid, inc.id, ids);
+      // Pass the full seat-map so each person rides in the seat the player
+      // assigned them to. The handler persists seatId on currentAssignment.
+      assignSpecificCrewToUnit(uid, inc.id, seatMap);
     }
     // Carry over per-unit override toggles into the existing dispatch system
     // so the staffing gate in executeDispatch lets these through.
@@ -2862,38 +2940,84 @@ function executeDispatch(opts = {}){
       if(respondingVolunteers.length && typeof triggerVolunteerStationResponse === 'function'){
         unit.status = 'awaiting_crew';
         unit._awaitingCrewCount = respondingVolunteers.length;
-        // Phase 5 bugfix — stash an abort signal on the unit so the player can
-        // force the apparatus out via forceVolunteerCrewDeparture(). Also keep
-        // the responder list around for any UI that wants to surface it.
+        // Force-out support — Send Anyway button toggles this signal.
         unit._awaitingAbortSignal = { aborted: false };
         unit._awaitingResponders  = respondingVolunteers.slice();
         renderStationList();
         _refreshDispatchModalIfOpen(inc.id);
         setStatus(`⏳ ${respondingVolunteers.length} volunteer${respondingVolunteers.length===1?'':'s'} responding to ${station.name}…`);
+        // requiredCheck: at watchdog-fire time, decide whether to roll-with-
+        // what-arrived (required seats filled) or ABORT.
+        const requiredCheck = (arrivedSet) => {
+          const crewArrived = personnel.filter(p =>
+            p.currentAssignment?.unitId === unit.id &&
+            p.status === 'busy' &&     // 'busy' means at-station after onArrive
+            arrivedSet.has(p.id));
+          // Also consider career personnel who were already busy at the
+          // station (they didn't need to respond — they're on shift).
+          const careerOnUnit = personnel.filter(p =>
+            p.currentAssignment?.unitId === unit.id &&
+            p.type !== 'volunteer' &&
+            p.status === 'busy');
+          const crewNow = Array.from(new Set([...crewArrived, ...careerOnUnit]));
+          // Driver gate
+          if(typeof hasQualifiedDriver === 'function' && !hasQualifiedDriver(unit.id, crewNow)) return false;
+          // Required-seat gate — every requiredCert seat must have a holder.
+          const reqSeats = (typeof getRequiredSeats === 'function') ? getRequiredSeats(unit) : [];
+          for(const seat of reqSeats){
+            const hit = crewNow.some(p => typeof personHasCert === 'function' && personHasCert(p, seat.requiredCert));
+            if(!hit) return false;
+          }
+          return true;
+        };
         triggerVolunteerStationResponse({ lat: station.lat, lng: station.lng }, respondingVolunteers, {
-          abortSignal: unit._awaitingAbortSignal
+          abortSignal: unit._awaitingAbortSignal,
+          requiredCheck
         }).then((res) => {
           // Re-check unit state — player may have cancelled mid-assembly.
           if(unit.status !== 'awaiting_crew') return;
           unit._awaitingCrewCount = 0;
           unit._awaitingAbortSignal = null;
           unit._awaitingResponders  = null;
-          // Phase 5 bugfix v2 — empty-crew dispatch guard. After volunteer
-          // assembly resolves, verify the unit has at least one crew member
-          // still assigned AND a qualified driver among them. If not, abort
-          // the dispatch — send the unit back to available and release the
-          // incident slot so the call falls back to needs_dispatch.
-          const crewNow = (typeof personnel !== 'undefined' ? personnel : [])
-            .filter(p => p.currentAssignment?.unitId === unit.id);
+
+          const crewNow = personnel.filter(p => p.currentAssignment?.unitId === unit.id);
           const hasDriverNow = (typeof hasQualifiedDriver === 'function')
             ? hasQualifiedDriver(unit.id, crewNow) : crewNow.length > 0;
+
+          // ABORT PATH — watchdog fired without required seats filled. The
+          // volunteers.js layer already started their station-linger; we just
+          // need to clean up the incident state and surface a notification.
+          if(res?.aborted){
+            // Release any crew not already lingering (career on-duty especially).
+            crewNow.forEach(p => {
+              if(p.type !== 'volunteer'){
+                p.status = 'available';
+                p.currentAssignment = null;
+              }
+            });
+            unit.status = 'available';
+            inc.units = inc.units.filter(id => id !== unit.id);
+            if(inc.units.length === 0 && inc.status !== 'resolved'){
+              inc.status = 'needs_dispatch';
+              if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+            }
+            unit.incidentId = null;
+            const unitDisp = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(unit, station) : unit.name;
+            if(typeof showCrewFailureToast === 'function'){
+              showCrewFailureToast(unitDisp, inc.label || 'call');
+            } else {
+              setStatus(`⚠️ ${unitDisp} for ${inc.label || 'call'} was unable to crew!`);
+            }
+            renderStationList();
+            renderIncidentList();
+            _refreshDispatchModalIfOpen(inc.id);
+            return;
+          }
+
+          // NORMAL / FORCED — verify the empty-crew guard one more time.
           if(!crewNow.length || !hasDriverNow){
-            // Release everyone we'd assigned (should already be released by
-            // the no-show handler, but defensive).
             crewNow.forEach(p => { p.status = 'available'; p.currentAssignment = null; });
             unit.status = 'available';
-            // Pull this unit from the incident — if it's the last one, downgrade
-            // the incident back to needs_dispatch so the player can pick again.
             inc.units = inc.units.filter(id => id !== unit.id);
             if(inc.units.length === 0 && inc.status !== 'resolved'){
               inc.status = 'needs_dispatch';
@@ -3079,18 +3203,24 @@ function animateUnit(unit, inc, coords, totalGameSec){
   requestAnimationFrame(step);
 }
 
-// Counts how many requirement groups are satisfied by on-scene units.
-// Each unit may satisfy at most ONE group (greedy matching) — prevents a single
-// multi-tag unit (e.g. pumper-tanker) from counting as both an engine slot AND a
-// tanker slot simultaneously.
+// Counts how many requirement slots are satisfied by on-scene units. Each
+// unit fills at most ONE slot (greedy matching) so a multi-tag unit (e.g.
+// pumper-tanker, ALS amb satisfying ['als'] AND a stretcher slot) doesn't
+// double-count. Requirements support both legacy tag-array shape AND the new
+// seat-aware object shape — see `unitMatchesRequirement` in personnel.js.
 function countMetRequirements(requirements, onSceneUnits){
-  const used=new Set();
-  let met=0;
-  for(const reqGroup of requirements){
-    const match=onSceneUnits.find(({unit})=>
-      !used.has(unit.id)&&
-      reqGroup.some(tag=>BAM_CONFIG.unitTypes[unit.typeKey]?.tags.includes(tag))
-    );
+  const used = new Set();
+  let met = 0;
+  for(const req of (requirements || [])){
+    const match = onSceneUnits.find(({unit}) => {
+      if(used.has(unit.id)) return false;
+      if(typeof unitMatchesRequirement === 'function'){
+        return unitMatchesRequirement(unit, req);
+      }
+      // Last-resort legacy fallback if personnel.js helpers are missing.
+      return Array.isArray(req) && req.some(tag =>
+        (BAM_CONFIG.unitTypes[unit.typeKey]?.tags || []).includes(tag));
+    });
     if(match){ used.add(match.unit.id); met++; }
   }
   return met;
@@ -3264,9 +3394,12 @@ function renderTransportTab(inc){
     html += `<div class="section-title" style="margin-top:12px;">Transport Assignments</div>`;
     // Prefer on-scene units for THIS incident — show them first, then available units from stations
     const isTransportCapable = ({unit}) => {
-      const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
-      return (tags.includes('transport')||tags.includes('bls')||tags.includes('als')||tags.includes('air_als'))
-        && unit.inService !== false;
+      // Patient transport now keyed off seat capacity: any unit with ≥1
+      // isPatientSeat. We still gate to in-service.
+      if(unit.inService === false) return false;
+      return (typeof unitCanTransportPatient === 'function')
+        ? unitCanTransportPatient(unit)
+        : false;
     };
     const sceneTransportUnits = getAllUnits().filter(({unit}) =>
       isTransportCapable({unit}) && unit.status === 'on_scene' && inc.units.includes(unit.id)
@@ -3806,8 +3939,10 @@ function dispatchPrisonerTransport(suspect, facility, preferredUnit=null){
     const fromLat = pickupLoc?.lat || facility.lat;
     const fromLng = pickupLoc?.lng || facility.lng;
     const transportUnits = getAllUnits().filter(({unit}) => {
-      const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
-      return (tags.includes('transport_prisoner')||tags.includes('patrol'))
+      // Any unit with ≥1 isPrisonerSeat can transport a prisoner.
+      const canPrisoner = (typeof unitCanTransportPrisoner === 'function')
+        ? unitCanTransportPrisoner(unit) : false;
+      return canPrisoner
         && (unit.status === 'available' || unit.status === 'returning')
         && unit.inService !== false;
     }).sort((a,b) =>
@@ -3901,8 +4036,9 @@ function _openTransportDispatchModal(suspect, facility){
   const fromLng = pickupLoc?.lng ?? facility.lng;
 
   const available = getAllUnits().filter(({unit}) => {
-    const tags = BAM_CONFIG.unitTypes[unit.typeKey]?.tags || [];
-    return (tags.includes('transport_prisoner') || tags.includes('patrol'))
+    const canPrisoner = (typeof unitCanTransportPrisoner === 'function')
+      ? unitCanTransportPrisoner(unit) : false;
+    return canPrisoner
       && (unit.status === 'available' || unit.status === 'returning')
       && unit.inService !== false;
   }).sort((a,b) =>
@@ -5166,6 +5302,72 @@ function formatETA(sec){
 }
 function setStatus(msg){ document.getElementById('statusbar').textContent=msg; }
 
+// Prominent floating notification for "X unit for Y call was unable to crew!".
+// Bottom-center toast layered above the map (z-index 5000), red border, audible
+// dismiss button. Auto-fades after 12 seconds or when the player clicks ✕.
+// Stacks vertically when multiple failures occur in quick succession.
+function showCrewFailureToast(unitName, callLabel){
+  let host = document.getElementById('crew-failure-toast-host');
+  if(!host){
+    host = document.createElement('div');
+    host.id = 'crew-failure-toast-host';
+    host.style.cssText = `
+      position:fixed; left:50%; bottom:48px; transform:translateX(-50%);
+      z-index:5000; display:flex; flex-direction:column; gap:8px;
+      align-items:center; pointer-events:none;
+    `;
+    document.body.appendChild(host);
+  }
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    pointer-events:auto;
+    background:rgba(20,8,4,.95);
+    border:2px solid var(--accent);
+    border-radius:6px;
+    padding:14px 20px;
+    box-shadow:0 6px 30px rgba(232,67,26,.4);
+    color:#fff;
+    font-family:var(--mono, monospace);
+    font-size:.95rem;
+    display:flex; align-items:center; gap:14px;
+    min-width:360px; max-width:560px;
+    animation:bam-crewfail-pulse 1.2s ease-in-out infinite alternate;
+  `;
+  toast.innerHTML = `
+    <span style="font-size:1.6rem;">🚨</span>
+    <div style="flex:1;">
+      <div style="color:var(--accent); font-weight:700; letter-spacing:.5px; margin-bottom:2px;">CREW ASSEMBLY FAILED</div>
+      <div style="color:#fff; font-size:.88rem;">
+        <b>${String(unitName).replace(/</g,'&lt;')}</b> for <b>${String(callLabel).replace(/</g,'&lt;')}</b> was unable to crew!
+      </div>
+      <div style="color:var(--muted); font-size:.72rem; margin-top:3px;">
+        Required seats unfilled before the 10-minute mark. Responders are still completing their trip to the station.
+      </div>
+    </div>
+    <button class="btn-sm danger" style="font-size:.78rem;">✕ Dismiss</button>
+  `;
+  const btn = toast.querySelector('button');
+  const dismiss = () => {
+    if(toast.parentNode){ toast.parentNode.removeChild(toast); }
+    if(host && !host.children.length){ host.remove(); }
+  };
+  btn.addEventListener('click', dismiss);
+  host.appendChild(toast);
+  setTimeout(dismiss, 12000);
+  // Inject the pulse keyframes once.
+  if(!document.getElementById('bam-crewfail-style')){
+    const style = document.createElement('style');
+    style.id = 'bam-crewfail-style';
+    style.textContent = `
+      @keyframes bam-crewfail-pulse {
+        from { box-shadow:0 6px 30px rgba(232,67,26,.4); }
+        to   { box-shadow:0 6px 36px rgba(232,67,26,.8); }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
 // ── GAME TIME + SPEED ─────────────────────────────────────────────────────────
 
 // Sets the game speed multiplier and reschedules spawning accordingly.
@@ -5201,6 +5403,9 @@ function _tickGameClock(){
     // Post-call personnel release timer — flips returning-unit crews from busy
     // to available once the post-call delay elapses.
     if(typeof _tickPostCallRelease === 'function') _tickPostCallRelease();
+    // Clear expired station-linger stamps on volunteers who failed an assembly
+    // and have completed their cooling-off period at the station.
+    if(typeof tickVolunteerStationLinger === 'function') tickVolunteerStationLinger();
   }
   // Phase 5C — once per game-day rollover, deduct career salaries from the player's
   // money and emit a consolidated [SALARIES] cashflow line. Safe no-op on worlds
@@ -5462,19 +5667,18 @@ function buildSaveData(){
       upgrades:s.upgrades, inService:s.inService,
       preferredDCId: s.preferredDCId || null,        // Phase 5A — DC override
       stationType:   s.stationType   || 'career',    // Phase 5B — career | combination | volunteer
-      idealCrewWaitMs: s.idealCrewWaitMs ?? null,    // Phase 5B — station-level override (null = inherit global)
       shifts:        s.shifts        || [],          // Phase 5C — custom shift templates owned by station
       _holdingCells: s._holdingCells || null,
+      // Retired in the seat-based dispatch gate: station.idealCrewWaitMs.
+      // Replaced by the global BAM_CONFIG.volunteerAssemblyMaxGameMin tunable.
       units:s.units.map(u=>({
         id:u.id,name:u.name,typeKey:u.typeKey, inService:u.inService,
         // Reset in-flight statuses on save — units resume as available on load
         status:(['dispatched','transporting','offloading'].includes(u.status))?'available':u.status,
-        // Phase 5B — staffing config per unit. nulls = inherit crewDefaults / station / global.
-        crewMin:             u.crewMin             ?? null,
-        crewIdeal:           u.crewIdeal           ?? null,
-        pinnedPersonnelIds:  u.pinnedPersonnelIds  || [],
-        idealCrewWaitMs:     u.idealCrewWaitMs     ?? null,
-        staffingPolicy:      u.staffingPolicy      || 'wait_then_min'
+        // Persisted unit-level fields. Per-unit crewMin/crewIdeal/staffingPolicy
+        // /idealCrewWaitMs overrides are retired with crewDefaults; seats now
+        // own the dispatch gate. Only pinned personnel persists.
+        pinnedPersonnelIds:  u.pinnedPersonnelIds  || []
       }))
     })),
     esns:           getESNSaveData(),

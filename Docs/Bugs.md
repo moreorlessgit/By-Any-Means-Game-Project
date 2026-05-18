@@ -2,7 +2,16 @@
 
 ## Phase 5 Bugs
 
+Bug - Dispatch Crew Assignment Modal - picking crew starts with all seats automatically filled. Should let me manually pick. Also make it easier to select and change individuals by making a click on a field change from apparatus to pool and pool to apparatus. Instead of the clear button.
 
-Remove crew assignment/prisoner transport/patient transport based on generic numbers in config and move completely to the seats system. For responders, there should be a field for preferred certification, and then one for 'nice to haves' that weight the auto selection to be more likely to add people that also have the nice to haves. For example, an engine cab seat might have FF1 as preferred, but FF2 or EMT (one or both, if an individual has both they are weighted higher in the assignment) as a 'nice to have'. For patients, there is a boolean true/falce if this seat is for patient transport and same for suspects/prisoners. This is likely a large wide reaching change. So search far and wide and also verify intent with a lot of questions please.
+Bug- Vols spawn at home location but still frozen in place not moving. Straight line fall back does not work for some reason. OSRM related?
+
+Bug - Dispatch Crew Assignment Modal - When multiple apparatus selected, available responders pool does not adjust for responders already placed in other apparatus.
+
+Change - Ambulances auto-fill should only fill the required slots. No point wasting the extra seats on personnel unless the call really dictates it as defined by the player.
+
+Bug - Unit details modal, scroll bar broken, always snaps to top of window. Size of unit details could also be increased and more information can probably be put side by side, rather than in a straight line.
+
+Bug - EMT Required slot on ambulance when responding driver only does not fill with spare EMT on scene. Should be allowed to allow ambulances to meet with personnel on scene.
 
 New window/modal dedicated to apparatus purchases. 3 Main Tabs, Fire, EMS, and Police. Add seperate search functions in each tab for the station you are purchasing for, for the apparatus name, and for capability tags. Accessable from new button on left sidebar and also accessable from station details modal, which automatically picks the filter for the station you clicked on it from. Verify that lists update with new stations as well. New modal for this purchase window shows once a unit type is selected, a seat map, eventually "equipment slots/bays" (working title), and maybe other things. But for now just the seat map. And allows you to name it here in advance. Ask lots of questions to verify intent please.

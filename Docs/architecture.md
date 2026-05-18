@@ -184,17 +184,56 @@
 
 - `getSeatingLayoutForUnit(unit)` — returns `{ label, seats[] }` from `unitTypes[typeKey].seats`. Falls back to a single driver-seat layout when not configured.
 - `getCrewCandidatesForUnit(unitId)` — returns every responder eligible to ride: station personnel (career on-duty + volunteers passing `isVolunteerAvailableNow`), `status === 'available'`, not pinned to a different unit. Each candidate is annotated with `_pickerMeta: { state: 'station'|'home'|'roaming', distanceMi, etaMin }`. Cert-eligibility is NOT enforced here — the picker shows everyone so the player can cross-staff.
-- `evaluateCrewSelection(unitId, personIds)` — pure analyzer. Returns `{ ok, hasDriver, driverCert, minMet, missing, idealMet, idealMissing, crew }`. Used by both the picker's live banner and the dispatch gate.
-- `assignSpecificCrewToUnit(unitId, callId, personIds)` — commits the manual crew. Mirrors `assignPersonnelToUnit`'s status mutations (career→busy, volunteer→responding) but skips pinned-auto-add — the player's explicit selection is the source of truth.
+- `evaluateCrewSelection(unitId, personIdsOrSeatMap)` — pure analyzer. Accepts EITHER a Person[] or a `{seatId: personId}` map. Returns `{ ok, hasDriver, driverCert, minMet, missing, idealMet, idealMissing, crew, assignments, unfilledRequired, unfilledOptional }`. When given a seat map the evaluator scores per-seat; when given a flat list it runs the seat-based matcher. `minMet` ≡ every required seat filled; `idealMet` ≡ every responder seat filled.
+- `assignSpecificCrewToUnit(unitId, callId, personIdsOrSeatMap)` — commits the manual crew. The Crew-Select picker passes the full seat map so each person rides in their chosen seat (`person.currentAssignment.seatId` is persisted). Mirrors `assignPersonnelToUnit`'s status mutations (career→busy, volunteer→responding).
 - `_estimateResponderTravel(person, station)` — volunteers only. Computes distance + ETA from `person.availability.currentLocation || person.home` to the station using `haversineKm` and `BAM_CONFIG.volunteerResponseSpeedMph` (default 50 mph). Returns `null` for career personnel (they're at the station).
 
-### Seating layouts — config shape
+### Seating layouts — config shape (single source of truth)
 
-- Seats live on `BAM_CONFIG.unitTypes[typeKey].seats` as an ordered array. Each seat: `{ id, label, isDriver?, preferredCerts[] }`.
-  - `isDriver: true` causes the dispatch gate to enforce `crewDefaults[typeKey].driverCert` as a HARD block for that seat. The picker still shows every responder for the seat — the gate fires at dispatch time.
-  - `preferredCerts` is a SOFT hint. Personnel holding any of these certs get a green "fits this seat" badge in the picker, but the player can put any responder in any seat.
-- Seat count = apparatus capacity. The dispatch staffing gate continues to use `crewDefaults.min`/`ideal` — seats and crew requirements are independent dimensions.
-- Read by the Crew-Select picker AND the Unit Details modal's informational seating section (`_renderUnitSeatingSection` in `units.js`).
+Seats own capacity, crew requirements, and patient/prisoner transport capacity. The legacy `crewDefaults` block has been retired — every constraint lives on the seat itself.
+
+Seat schema (`BAM_CONFIG.unitTypes[typeKey].seats[]`):
+
+- `id`, `label` — unique slot key + display name
+- `isDriver: bool` — label-only flag (drives the ★ DRIVER badge in pickers; the actual hard gate is `requiredCert` on this same seat)
+- `requiredCert: 'cert_id'` — HARD cert gate. Seat MUST be filled by someone holding this cert (or an equivalent via `satisfies`) for the apparatus to roll. Setting `requiredCert` also marks the seat as required-to-roll.
+- `preferredCerts: string[]` — array of equally-valid preferred certs. Any hit scores `+BAM_CONFIG.crewScorePreferredHit` for auto-assign.
+- `niceToHaveCerts: string[]` — additive scoring bonus per cert held (`+BAM_CONFIG.crewScoreNiceToHaveHit` each, stacks).
+- `isPatientSeat: bool` — stretcher; counts toward unit's patient transport capacity. Responders cannot occupy.
+- `isPrisonerSeat: bool` — cell/cage; counts toward unit's prisoner transport capacity. Responders cannot occupy.
+
+A seat is mutually-exclusive: responder OR patient OR prisoner.
+
+Dispatch gate: apparatus rolls when every seat with `requiredCert` is filled by someone holding that cert. Other responder seats are fill-if-available; the assembly timer (`BAM_CONFIG.volunteerAssemblyMaxGameMin`, default 10 game-minutes) caps how long the apparatus holds for non-required seats.
+
+Mission/box-alarm requirements:
+
+- Tag-array slots remain (`['engine']`, `['bls','als']`).
+- Patient transport is `{ needs: 'isPatientSeat' }` — replaces the retired `'transport'` tag.
+- Prisoner transport is `{ needs: 'isPrisonerSeat' }` — replaces the retired `'transport_prisoner'` tag.
+- Legacy `'transport'`/`'transport_prisoner'` tags in older saves are interpreted by `unitMatchesRequirement` as the seat-needs equivalents.
+
+Capacity helpers (in `personnel.js`):
+
+- `unitPatientCapacity(unit)` / `unitCanTransportPatient(unit)`
+- `unitPrisonerCapacity(unit)` / `unitCanTransportPrisoner(unit)`
+- `getResponderSeats(unit)` / `getRequiredSeats(unit)` / `getUnitDriverCert(unit)`
+- `_matchCrewToSeats(crew, unit)` — greedy seat assigner; scores per the config tunables above.
+
+Read by the Crew-Select picker AND the Unit Details modal's merged Seating &amp; Crew section (`_renderUnitSeatingSection` in `units.js`).
+
+### Assembly timer — abort behavior
+
+When the assembly watchdog (`BAM_CONFIG.volunteerAssemblyMaxGameMin` game-minutes) fires:
+
+- **Required seats filled** → apparatus rolls with whoever's at the station; remaining responders become no-shows.
+- **Required seats short** → dispatch is ABORTED. `showCrewFailureToast()` raises a prominent "CREW ASSEMBLY FAILED" toast (bottom-center, red border, 12-second dismiss). Crew that's still en route continues their trip to the station; on arrival they linger there for `BAM_CONFIG.volunteerStationLingerGameMin` game-minutes (`availability.lingerAtStationUntilGameSec`) before normal hourly availability resumes. The unit returns to `available`; the incident drops to `needs_dispatch`.
+
+Force-out (`forceVolunteerCrewDeparture`) bypasses the watchdog. Driver-cert gate still applies — the player can't force out a unit that has no driver at the station.
+
+### Per-seat assignment storage
+
+`person.currentAssignment.seatId` is persisted alongside `unitId`/`callId`. The Unit Details modal renders each person inside their seat row. Legacy saves without `seatId` show their crew under an "Riding (no seat)" subgroup; the next dispatch reassigns seats cleanly.
 
 ---
 
