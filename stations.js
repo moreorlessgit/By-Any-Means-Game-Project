@@ -315,6 +315,9 @@ function openManageStation(stationId){
   const s = stations.find(x => x.id === stationId);
   if(!s) return;
   _activeManageStation = stationId;
+  // Reset to Overview tab on every open so the player always lands on the
+  // main station page first (Phase 5 bugfix — sibling-tab restructure).
+  if(typeof _msmActiveTab !== 'undefined') _msmActiveTab = 'overview';
   document.getElementById('msm-title').textContent = s.name;
   _renderManageBody();
   document.getElementById('manage-station-modal').classList.add('open');
@@ -387,10 +390,82 @@ function setStationPreferredDC(stationId, dcId){
 }
 
 // Renders the content inside the manage station modal.
+// Phase 5 bugfix — top-level tab restructure. The header (name + DC + personnel
+// summary chips) renders on every tab. Body dispatches to the active tab:
+//   overview · roster · training · shifts
 function _renderManageBody(){
   const s = stations.find(x => x.id === _activeManageStation);
   if(!s) return;
 
+  // Default tab when the state var is undefined (e.g. first invocation before
+  // personnel.js defined it).
+  if(typeof _msmActiveTab === 'undefined' || _msmActiveTab == null) _msmActiveTab = 'overview';
+  const tabKey = ['overview','roster','training','shifts'].includes(_msmActiveTab) ? _msmActiveTab : 'overview';
+
+  // Always-visible header — station name + DC picker. The personnel summary
+  // (staffing type, roster counts, composition, categories, salaries, cert
+  // breakdown) moved to the personnel-related tabs only per the Phase 5
+  // bug list — keeps Station Overview focused on the station itself.
+  const headerHtml = `<label class="field-label">Station Name</label>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
+    <button class="btn-sm" onclick="renameStation()">Rename</button>
+  </div>
+  ${_renderManageDCRow(s)}`;
+
+  // Top-level tab strip — sibling tabs, Overview owns the original station chrome.
+  const tabBtn = (key, label) => {
+    const active = tabKey === key;
+    return `<div style="flex:1;padding:8px 10px;text-align:center;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
+      border-bottom:2px solid ${active?'var(--gold)':'transparent'};color:${active?'var(--gold)':'var(--muted)'};"
+      onclick="setMSMActiveTab('${key}')">${label}</div>`;
+  };
+  const tabBar = `<div style="display:flex;border-bottom:1px solid var(--border);margin-top:14px;">
+    ${tabBtn('overview', 'Station Overview')}
+    ${tabBtn('roster',   'Roster')}
+    ${tabBtn('training', 'Training')}
+    ${tabBtn('shifts',   'Shifts')}
+  </div>`;
+
+  let bodyHtml = '';
+  // Personnel summary (staffing chips + cert breakdown) is prepended to each
+  // personnel-related tab so the player sees roster context whenever they're
+  // looking at roster / training / shifts data, without cluttering Overview.
+  const personnelHeader = (tabKey === 'roster' || tabKey === 'training' || tabKey === 'shifts')
+    && typeof renderStationPersonnelSummaryHTML === 'function'
+      ? renderStationPersonnelSummaryHTML(s) : '';
+  if(tabKey === 'roster' && typeof _renderStationRosterTab === 'function'){
+    const careerCount = (typeof getPersonnelByStation === 'function')
+      ? getPersonnelByStation(s.id).filter(p => p.type !== 'volunteer').length : 0;
+    bodyHtml = personnelHeader + _renderStationRosterTab(s.id, careerCount);
+  } else if(tabKey === 'training' && typeof _renderStationTrainingTab === 'function'){
+    bodyHtml = personnelHeader + _renderStationTrainingTab(s.id);
+  } else if(tabKey === 'shifts' && typeof _renderStationShiftsTab === 'function'){
+    bodyHtml = personnelHeader + _renderStationShiftsTab(s.id);
+  } else {
+    bodyHtml = _renderStationOverviewTabBody(s);
+  }
+
+  // Delete station button state — kept in the modal footer, refreshed each render.
+  const delBtn = document.getElementById('msm-delete-btn');
+  if(delBtn){
+    delBtn.disabled = false;
+    if(_deleteStationConfirm === s.id){
+      delBtn.textContent = 'Confirm Delete?';
+      delBtn.style.background = 'var(--accent)';
+    } else {
+      delBtn.textContent = 'Delete Station';
+      delBtn.style.background = '';
+    }
+  }
+
+  document.getElementById('msm-body').innerHTML =
+    headerHtml + tabBar + `<div style="padding-top:12px;">${bodyHtml}</div>`;
+}
+
+// Overview tab body — units list, add-unit row, upgrades section. Everything
+// the old single-page modal had EXCEPT the personnel section (now its own tabs).
+function _renderStationOverviewTabBody(s){
   // Determine which unit types are available for this station
   const typeDef = BAM_CONFIG.stationTypeDefs[s.type];
   const unitCategory = typeDef?.unitCategory || s.type;
@@ -411,14 +486,7 @@ function _renderManageBody(){
     }
   });
 
-  let html = `<label class="field-label">Station Name</label>
-  <div style="display:flex;gap:8px;">
-    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
-    <button class="btn-sm" onclick="renameStation()">Rename</button>
-  </div>
-  ${_renderManageDCRow(s)}
-  ${typeof renderManageStationPersonnelHTML === 'function' ? renderManageStationPersonnelHTML(s) : ''}
-  <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
+  let html = `<div class="section-title" style="margin-top:0;">Units (${s.units.length})</div>`;
 
   if(!s.units.length){
     html += '<div class="empty-msg">No units. Add one below.</div>';
@@ -498,20 +566,7 @@ function _renderManageBody(){
     });
   }
 
-  // Delete station button
-  const delBtn = document.getElementById('msm-delete-btn');
-  if(delBtn){
-    delBtn.disabled = false;
-    if(_deleteStationConfirm === s.id){
-      delBtn.textContent = 'Confirm Delete?';
-      delBtn.style.background = 'var(--accent)';
-    } else {
-      delBtn.textContent = 'Delete Station';
-      delBtn.style.background = '';
-    }
-  }
-
-  document.getElementById('msm-body').innerHTML = html;
+  return html;
 }
 
 // Renames the active station.

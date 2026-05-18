@@ -60,6 +60,20 @@ const BAM_CONFIG = {
   // "maxTransportCapacity" = max patients or suspects this unit can transport at once.
   // "straightLine" = true for aircraft (bypasses OSRM, uses direct haversine path).
   // "speedMph" = used for ETA calc on straight-line (aircraft) units.
+  // "seats" = ordered cab seating layout used by the Crew-Select Dispatch
+  //           picker and the Unit Details panel. Each seat:
+  //             id              — unique slot key.
+  //             label           — display name. Rename freely.
+  //             isDriver        — driver/operator seat. The driverCert from
+  //                               crewDefaults[typeKey] is enforced as a hard
+  //                               gate for this seat at dispatch time.
+  //             preferredCerts  — soft hint. Personnel holding any of these
+  //                               get a "fits this seat" badge in the picker.
+  //                               NOT a filter — cross-staffed responders are
+  //                               still selectable.
+  //           Seats live alongside the rest of each apparatus' config so it's
+  //           easy to see capacity + role layout next to min/ideal crew
+  //           defaults in crewDefaults below.
   // ---------------------------------------------------------------------------
   unitTypes: {
     // ── FIRE ──────────────────────────────────────────────────────────────────
@@ -73,6 +87,12 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
+        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1','fire_officer_2'] },
+        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] },
+        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+      ],
     },
     pumper_tanker: {
       label:                'Pumper/Tanker',
@@ -84,6 +104,11 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
+        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
+        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] }
+      ],
     },
     tanker: {
       label:                'Tanker',
@@ -95,6 +120,10 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver', label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large'] },
+        { id:'cab_1',  label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] }
+      ],
     },
     ladder: {
       label:                'Ladder/Aerial',
@@ -106,6 +135,12 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','aerial_operator'] },
+        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1','fire_officer_2'] },
+        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['ff1','ff2'] },
+        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+      ],
     },
     brush_truck: {
       label:                'Brush Truck',
@@ -117,6 +152,10 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver', label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_small'] },
+        { id:'cab_1',  label:'Cab Seat 1',                     preferredCerts:['wildland_ff','fire_exterior','ff1'] }
+      ],
     },
     rescue: {
       label:                'Heavy Rescue',
@@ -128,6 +167,12 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large'] },
+        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
+        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['rescue_tech','ff1'] },
+        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['rescue_tech','ff1'] }
+      ],
     },
     rescue_engine: {
       label:                'Rescue Engine',
@@ -139,6 +184,12 @@ const BAM_CONFIG = {
       icon:                 '🚒',
       providerLevel:        'first_aid',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true, preferredCerts:['evoc_large','pump_ops_1'] },
+        { id:'officer', label:'Officer',                        preferredCerts:['fire_officer_1'] },
+        { id:'cab_1',   label:'Cab Seat 1',                     preferredCerts:['rescue_tech','ff1'] },
+        { id:'cab_2',   label:'Cab Seat 2',                     preferredCerts:['ff1','ff2'] }
+      ],
     },
     // ── EMS ───────────────────────────────────────────────────────────────────
     als_ambulance: {
@@ -151,6 +202,12 @@ const BAM_CONFIG = {
       icon:                 '🚑',
       providerLevel:        'als',
       maxTransportCapacity: 1,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','emt'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['emt','aemt','paramedic'] },
+        { id:'captains_chair',  label:"Captain's Chair",                preferredCerts:['paramedic','aemt'] },
+        { id:'bench',           label:'Bench Seat',                     preferredCerts:['emt','aemt','paramedic'] }
+      ],
     },
     bls_ambulance: {
       label:                'BLS Ambulance',
@@ -162,6 +219,12 @@ const BAM_CONFIG = {
       icon:                 '🚑',
       providerLevel:        'bls',
       maxTransportCapacity: 1,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','emt'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['emt','aemt'] },
+        { id:'captains_chair',  label:"Captain's Chair",                preferredCerts:['emt','aemt'] },
+        { id:'bench',           label:'Bench Seat',                     preferredCerts:['emt','emr'] }
+      ],
     },
     fly_car: {
       label:                'Medic Fly Car',
@@ -173,6 +236,10 @@ const BAM_CONFIG = {
       icon:                 '🚗',
       providerLevel:        'als',
       maxTransportCapacity: 0,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','paramedic','emt'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['paramedic','aemt','emt'] }
+      ],
     },
     // ── POLICE ────────────────────────────────────────────────────────────────
     patrol: {
@@ -185,6 +252,10 @@ const BAM_CONFIG = {
       icon:                 '🚔',
       providerLevel:        null,
       maxTransportCapacity: 2,   // patrol can hold up to 2 suspects
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_officer'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+      ],
     },
     supervisor: {
       label:                'Supervisor',
@@ -196,6 +267,10 @@ const BAM_CONFIG = {
       icon:                 '🚔',
       providerLevel:        null,
       maxTransportCapacity: 1,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_supervisor','patrol_officer'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer','patrol_supervisor'] }
+      ],
     },
     k9: {
       label:                'K9 Unit',
@@ -207,6 +282,10 @@ const BAM_CONFIG = {
       icon:                 '🚔',
       providerLevel:        null,
       maxTransportCapacity: 1,
+      seats: [
+        { id:'driver',          label:'Handler/Driver',  isDriver:true, preferredCerts:['evoc_small','k9_handler'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+      ],
     },
     sheriff_transport: {
       label:                'Sheriff Transport Van',
@@ -218,6 +297,10 @@ const BAM_CONFIG = {
       icon:                 '🚐',
       providerLevel:        null,
       maxTransportCapacity: 6,   // van can hold more suspects
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true, preferredCerts:['evoc_small','patrol_officer'] },
+        { id:'front_passenger', label:'Front Passenger',                preferredCerts:['patrol_officer'] }
+      ],
     },
     // ── AIR MEDICAL ───────────────────────────────────────────────────────────
     helicopter: {
@@ -232,6 +315,13 @@ const BAM_CONFIG = {
       maxTransportCapacity: 1,
       straightLine:         true,   // bypasses OSRM; uses direct point-to-point path
       speedMph:             150,    // used for ETA calc and animation duration
+      // No driverCert in crewDefaults — isDriver here is informational (labels
+      // the pilot seat) but doesn't trip the hard driver gate.
+      seats: [
+        { id:'pilot',   label:'Pilot',         isDriver:true, preferredCerts:[] },
+        { id:'medic_1', label:'Flight Medic 1',                preferredCerts:['paramedic','ccp'] },
+        { id:'medic_2', label:'Flight Medic 2',                preferredCerts:['ccp','paramedic'] }
+      ],
     },
   },
 
@@ -1435,9 +1525,35 @@ const BAM_CONFIG = {
   osmRebuildCooldownSec:       30,
   volunteerDefaultReliability: 0.8,
   // volunteerResponseSpeedMph — Speed used to animate volunteers traveling
-  //                              from home/work to the station before the
-  //                              apparatus departs. Civilian POV speed.
-  volunteerResponseSpeedMph:   35,
+  //                              from home (or a roaming location) to the
+  //                              station before the apparatus departs.
+  //                              Phase 5 bugfix: raised to 50 (player spec).
+  //                              Acts as a floor — OSRM-predicted time wins
+  //                              when it implies a faster route.
+  volunteerResponseSpeedMph:   50,
+  // Phase 5 bugfix — hourly availability state model.
+  //
+  // Every game-hour, each idle volunteer re-rolls their state:
+  //   • availableHomeChance  — probability of being available at home
+  //   • availableRoamingChance — probability of being available but at a
+  //                              random point inside one of the station's
+  //                              coverage ESNs (rare per spec)
+  //   • the remainder (1 - home - roaming) — unavailable
+  //
+  // Schedule windows still apply on top of these — if the current hour falls
+  // outside a configured availability window, the volunteer is forced to
+  // 'unavailable' regardless of the dice roll.
+  volunteerAvailableHomeChance:    0.7,
+  volunteerAvailableRoamingChance: 0.05,
+  // Post-call release timing (game-seconds).
+  //   • PostCallReleaseGameSec  — after a volunteer's unit reaches the station
+  //     on return, the volunteer stays at-station this long (still flagged
+  //     busy so the player can re-dispatch them) before being marked
+  //     available again.
+  //   • ReturnHomeGameSec       — after that, this long passes before the
+  //     volunteer auto-travels home (if no new assignment intervenes).
+  volunteerPostCallReleaseGameSec: 300,   // 5 game-minutes
+  volunteerReturnHomeGameSec:      600,   // 10 game-minutes after release
   ambulanceDriverOnlyDefault:  false,
   directToSceneAllowedRoles: [
     'fire_officer_1','fire_officer_2',     // chiefs and officers
@@ -1552,8 +1668,9 @@ const BAM_CONFIG = {
   // INCIDENT SPAWN SETTINGS
   // ---------------------------------------------------------------------------
   spawn: {
-    intervalMinMs:  90000,
-    intervalMaxMs:  180000,
+    // Tuned for ~1 call every 5 minutes on average (4–6 min spread).
+    intervalMinMs:  240000,
+    intervalMaxMs:  360000,
     maxActiveIncidents: 8,
     defaultRadiusKm: 8,
 

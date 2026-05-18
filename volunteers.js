@@ -16,18 +16,20 @@
 // =============================================================================
 
 // ── MAP-LAYER VISIBILITY STATE ───────────────────────────────────────────────
-// Three independent toggles per docs/Phase5.md. Persisted in settings (Phase 4A
-// settings autosync). Defaults reasonable so a brand-new player isn't drowned
-// in dots.
+// Two independent toggles. Persisted in settings (Phase 4A settings autosync).
+// Defaults reasonable so a brand-new player isn't drowned in dots.
+//
+// Phase 5 bugfix — work locations removed entirely. Volunteers are now in one
+// of three states (unavailable / home / roaming-in-coverage), not tied to a
+// fixed work address. The legacy `works` flag is silently ignored if loaded
+// from old settings.
 let volunteerLayerVisibility = {
   responders: true,   // dots while responding on the map
-  homes:      false,  // persistent home markers
-  works:      false   // persistent work markers
+  homes:      false   // persistent home markers
 };
 
-// Internal: marker pools for the home/work overlays so toggling on/off is fast.
+// Internal: marker pools for the home overlay so toggling on/off is fast.
 let _volunteerHomeMarkers = new Map();   // personId → Leaflet marker
-let _volunteerWorkMarkers = new Map();
 let _volunteerLiveMarkers = new Map();   // personId → Leaflet marker (transient, during response)
 
 // ── ID HELPER ────────────────────────────────────────────────────────────────
@@ -306,36 +308,32 @@ async function generateVolunteerHome(person){
   return person.home;
 }
 
-// Public: generate (or regenerate) a work location for a volunteer. Tries
-// commercial → industrial → retail buckets in order, then falls back to a
-// road-snapped random polygon point.
+// Phase 5 bugfix — generateVolunteerWork removed. Work locations are no longer
+// tracked; volunteers are either at home or rarely roaming within coverage
+// ESNs. The function is preserved as a deprecated no-op for any lingering
+// caller that hasn't been updated; it returns null and clears any stray
+// `p.work` so saves migrate forward.
 async function generateVolunteerWork(person){
-  if(!person || person.type !== 'volunteer') return null;
-  const esn = _pickCoverageESN(person);
-  if(!esn){ person.work = null; return null; }
-  let pick = null;
-  for(const type of ['commercial','industrial','retail']){
-    pick = await pickRandomBuildingInESN(esn.id, type);
-    if(pick && !pick.fallback) break;  // first cached hit wins
-  }
-  if(!pick){ person.work = null; return null; }
-  person.work = {
-    lat: pick.lat, lng: pick.lng, esnId: esn.id,
-    wayId: pick.wayId || null, isFallback: !!pick.fallback
-  };
-  return person.work;
+  if(person && 'work' in person) delete person.work;
+  return null;
 }
 
 // =============================================================================
 // AVAILABILITY
 // =============================================================================
 
-// Public: true if a volunteer should be considered "available right now" for
-// dispatch. Combines:
-//   • super-responder flag — always available, ignores reliability/schedule
-//   • availability.defaultAvailable — explicit player toggle
-//   • availability.schedule windows (Phase 5C-shaped: [start,end,daysMask])
-//   • availability.reliability — random gate per dispatch attempt
+// Phase 5 bugfix — availability is now persistent hourly STATE, not a per-call
+// random gate. Returns true iff the volunteer's stored `currentState` is one
+// of the available states. The hourly re-roll lives in
+// `recomputeVolunteerAvailabilityHour()` below; this function is pure (no
+// randomness, no side effects) so every UI surface reads the same value
+// between hour ticks.
+//
+//   • super-responder flag — always available (forced 'home')
+//   • forceAvailableUntil  — player override; available while gameSeconds < it
+//   • busy / responding    — never re-evaluated here; their state is locked
+//                            until the call releases them
+//   • currentState         — set by the hourly roll
 //
 // Career personnel always return true (they use isOnDutyNow for shift gating
 // in personnel.js).
@@ -343,37 +341,151 @@ function isVolunteerAvailableNow(person){
   if(!person) return false;
   if(person.type !== 'volunteer') return true;
   if(person.isSuperResponder) return true;
+
+  // Busy / responding volunteers are committed to an existing assignment.
+  // getCrewForUnit already filters on status === 'available' upstream, but
+  // we double-check here so external callers can't accidentally re-dispatch
+  // a busy volunteer.
+  if(person.status && person.status !== 'available') return false;
+
   let a = person.availability;
   if(!a){
-    // Phase 5D bug-fix — legacy volunteers without availability data must still
-    // roll for reliability rather than auto-passing. Lazily seed defaults so
-    // every subsequent check uses the same value (helps with debugging).
+    // Legacy / missing availability — seed defaults and treat as available
+    // until the next hourly tick re-rolls them.
     a = person.availability = {
-      defaultAvailable: true,
-      reliability:      BAM_CONFIG.volunteerDefaultReliability ?? 0.8,
-      schedule:         []
+      currentState:        'home',
+      currentLocation:     null,
+      nextRollGameHour:    0,
+      schedule:            [],
+      forceAvailableUntil: null
     };
   }
-  // Schedule check (optional). When schedule entries exist, the volunteer is
-  // only considered available within those windows.
-  if(Array.isArray(a.schedule) && a.schedule.length){
-    const day  = (typeof gameDay !== 'undefined') ? gameDay : 1;
-    const sec  = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
-    const hour = sec / 3600;
-    const dayOfWeek = ((day - 1) % 7 + 7) % 7;
-    const mask = 1 << dayOfWeek;
-    const inWindow = a.schedule.some(([start, end, daysMask]) => {
-      if(daysMask != null && (daysMask & mask) === 0) return false;
-      return hour >= start && hour < end;
-    });
-    if(!inWindow) return false;
-  } else if(a.defaultAvailable === false){
-    return false;
+
+  // Player override — "forced available" wins until the timestamp passes.
+  if(a.forceAvailableUntil != null){
+    const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+    const dayBase = ((typeof gameDay !== 'undefined') ? gameDay : 1) * 86400;
+    const now = dayBase + sec;
+    if(now < a.forceAvailableUntil) return true;
   }
-  // Reliability roll — single random gate per call. Default reliability used
-  // when none configured.
-  const reliability = (a.reliability != null) ? a.reliability : (BAM_CONFIG.volunteerDefaultReliability ?? 0.8);
-  return Math.random() < reliability;
+
+  return a.currentState === 'home' || a.currentState === 'roaming';
+}
+
+// =============================================================================
+// HOURLY AVAILABILITY RE-ROLL  (Phase 5 bugfix)
+// =============================================================================
+// Called from the game-clock hour-tick in index.html. For each idle volunteer
+// (status === 'available'), re-rolls their currentState according to
+// configurable probabilities. Volunteers who are busy/responding/awaiting are
+// skipped — they remain locked to their assignment. Schedule windows force
+// 'unavailable' when the current hour is outside any configured window.
+//
+// Roll outcomes:
+//   • forced 'home' if super-responder or forceAvailableUntil is active
+//   • 'unavailable' if schedule windows exist and current hour is outside them
+//   • else: weighted roll across available/home, available/roaming, unavailable
+//
+// Sets:
+//   availability.currentState     — new state
+//   availability.currentLocation  — set to a random point in a coverage ESN
+//                                   when state === 'roaming', else null
+//   availability.nextRollGameHour — current hour + 1
+function recomputeVolunteerAvailabilityHour(){
+  if(typeof personnel === 'undefined' || !personnel.length) return;
+  const day  = (typeof gameDay !== 'undefined') ? gameDay : 1;
+  const sec  = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+  const currentGameHour = Math.floor((day - 1) * 24 + sec / 3600);
+  const dayOfWeek = ((day - 1) % 7 + 7) % 7;
+  const dayMask = 1 << dayOfWeek;
+  const hourOfDay = Math.floor(sec / 3600);
+
+  const homeChance    = BAM_CONFIG.volunteerAvailableHomeChance    ?? 0.7;
+  const roamingChance = BAM_CONFIG.volunteerAvailableRoamingChance ?? 0.05;
+
+  personnel.forEach(p => {
+    if(p.type !== 'volunteer') return;
+    if(p.status && p.status !== 'available') return;  // busy/responding stay locked
+    let a = p.availability;
+    if(!a){
+      a = p.availability = {
+        currentState:        'home',
+        currentLocation:     null,
+        nextRollGameHour:    0,
+        schedule:            [],
+        forceAvailableUntil: null
+      };
+    }
+    if((a.nextRollGameHour || 0) > currentGameHour) return;
+
+    // Super-responder and player-override paths short-circuit the roll.
+    if(p.isSuperResponder){
+      a.currentState = 'home';
+      a.currentLocation = null;
+      a.nextRollGameHour = currentGameHour + 1;
+      return;
+    }
+    const nowAbs = day * 86400 + sec;
+    if(a.forceAvailableUntil != null && nowAbs < a.forceAvailableUntil){
+      a.currentState = 'home';
+      a.currentLocation = null;
+      a.nextRollGameHour = currentGameHour + 1;
+      return;
+    }
+
+    // Schedule windows — when present, the volunteer is forced unavailable
+    // outside any configured window.
+    if(Array.isArray(a.schedule) && a.schedule.length){
+      const inWindow = a.schedule.some(([start, end, daysMask]) => {
+        if(daysMask != null && (daysMask & dayMask) === 0) return false;
+        return hourOfDay >= start && hourOfDay < end;
+      });
+      if(!inWindow){
+        a.currentState = 'unavailable';
+        a.currentLocation = null;
+        a.nextRollGameHour = currentGameHour + 1;
+        return;
+      }
+    }
+
+    // Weighted roll.
+    const r = Math.random();
+    if(r < homeChance){
+      a.currentState = 'home';
+      a.currentLocation = null;
+    } else if(r < homeChance + roamingChance){
+      a.currentState = 'roaming';
+      a.currentLocation = _pickRoamingLocationFor(p);
+      // If we can't find a roaming location (no coverage ESN), fall back to
+      // 'home' so we never have a roaming-state volunteer with no location.
+      if(!a.currentLocation) a.currentState = 'home';
+    } else {
+      a.currentState = 'unavailable';
+      a.currentLocation = null;
+    }
+    a.nextRollGameHour = currentGameHour + 1;
+  });
+}
+
+// Internal: picks a random point inside one of the volunteer's station's
+// coverage ESNs. Returns {lat,lng} or null if no eligible ESN exists.
+// Synchronous — uses the polygon randomizer directly without OSRM snap (cheap,
+// and we don't need road-snap accuracy for a transient roaming origin).
+function _pickRoamingLocationFor(person){
+  if(typeof esns === 'undefined' || typeof stations === 'undefined') return null;
+  const station = stations.find(s => s.id === person.stationId);
+  if(!station) return null;
+  const service = station.type;
+  const candidates = esns.filter(e => {
+    if(e.excludeFromGeneration) return false;
+    const ids = e.assignments?.[service] || [];
+    return ids.includes(station.id) && Array.isArray(e.coords) && e.coords.length;
+  });
+  if(!candidates.length) return null;
+  const esn = candidates[Math.floor(Math.random() * candidates.length)];
+  if(typeof _randomPointInPolygon !== 'function') return null;
+  const [lat, lng] = _randomPointInPolygon(esn.coords);
+  return { lat, lng };
 }
 
 // =============================================================================
@@ -478,16 +590,14 @@ async function autoMigrateVolunteersForESN(esnId){
 function _getVolunteerHomeMarker(personId){
   return _volunteerHomeMarkers.get(personId) || null;
 }
-function _getVolunteerWorkMarker(personId){
-  return _volunteerWorkMarkers.get(personId) || null;
-}
 
-// Re-renders the home + work overlays based on current visibility flags and
-// the current volunteer roster. Idempotent — call after any change that
-// affects volunteer locations (hire, regen, ESN migration, layer toggle).
+// Re-renders the home overlay based on current visibility flag and the current
+// volunteer roster. Idempotent — call after any change that affects volunteer
+// locations (hire, regen, ESN migration, layer toggle).
+//
+// Phase 5 bugfix — work-marker pass removed.
 function refreshVolunteerLocationMarkers(){
   if(typeof map === 'undefined' || !map) return;
-  // Homes
   if(volunteerLayerVisibility.homes){
     personnel.forEach(p => {
       if(p.type !== 'volunteer' || !p.home) return;
@@ -513,36 +623,14 @@ function refreshVolunteerLocationMarkers(){
     for(const m of _volunteerHomeMarkers.values()) m.remove();
     _volunteerHomeMarkers.clear();
   }
-  // Works
-  if(volunteerLayerVisibility.works){
-    personnel.forEach(p => {
-      if(p.type !== 'volunteer' || !p.work) return;
-      let m = _volunteerWorkMarkers.get(p.id);
-      const latLng = [p.work.lat, p.work.lng];
-      if(!m){
-        m = L.circleMarker(latLng, {
-          radius: 4, color: '#fbbf24', fillColor: '#fbbf24',
-          fillOpacity: 0.65, weight: 1
-        }).bindTooltip(`🏢 ${p.name}`, { direction: 'top' });
-        m.addTo(map);
-        _volunteerWorkMarkers.set(p.id, m);
-      } else {
-        m.setLatLng(latLng);
-      }
-    });
-    for(const [pid, m] of _volunteerWorkMarkers.entries()){
-      const p = personnel.find(x => x.id === pid);
-      if(!p || !p.work || p.type !== 'volunteer'){ m.remove(); _volunteerWorkMarkers.delete(pid); }
-    }
-  } else {
-    for(const m of _volunteerWorkMarkers.values()) m.remove();
-    _volunteerWorkMarkers.clear();
-  }
 }
 
 // Public: toggle a layer visibility. Persists to settings and refreshes markers.
+// Phase 5 bugfix — `works` is no longer a valid layer; calls with that value
+// silently no-op (kept so old settings/UI don't throw).
 function setVolunteerLayerVisible(layer, visible){
-  if(!['responders','homes','works'].includes(layer)) return;
+  if(layer === 'works') return;  // legacy — work locations removed
+  if(!['responders','homes'].includes(layer)) return;
   volunteerLayerVisibility[layer] = !!visible;
   refreshVolunteerLocationMarkers();
   // Persist via the Phase 4A settings autosync if present.
@@ -569,7 +657,8 @@ let _mapClickVolunteerTarget = null;  // { personId, kind, returnToDetails }
 // floating confirmation toolbar like the ESN draw flow, and remembers that
 // we need to reopen the Personnel Details modal once the pick lands.
 function beginVolunteerLocationPick(personId, kind){
-  if(!['home','work'].includes(kind)) return;
+  // Phase 5 bugfix — only 'home' is supported now. Legacy 'work' callers no-op.
+  if(kind !== 'home') return;
   _mapClickVolunteerTarget = { personId, kind, returnToDetails: true };
 
   // Stash any open modal state we need to restore later. Then close everything
@@ -667,8 +756,10 @@ function _onMapClickForVolunteerPick(e){
     return;
   }
   const loc = { lat: e.latlng.lat, lng: e.latlng.lng, esnId: null, wayId: null, isFallback: false };
+  // Phase 5 bugfix — work locations removed; only home is settable now.
+  // The map-pick UI only exposes 'home' going forward; legacy 'work' calls fall
+  // through to no-op rather than corrupting state with a phantom field.
   if(target.kind === 'home') p.home = loc;
-  else                       p.work = loc;
   p.isCustomized = true;
   p.playerEdited = true;
   if(typeof setStatus === 'function') setStatus(`✅ Volunteer ${target.kind} set for ${p.name}.`);
@@ -694,19 +785,24 @@ function _onMapClickForVolunteerPick(e){
 function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
   if(!Array.isArray(responders) || !responders.length) return Promise.resolve({ arrived: [], noShows: [] });
   if(!stationLatLng) return Promise.resolve({ arrived: [], noShows: [] });
-  const speedMph     = opts.speedMph     || BAM_CONFIG.volunteerResponseSpeedMph || 35;
+  const speedMph     = opts.speedMph     || BAM_CONFIG.volunteerResponseSpeedMph || 50;
   const maxRealMs    = opts.maxRealMs    || 60000; // safety so a misconfigured volunteer can't hang dispatch
+  const abortSignal  = opts.abortSignal  || { aborted: false };  // Phase 5 bugfix — force-out support
   const arrived = [];
   const noShows = [];
+  const handles = [];  // per-volunteer cancellable handles so force-out can stop pending travel
+
   return new Promise(resolve => {
     let settled = false;
-    const finish = () => {
+    const finish = (forced = false) => {
       if(settled) return;
       settled = true;
-      resolve({ arrived, noShows });
-    };
-    const watchdog = setTimeout(() => {
-      // Anyone still not in `arrived` is a no-show.
+      // Cancel any in-flight per-volunteer animations so their marker timers stop.
+      handles.forEach(h => { try { h.cancel?.(); } catch(_){} });
+      // Anyone still not in `arrived` becomes a no-show. On a force-out, they
+      // get released ('available') so the dispatch flow doesn't strand them on
+      // a busy/responding status forever. Cancelled animations leave the
+      // volunteer's currentLocation wherever the polyline last placed them.
       responders.forEach(p => {
         if(!arrived.includes(p.id)){
           p.status = 'available';
@@ -714,16 +810,28 @@ function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
           noShows.push(p.id);
         }
       });
-      finish();
-    }, maxRealMs);
+      resolve({ arrived, noShows, forced });
+    };
+    const watchdog = setTimeout(() => finish(false), maxRealMs);
+    // Phase 5 bugfix — abort poller. Cheap setInterval (every 250ms real) that
+    // resolves the promise when the external signal flips. We don't poll
+    // gameSpeed-scaled time here because force-out should respond to the
+    // player's click in real-time even when the game is running fast or paused.
+    const poller = setInterval(() => {
+      if(abortSignal.aborted){
+        clearInterval(poller);
+        clearTimeout(watchdog);
+        finish(true);
+      }
+    }, 250);
+
     let arrivalsLeft = responders.length;
     responders.forEach(p => {
-      // Pick a believable origin: explicit currentLocation > random home/work > station fallback.
+      // Origin order: explicit currentLocation > home > station.
       const from = p.currentLocation
-        || (p.work && Math.random() < 0.4 ? { lat: p.work.lat, lng: p.work.lng } : null)
         || (p.home ? { lat: p.home.lat, lng: p.home.lng } : null)
         || stationLatLng;
-      dispatchVolunteer(p, stationLatLng, {
+      const h = dispatchVolunteer(p, stationLatLng, {
         speedMph,
         fromLatLng: from,
         onArrive: () => {
@@ -733,23 +841,87 @@ function triggerVolunteerStationResponse(stationLatLng, responders, opts = {}){
           p.currentLocation = { lat: stationLatLng.lat, lng: stationLatLng.lng };
           arrivalsLeft--;
           if(arrivalsLeft <= 0){
+            clearInterval(poller);
             clearTimeout(watchdog);
-            finish();
+            finish(false);
           }
         }
       });
+      handles.push(h);
     });
   });
 }
 
 // =============================================================================
-// VOLUNTEER DISPATCH ANIMATION  (Phase 5D)
+// FORCE-OUT — depart an awaiting_crew apparatus before all volunteers arrive
 // =============================================================================
-// Minimal self-contained animator: spawns a marker at `from`, eases it to `to`
-// along a straight line scaled by gameSpeed, then cleans up. The full road-
-// routed multi-volunteer station-response simulation is intentionally deferred
-// to the post-Phase-5 call resolution overhaul — this animator provides the
-// substrate hook the rewrite will call into.
+// Player spec: force-out is only allowed when at least one person currently at
+// the station holds the apparatus's driver cert. The driver may be career
+// (already on-duty) or volunteer (already arrived as part of the response).
+// Returns { ok:bool, reason?:string } so the UI can surface the failure.
+function forceVolunteerCrewDeparture(unitId){
+  // Find the unit + station.
+  let unit = null, station = null;
+  for(const s of (typeof stations !== 'undefined' ? stations : [])){
+    const u = s.units?.find(x => x.id === unitId);
+    if(u){ unit = u; station = s; break; }
+  }
+  if(!unit || !station) return { ok:false, reason:'unit_not_found' };
+  if(unit.status !== 'awaiting_crew') return { ok:false, reason:'not_awaiting_crew' };
+
+  // Resolve driver cert for this apparatus.
+  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert;
+  if(driverCert){
+    // Find someone at the station with the required cert. "At station" means
+    // career personnel on-duty here, OR a volunteer who has already arrived
+    // (status 'busy' AND assigned to this unit OR currentLocation at station).
+    const STATION_RADIUS_KM = 0.05;  // tight — they must physically be at the apparatus
+    const atStation = (typeof personnel !== 'undefined' ? personnel : []).filter(p => {
+      if(p.stationId !== station.id) return false;
+      if(typeof personHasCert !== 'function' || !personHasCert(p, driverCert)) return false;
+      if(p.type !== 'volunteer'){
+        // Career: on-duty here counts as at-station (no positional check; they're working).
+        return (typeof isOnDutyNow === 'function') ? isOnDutyNow(p) : true;
+      }
+      // Volunteer must be busy AND have arrived (status === 'busy' is set on
+      // dispatch; arrival sets currentLocation to the station).
+      if(p.status !== 'busy') return false;
+      const loc = p.currentLocation;
+      if(!loc) return false;
+      const dx = (typeof haversineKm === 'function')
+        ? haversineKm(loc.lat, loc.lng, station.lat, station.lng)
+        : _haversineKmLocal(loc.lat, loc.lng, station.lat, station.lng);
+      return dx <= STATION_RADIUS_KM;
+    });
+    if(!atStation.length){
+      const certLabel = BAM_CONFIG.certifications?.[driverCert]?.label || driverCert;
+      return { ok:false, reason:`no_driver_at_station:${certLabel}` };
+    }
+  }
+
+  // Trip the abort signal. The promise inside executeDispatch resolves and
+  // its .then() handler advances the unit to 'dispatched' + routes to scene.
+  if(unit._awaitingAbortSignal){
+    unit._awaitingAbortSignal.aborted = true;
+    return { ok:true };
+  }
+  return { ok:false, reason:'no_abort_signal' };
+}
+
+// =============================================================================
+// VOLUNTEER DISPATCH ANIMATION  (Phase 5 bugfix — road-routed via OSRM)
+// =============================================================================
+// Animates a single volunteer along an OSRM driving route from their current
+// origin to `toLatLng`. Honors gameSpeed (pausing freezes movement). The route
+// is fetched asynchronously; while waiting we keep the marker stationary at
+// the origin. On any OSRM failure we fall back to a straight-line animation
+// so dispatch never deadlocks because the routing API is unreachable.
+//
+// Speed model: OSRM's predicted duration is the upper bound on travel time,
+// but we enforce a `volunteerResponseSpeedMph` floor (default 50). If the
+// implied speed is below the floor, we shrink the duration to match the
+// floor — so highway sections stay fast but slow back-road predictions don't
+// leave the volunteer crawling forever.
 //
 // Returns a cancellable handle: { cancel() }.
 function dispatchVolunteer(person, toLatLng, opts = {}){
@@ -761,21 +933,16 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
   const from = opts.fromLatLng
     || (person.currentLocation)
     || (person.home && { lat: person.home.lat, lng: person.home.lng })
-    || (person.work && { lat: person.work.lat, lng: person.work.lng })
     || (() => {
       const s = stations.find(x => x.id === person.stationId);
       return s ? { lat: s.lat, lng: s.lng } : null;
     })();
   if(!from) return { cancel: () => {} };
 
-  // Straight-line distance + a default 30 mph for civilian POV speed (~13 m/s).
-  const speedMph = opts.speedMph || 35;
-  const distKm   = (typeof haversineKm === 'function')
-    ? haversineKm(from.lat, from.lng, toLatLng.lat, toLatLng.lng)
-    : _haversineKmLocal(from.lat, from.lng, toLatLng.lat, toLatLng.lng);
-  const durationGameSec = (distKm / (speedMph * 1.60934)) * 3600;
-
+  const speedFloorMph = opts.speedMph || BAM_CONFIG.volunteerResponseSpeedMph || 50;
   const eventId = _genVolunteerEventId();
+  let cancelled = false;
+  let cleanedUp = false;
   let marker = null;
   if(showMarker){
     marker = L.circleMarker([from.lat, from.lng], {
@@ -784,27 +951,80 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
     _volunteerLiveMarkers.set(eventId, marker);
   }
 
-  let cancelled = false;
-  let elapsedGameSec = 0;
-  let lastReal = performance.now();
-  const tick = (now) => {
+  // Helper to run the actual animation given a coords array + total game-secs.
+  // Walks the polyline using cumulative segment progress.
+  function _runAnim(coords, durationGameSec){
     if(cancelled) return cleanup();
-    const realDelta = (now - lastReal) / 1000;
-    lastReal = now;
-    const speed = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1;
-    elapsedGameSec += realDelta * speed;
-    const t = Math.min(1, elapsedGameSec / Math.max(0.0001, durationGameSec));
-    const lat = from.lat + (toLatLng.lat - from.lat) * t;
-    const lng = from.lng + (toLatLng.lng - from.lng) * t;
-    if(marker) marker.setLatLng([lat, lng]);
-    person.currentLocation = { lat, lng };
-    if(t >= 1) return cleanup(true);
+    if(!coords || coords.length < 2 || !(durationGameSec > 0)){
+      return cleanup(true);
+    }
+    let elapsedGameSec = 0;
+    let lastReal = performance.now();
+    const tick = (now) => {
+      if(cancelled) return cleanup();
+      const realDelta = (now - lastReal) / 1000;
+      lastReal = now;
+      const speed = (typeof gameSpeed !== 'undefined') ? gameSpeed : 1;
+      elapsedGameSec += realDelta * speed;
+      const t = Math.min(1, elapsedGameSec / Math.max(0.0001, durationGameSec));
+      // Polyline interpolation by uniform segment progress.
+      const segCount = coords.length - 1;
+      const scaled = t * segCount;
+      const segIdx = Math.min(segCount - 1, Math.floor(scaled));
+      const segT   = scaled - segIdx;
+      const a = coords[segIdx];
+      const b = coords[segIdx + 1];
+      const lat = a[0] + (b[0] - a[0]) * segT;
+      const lng = a[1] + (b[1] - a[1]) * segT;
+      if(marker) marker.setLatLng([lat, lng]);
+      person.currentLocation = { lat, lng };
+      if(t >= 1) return cleanup(true);
+      requestAnimationFrame(tick);
+    };
     requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
+  }
 
+  // Kick off OSRM route fetch. While waiting the marker just sits at origin.
+  (async () => {
+    if(cancelled) return cleanup();   // Phase 5 bugfix v2 — was bare `return`,
+    // which leaked the marker when cancel fired before the fetch started.
+    const distKm = (typeof haversineKm === 'function')
+      ? haversineKm(from.lat, from.lng, toLatLng.lat, toLatLng.lng)
+      : _haversineKmLocal(from.lat, from.lng, toLatLng.lat, toLatLng.lng);
+    const floorDurationSec = (distKm / (speedFloorMph * 1.60934)) * 3600;
+
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${toLatLng.lng},${toLatLng.lat}?overview=full&geometries=geojson`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const resp = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      if(cancelled) return cleanup();   // Phase 5 bugfix v2 — cancel during fetch
+      if(!resp.ok) throw new Error('osrm ' + resp.status);
+      const data = await resp.json();
+      if(data.code !== 'Ok' || !data.routes?.length) throw new Error('no_route');
+      const coords = data.routes[0].geometry.coordinates.map(([lng,lat]) => [lat, lng]);
+      const osrmDur = data.routes[0].duration;  // seconds at OSRM's predicted average
+      // Enforce the speed floor: never travel slower than `speedFloorMph`.
+      const durationGameSec = Math.min(osrmDur, floorDurationSec);
+      _runAnim(coords, durationGameSec);
+    } catch(err){
+      if(cancelled) return cleanup();
+      // OSRM unreachable / timed out — straight-line fallback at the floor speed.
+      const coords = [[from.lat, from.lng], [toLatLng.lat, toLatLng.lng]];
+      _runAnim(coords, floorDurationSec);
+    }
+  })();
+
+  // Idempotent cleanup — guarded so a double-call (cancel after arrival, etc.)
+  // doesn't double-fire onCancel or remove an already-removed marker. This
+  // also fixes the duplicate-marker bug where the cancel handle and the
+  // animation tick both raced to clean up.
   function cleanup(arrived){
-    if(marker){ marker.remove(); _volunteerLiveMarkers.delete(eventId); }
+    if(cleanedUp) return;
+    cleanedUp = true;
+    if(marker){ marker.remove(); marker = null; }
+    _volunteerLiveMarkers.delete(eventId);
     if(arrived){
       person.currentLocation = { lat: toLatLng.lat, lng: toLatLng.lng };
       if(typeof opts.onArrive === 'function') opts.onArrive(person);
@@ -812,7 +1032,12 @@ function dispatchVolunteer(person, toLatLng, opts = {}){
       opts.onCancel(person);
     }
   }
-  return { cancel: () => { cancelled = true; } };
+  return { cancel: () => {
+    cancelled = true;
+    // Phase 5 bugfix v2 — eagerly clean up so the marker disappears even if
+    // we're stuck awaiting OSRM. cleanup() is idempotent so this is safe.
+    cleanup();
+  } };
 }
 
 // Local haversine in case index.html's helper isn't loaded yet (defensive).

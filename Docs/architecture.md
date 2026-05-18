@@ -172,6 +172,42 @@
 
 ---
 
+## Crew-Select Dispatch
+
+- The call modal footer has TWO primary buttons. `Dispatch Selected` runs the auto-matcher (`assignPersonnelToUnit`). `👥 Dispatch w/ Crew…` opens the Crew-Select modal (`#crew-select-modal`, z-index 10001) layered above the call modal.
+- `executeDispatch(opts = {})` — when called with `opts.preassigned: true`, the auto-matcher is skipped for any unit that already has personnel with `currentAssignment.unitId === uid && currentAssignment.callId === inc.id`. When called with `opts.keepCallModalOpen: true`, the call modal stays open after dispatch and is re-rendered so the player sees units transition to enroute (used by the crew-select path).
+- The pre-flight crew gate inside `executeDispatch` evaluates against preassigned crew via `evaluateCrewSelection(uid, personIds)` rather than `hasMinimumCrew(uid)` whenever preassigned crew exists for the call. Reason: `hasMinimumCrew` calls `getCrewForUnit` which filters by `status === 'available'`, and the just-assigned crew has already been flipped to `busy`/`responding`. Falling back to `hasMinimumCrew` would falsely block the dispatch.
+- Defensive cleanup: when a preassigned unit is filtered out at the pre-flight gate, `releasePersonnelFromUnit(uid)` runs so the crew doesn't stay stuck busy on a dispatch that never happened.
+- Volunteers picked via the modal go to `status='responding'` (not `busy`). `executeDispatch` discovers them via the same `respondingVolunteers` filter the auto path uses, so the `awaiting_crew` station-response animation kicks in identically.
+
+### Crew-Select picker — `personnel.js` helpers
+
+- `getSeatingLayoutForUnit(unit)` — returns `{ label, seats[] }` from `unitTypes[typeKey].seats`. Falls back to a single driver-seat layout when not configured.
+- `getCrewCandidatesForUnit(unitId)` — returns every responder eligible to ride: station personnel (career on-duty + volunteers passing `isVolunteerAvailableNow`), `status === 'available'`, not pinned to a different unit. Each candidate is annotated with `_pickerMeta: { state: 'station'|'home'|'roaming', distanceMi, etaMin }`. Cert-eligibility is NOT enforced here — the picker shows everyone so the player can cross-staff.
+- `evaluateCrewSelection(unitId, personIds)` — pure analyzer. Returns `{ ok, hasDriver, driverCert, minMet, missing, idealMet, idealMissing, crew }`. Used by both the picker's live banner and the dispatch gate.
+- `assignSpecificCrewToUnit(unitId, callId, personIds)` — commits the manual crew. Mirrors `assignPersonnelToUnit`'s status mutations (career→busy, volunteer→responding) but skips pinned-auto-add — the player's explicit selection is the source of truth.
+- `_estimateResponderTravel(person, station)` — volunteers only. Computes distance + ETA from `person.availability.currentLocation || person.home` to the station using `haversineKm` and `BAM_CONFIG.volunteerResponseSpeedMph` (default 50 mph). Returns `null` for career personnel (they're at the station).
+
+### Seating layouts — config shape
+
+- Seats live on `BAM_CONFIG.unitTypes[typeKey].seats` as an ordered array. Each seat: `{ id, label, isDriver?, preferredCerts[] }`.
+  - `isDriver: true` causes the dispatch gate to enforce `crewDefaults[typeKey].driverCert` as a HARD block for that seat. The picker still shows every responder for the seat — the gate fires at dispatch time.
+  - `preferredCerts` is a SOFT hint. Personnel holding any of these certs get a green "fits this seat" badge in the picker, but the player can put any responder in any seat.
+- Seat count = apparatus capacity. The dispatch staffing gate continues to use `crewDefaults.min`/`ideal` — seats and crew requirements are independent dimensions.
+- Read by the Crew-Select picker AND the Unit Details modal's informational seating section (`_renderUnitSeatingSection` in `units.js`).
+
+---
+
+## Crew continuity on mid-cycle redispatch
+
+- A `returning` unit's crew stays attached: `personnel.currentAssignment.unitId` still points to the unit, status is `busy`/`responding`. `hasMinimumCrew` correctly evaluates against the assigned crew via `getAssignedCrewForUnit` because `returning` is in the `_unitIsOnCall` list (`personnel.js`).
+- An `available` unit retains its crew for a configurable grace window (`BAM_CONFIG.volunteerPostCallReleaseGameSec`, default 300 game-seconds). `onUnitReturned` sets `unit._releasePersonnelAtAbsSec`; `_tickPostCallRelease` releases when the threshold is hit.
+- Two redispatch rules enforced inside `executeDispatch` to preserve continuity:
+  1. **`callId` re-point on mid-cycle redispatch** — when `isReturning || isDispatched`, every person with `currentAssignment.unitId === uid` has their `currentAssignment.callId` updated to the new incident. Without this, `getOnSceneRoster(newIncId)` (and any other `callId`-filtered query) misses the crew that's physically in the cab.
+  2. **Clear post-call release timer on redispatch** — `unit._releasePersonnelAtAbsSec = null` at the top of every redispatch path. Without this, a unit grabbed during the grace window would have its crew stripped mid-call when the timer fires.
+
+---
+
 ## Unit return animation
 
 - On resolution, each dispatched unit animates back to its home station via OSRM (reverse route)

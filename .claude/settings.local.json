@@ -39,7 +39,10 @@
       "Bash(node --check /d/By-Any-Means-Game-Project/volunteers.js)",
       "Bash(node --check /d/By-Any-Means-Game-Project/stations.js)",
       "Bash(node --check /d/By-Any-Means-Game-Project/esn.js)",
-      "Bash(node --check /d/By-Any-Means-Game-Project/units.js)"
+      "Bash(node --check /d/By-Any-Means-Game-Project/units.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/config.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/personnel.js)",
+      "Bash(node -e ' *)"
     ]
   }
 }

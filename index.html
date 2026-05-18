@@ -340,6 +340,85 @@
     .dm-plan-name{font-weight:700;font-size:.82rem;}
     .dm-plan-reqs{font-size:.8rem;color:var(--muted);}
 
+    /* ── CREW-SELECT MODAL ── (Dispatch w/ Crew flow) */
+    /* Layered above the dispatch modal — uses a higher z-index so the
+       dispatch modal stays visible underneath when this opens. */
+    #crew-select-modal{ z-index:10001; }
+    .cs-unit-card{
+      border:1px solid var(--border2);background:var(--panel2);
+      border-radius:3px;padding:10px 12px;margin-bottom:14px;
+    }
+    .cs-unit-head{
+      display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+      margin-bottom:8px;
+    }
+    .cs-unit-name{font-size:.92rem;font-weight:700;color:var(--gold);}
+    .cs-unit-sub{font-size:.74rem;color:var(--muted);}
+    .cs-warn-banner{
+      padding:6px 10px;border-radius:3px;font-size:.78rem;margin-bottom:8px;
+      border:1px solid;
+    }
+    .cs-warn-banner.ok    { background:rgba(52,201,106,.08); border-color:var(--green); color:var(--green); }
+    .cs-warn-banner.warn  { background:rgba(240,165,0,.08);  border-color:var(--gold);  color:var(--gold);  }
+    .cs-warn-banner.error { background:rgba(232,67,26,.10);  border-color:var(--accent);color:var(--accent);}
+    /* Two-pane layout inside each unit card: seats on the left, roster on the right. */
+    .cs-pane{display:grid;grid-template-columns:1.05fr 1fr;gap:12px;}
+    @media (max-width: 760px){ .cs-pane{ grid-template-columns:1fr; } }
+    .cs-seats-title, .cs-roster-title{
+      font-size:.72rem;letter-spacing:1.2px;text-transform:uppercase;
+      color:var(--muted);margin-bottom:4px;
+    }
+    .cs-seat-row{
+      display:flex;justify-content:space-between;align-items:center;gap:8px;
+      padding:6px 8px;background:var(--bg);border:1px solid var(--border);
+      border-radius:2px;margin-bottom:4px;font-size:.8rem;
+    }
+    .cs-seat-row.filled{ border-color:var(--green); background:rgba(52,201,106,.06); }
+    .cs-seat-row.driver{ border-left:3px solid var(--gold); }
+    .cs-seat-label{ font-weight:700; }
+    .cs-seat-label .seat-hint{ font-size:.66rem;color:var(--muted);font-weight:400;display:block;margin-top:1px; }
+    .cs-seat-occupant{
+      display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:.78rem;
+    }
+    .cs-seat-empty{ color:var(--muted); font-style:italic; font-size:.76rem; }
+    .cs-roster-list{
+      max-height:340px;overflow-y:auto;border:1px solid var(--border);
+      border-radius:2px;padding:4px;background:var(--bg);
+    }
+    .cs-person-row{
+      display:flex;justify-content:space-between;align-items:center;gap:6px;
+      padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.04);font-size:.78rem;
+      cursor:pointer; transition:background .12s;
+    }
+    .cs-person-row:hover{ background:rgba(46,168,255,.06); }
+    .cs-person-row.assigned{ background:rgba(52,201,106,.08); cursor:default; }
+    .cs-person-row.assigned:hover{ background:rgba(52,201,106,.08); }
+    .cs-person-name{ font-weight:600; }
+    .cs-person-meta{ font-size:.7rem; color:var(--muted); }
+    .cs-loc-chip{
+      display:inline-block;padding:1px 6px;border-radius:9px;font-size:.62rem;font-weight:700;
+      letter-spacing:.5px;text-transform:uppercase;
+    }
+    .cs-loc-chip.station{ background:rgba(52,201,106,.15); color:var(--green); border:1px solid var(--green); }
+    .cs-loc-chip.home   { background:rgba(46,168,255,.15); color:var(--ems);   border:1px solid var(--ems); }
+    .cs-loc-chip.roaming{ background:rgba(240,165,0,.15);  color:var(--gold);  border:1px solid var(--gold);}
+    .cs-cert-chip{
+      display:inline-block;padding:1px 6px;border-radius:9px;font-size:.62rem;font-weight:600;
+      background:rgba(255,255,255,.06);color:var(--muted);border:1px solid var(--border);
+      margin-right:3px;margin-top:2px;
+    }
+    .cs-cert-chip.fits{ background:rgba(52,201,106,.15); color:var(--green); border-color:var(--green); }
+    .cs-cert-chip.driver{ background:rgba(240,165,0,.15); color:var(--gold); border-color:var(--gold); }
+    .cs-seat-picker{
+      font-size:.7rem;background:var(--bg);color:var(--text);
+      border:1px solid var(--border);padding:2px 4px;border-radius:2px;
+    }
+    .cs-clear-btn{
+      font-size:.66rem;padding:2px 6px;background:transparent;color:var(--muted);
+      border:1px solid var(--border);border-radius:2px;cursor:pointer;
+    }
+    .cs-clear-btn:hover{ border-color:var(--accent); color:var(--accent); }
+
     /* ESN modal specific */
     .esn-assign-group{margin-bottom:12px;}
     .esn-assign-label{font-size:.8rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;}
@@ -1027,6 +1106,27 @@
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeDispatch()">Close</button>
       <button class="btn-primary" id="dm-dispatch-btn" onclick="executeDispatch()">Dispatch Selected</button>
+      <button class="btn-primary gold" id="dm-crew-dispatch-btn"
+        onclick="openCrewSelectModal()" title="Pick exact crew per apparatus before dispatching">👥 Dispatch w/ Crew…</button>
+    </div>
+  </div>
+</div>
+
+<!-- CREW-SELECT MODAL — manual crew picker per apparatus before dispatch -->
+<div id="crew-select-modal" class="modal-overlay" onclick="if(event.target===this)closeCrewSelectModal()">
+  <div class="modal-box gold-top" style="width:1100px;max-width:96vw;max-height:90vh;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;">
+      <div>
+        <h2 class="gold">👥 Crew Assignment</h2>
+        <div class="modal-sub" id="cs-sub">Select responders for each apparatus before dispatch.</div>
+      </div>
+      <button class="btn-sm" onclick="closeCrewSelectModal()"
+        style="flex-shrink:0;margin-top:2px;font-size:.7rem;padding:3px 8px;" title="Cancel">✕ Cancel</button>
+    </div>
+    <div class="modal-body" id="cs-body"></div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeCrewSelectModal()">Cancel</button>
+      <button class="btn-primary gold" id="cs-confirm-btn" onclick="confirmCrewDispatch()">Dispatch with Selected Crew</button>
     </div>
   </div>
 </div>
@@ -2244,7 +2344,381 @@ function closeDispatch(){
   _overrideUnderstaffed = new Set();
 }
 
-function executeDispatch(){
+// ── CREW-SELECT DISPATCH (manual seat-by-seat crew picker) ─────────────────
+// State for the per-unit picker. Keyed by unit id so the modal can stage many
+// apparatus in one pass.
+let _csUnitIds      = [];                 // ordered list of unit ids being staffed
+let _csAssignments  = Object.create(null); // { unitId: { seatId: personId } }
+let _csOverrides    = new Set();          // unitId set — "respond understaffed"
+let _csCandidates   = Object.create(null); // { unitId: Person[] } — cached per open
+
+// Opens the crew picker for every currently-selected dispatchable unit that
+// is at the station (status === 'available'). Returning / dispatched units
+// are skipped because their crew is already committed and can't be reshuffled
+// here — the player should release-and-redispatch those if they want a swap.
+function openCrewSelectModal(){
+  const inc = incidents.find(x => x.id === activeDispatchId);
+  if(!inc){ setStatus('⚠️ No active incident.'); return; }
+  // Same filter as executeDispatch: only NEW dispatches (units not already on this call)
+  const candidateIds = [...selectedUnitsForDispatch].filter(uid => !inc.units.includes(uid));
+  // Restrict to units that are available at the station — anything mid-call
+  // already has a committed crew, the auto path handles those.
+  const allUnits = getAllUnits();
+  _csUnitIds = candidateIds.filter(uid => {
+    const found = allUnits.find(x => x.unit.id === uid);
+    return found && found.unit.status === 'available' && found.unit.inService !== false;
+  });
+  if(!_csUnitIds.length){
+    setStatus('⚠️ Crew picker — no available apparatus selected. Pick a unit first or use auto-dispatch for redirects.');
+    return;
+  }
+  _csAssignments = Object.create(null);
+  _csOverrides   = new Set();
+  _csCandidates  = Object.create(null);
+  // Pre-fetch candidate list and seed each unit with auto-best-fit assignments
+  // as a starting point. The player can swap freely from there.
+  _csUnitIds.forEach(uid => {
+    _csCandidates[uid] = (typeof getCrewCandidatesForUnit === 'function')
+      ? getCrewCandidatesForUnit(uid) : [];
+    _csAssignments[uid] = _csAutoSeedAssignments(uid, _csCandidates[uid]);
+  });
+  document.getElementById('cs-sub').textContent =
+    `${inc.label} — ${_csUnitIds.length} apparatus to staff`;
+  _renderCrewSelectBody();
+  document.getElementById('crew-select-modal').classList.add('open');
+}
+
+function closeCrewSelectModal(){
+  document.getElementById('crew-select-modal').classList.remove('open');
+  _csUnitIds      = [];
+  _csAssignments  = Object.create(null);
+  _csOverrides    = new Set();
+  _csCandidates   = Object.create(null);
+}
+
+// Best-effort auto-seeding: tries to fit each seat with someone whose certs
+// match the seat's preferred set, prioritizing driver seats first. Personnel
+// at the station outrank volunteers when ties happen so the player starts
+// with the lowest-wait crew.
+function _csAutoSeedAssignments(unitId, candidates){
+  const { unit } = (function(){
+    for(const s of stations){
+      const u = s.units?.find(x => x.id === unitId);
+      if(u) return { unit:u };
+    }
+    return { unit:null };
+  })();
+  if(!unit) return {};
+  const layout = getSeatingLayoutForUnit(unit);
+  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert || null;
+  const used = new Set();
+  const out  = {};
+  // Sort seats so driver(s) are filled first
+  const seatsByPriority = (layout.seats || []).slice().sort((a, b) =>
+    (b.isDriver ? 1 : 0) - (a.isDriver ? 1 : 0));
+  // Candidates already come sorted station → home → roaming.
+  seatsByPriority.forEach(seat => {
+    const needs = seat.isDriver
+      ? (driverCert ? [driverCert] : [])
+      : (seat.preferredCerts || []);
+    let pick = null;
+    if(needs.length){
+      pick = candidates.find(p => !used.has(p.id) &&
+        needs.some(c => personHasCert(p, c)));
+    }
+    if(!pick) pick = candidates.find(p => !used.has(p.id));
+    if(pick){
+      out[seat.id] = pick.id;
+      used.add(pick.id);
+    }
+  });
+  return out;
+}
+
+function _renderCrewSelectBody(){
+  const body = document.getElementById('cs-body');
+  if(!body) return;
+  if(!_csUnitIds.length){ body.innerHTML = '<div class="empty-msg">No apparatus to staff.</div>'; return; }
+  body.innerHTML = _csUnitIds.map(uid => _renderCrewSelectUnitCard(uid)).join('');
+  _updateCrewSelectConfirmState();
+}
+
+function _renderCrewSelectUnitCard(unitId){
+  const found = getAllUnits().find(x => x.unit.id === unitId);
+  if(!found) return '';
+  const { unit, station } = found;
+  const utCfg     = BAM_CONFIG.unitTypes[unit.typeKey] || {};
+  const layout    = getSeatingLayoutForUnit(unit);
+  const dispName  = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(unit, station) : unit.name;
+  const assignments = _csAssignments[unitId] || {};
+  const candidates  = _csCandidates[unitId]  || [];
+  // Evaluate the current crew against min/ideal slots
+  const personIds   = Object.values(assignments).filter(Boolean);
+  const evalRes     = (typeof evaluateCrewSelection === 'function')
+    ? evaluateCrewSelection(unitId, personIds)
+    : { ok:true, hasDriver:true, minMet:true, idealMet:true, missing:{}, idealMissing:{} };
+
+  // Banner color + text — surfaces the staffing state BEFORE dispatch so the
+  // player doesn't have to back out to fix it.
+  let bannerCls = 'ok', bannerHtml = '';
+  if(!evalRes.hasDriver){
+    bannerCls = 'error';
+    const dCertLabel = BAM_CONFIG.certifications?.[evalRes.driverCert]?.label || 'driver';
+    bannerHtml = `🚫 <b>No qualified ${dCertLabel} in the driver seat.</b> Apparatus cannot move — pick a driver-certified responder.`;
+  } else if(!evalRes.minMet){
+    const missTxt = typeof _formatMissing === 'function' ? _formatMissing(evalRes.missing) : '';
+    const overridden = _csOverrides.has(unitId);
+    bannerCls = overridden ? 'warn' : 'error';
+    bannerHtml = `${overridden ? '🟡' : '🔴'} <b>Below minimum crew</b> — needs ${missTxt || 'additional certified responders'}.
+      <label style="display:inline-flex;gap:4px;align-items:center;font-size:.74rem;margin-left:6px;cursor:pointer;">
+        <input type="checkbox" ${overridden ? 'checked' : ''}
+          onclick="_csToggleOverride('${unitId}')"/> Override (respond understaffed)
+      </label>`;
+  } else if(!evalRes.idealMet){
+    const missTxt = typeof _formatMissing === 'function' ? _formatMissing(evalRes.idealMissing) : '';
+    bannerCls = 'warn';
+    bannerHtml = `🟡 <b>Minimum crew met</b>, ideal short: ${missTxt || '—'}. Dispatchable.`;
+  } else {
+    bannerCls = 'ok';
+    bannerHtml = `🟢 <b>Ideal crew met.</b> Ready to dispatch.`;
+  }
+
+  // Seats column
+  const driverCert = evalRes.driverCert;
+  const seatsHtml = (layout.seats || []).map(seat => {
+    const occupantId = assignments[seat.id] || null;
+    const occupant   = occupantId ? personnel.find(p => p.id === occupantId) : null;
+    // Build the per-seat occupant dropdown — every unassigned candidate +
+    // current occupant (so re-selecting is a no-op).
+    const optHtml = [
+      `<option value="">— empty —</option>`,
+      ...candidates.map(p => {
+        const isUsedElsewhere = Object.entries(assignments).some(
+          ([sid, pid]) => pid === p.id && sid !== seat.id);
+        if(isUsedElsewhere) return '';
+        const sel = occupantId === p.id ? ' selected' : '';
+        const meta = p._pickerMeta || {};
+        const locTxt = meta.state === 'station' ? 'Station'
+          : meta.state === 'home'    ? `Home ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
+          : meta.state === 'roaming' ? `Roaming ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
+          : '';
+        return `<option value="${p.id}"${sel}>${_escCsHtml(p.name)} — ${_escCsHtml(p.rank||'—')} (${locTxt})</option>`;
+      })
+    ].join('');
+    const isDriverSeat = !!seat.isDriver;
+    let occupantHtml = '';
+    if(occupant){
+      const isDriverOK = !isDriverSeat || !driverCert || personHasCert(occupant, driverCert);
+      const certBadges = (occupant.certs || []).slice(0, 5).map(c => {
+        const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
+        const fits = (seat.preferredCerts || []).includes(c) ||
+                     (isDriverSeat && driverCert && c === driverCert);
+        const cls = fits ? 'fits' : (isDriverSeat && driverCert && c === driverCert ? 'driver' : '');
+        return `<span class="cs-cert-chip ${cls}">${_escCsHtml(lbl)}</span>`;
+      }).join('');
+      const meta   = occupant._pickerMeta || {};
+      const locTxt = meta.state === 'station' ? 'Station'
+        : meta.state === 'home'    ? `Home · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m`
+        : meta.state === 'roaming' ? `Roaming · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m`
+        : '';
+      occupantHtml = `<div>
+        <div class="cs-seat-occupant">
+          <span style="color:${isDriverOK ? 'var(--green)' : 'var(--accent)'};font-weight:700;">${_escCsHtml(occupant.name)}</span>
+          <span class="cs-loc-chip ${meta.state || 'station'}">${_escCsHtml(locTxt)}</span>
+        </div>
+        <div style="margin-top:2px;">${certBadges}</div>
+      </div>`;
+    } else {
+      occupantHtml = `<span class="cs-seat-empty">— empty —</span>`;
+    }
+    const filledCls = occupant ? ' filled' : '';
+    const driverCls = isDriverSeat ? ' driver' : '';
+    const preferLbl = (seat.preferredCerts || []).map(c =>
+      BAM_CONFIG.certifications?.[c]?.label || c).join(', ');
+    return `<div class="cs-seat-row${filledCls}${driverCls}">
+      <div style="flex:1;min-width:0;">
+        <div class="cs-seat-label">${_escCsHtml(seat.label)}${isDriverSeat ? ' <span style="color:var(--gold);font-size:.65rem;">★ DRIVER</span>' : ''}
+          ${preferLbl ? `<span class="seat-hint">Prefers: ${_escCsHtml(preferLbl)}</span>` : ''}
+        </div>
+        ${occupantHtml}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;">
+        <select class="cs-seat-picker" onchange="_csAssignFromSeatPicker('${unitId}','${seat.id}', this.value)">${optHtml}</select>
+        ${occupant ? `<button class="cs-clear-btn" onclick="_csUnassignSeat('${unitId}','${seat.id}')">✕ Clear</button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Roster column — every available responder; clicking jumps them into the
+  // next empty seat (or shows assigned). Cert chips highlight seat-fit.
+  const usedIds = new Set(Object.values(assignments).filter(Boolean));
+  const rosterRows = candidates.length ? candidates.map(p => {
+    const used = usedIds.has(p.id);
+    const meta = p._pickerMeta || {};
+    const locTxt = meta.state === 'station' ? 'Station — on duty'
+      : meta.state === 'home'    ? `At Home · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m to stn`
+      : meta.state === 'roaming' ? `Roaming · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m to stn`
+      : '';
+    const certChips = (p.certs || []).slice(0, 6).map(c => {
+      const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
+      // "fits" if any seat's preferredCerts include this cert, or driver-cert
+      const fits = (layout.seats || []).some(s =>
+        (s.preferredCerts || []).includes(c) ||
+        (s.isDriver && driverCert && c === driverCert));
+      const drv  = driverCert && c === driverCert;
+      const cls  = drv ? 'driver' : (fits ? 'fits' : '');
+      return `<span class="cs-cert-chip ${cls}">${_escCsHtml(lbl)}</span>`;
+    }).join('');
+    const typeIcon = p.type === 'volunteer' ? '🤝' : '👔';
+    return `<div class="cs-person-row${used ? ' assigned' : ''}"
+        onclick="${used ? '' : `_csQuickAssign('${unitId}','${p.id}')`}">
+      <div style="flex:1;min-width:0;">
+        <div class="cs-person-name">${typeIcon} ${_escCsHtml(p.name)}
+          <span class="cs-person-meta">· ${_escCsHtml(p.rank || '')}</span>
+          ${used ? '<span style="color:var(--green);font-size:.66rem;margin-left:4px;">✓ ASSIGNED</span>' : ''}
+        </div>
+        <div class="cs-person-meta">
+          <span class="cs-loc-chip ${meta.state || 'station'}">${_escCsHtml(locTxt)}</span>
+        </div>
+        <div style="margin-top:3px;">${certChips}</div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="empty-msg" style="padding:8px;">No available responders at ${_escCsHtml(station.name)}.</div>`;
+
+  return `<div class="cs-unit-card">
+    <div class="cs-unit-head">
+      <div>
+        <div class="cs-unit-name">${utCfg.icon || ''} ${_escCsHtml(dispName)}
+          <span class="cs-unit-sub">· ${_escCsHtml(layout.label || utCfg.label || '')}</span>
+        </div>
+        <div class="cs-unit-sub">${_escCsHtml(station.name)} · ${personIds.length}/${(layout.seats||[]).length} seats filled</div>
+      </div>
+    </div>
+    <div class="cs-warn-banner ${bannerCls}">${bannerHtml}</div>
+    <div class="cs-pane">
+      <div>
+        <div class="cs-seats-title">Seating</div>
+        ${seatsHtml}
+      </div>
+      <div>
+        <div class="cs-roster-title">Available Responders (${candidates.length})</div>
+        <div class="cs-roster-list">${rosterRows}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Picker handlers — re-render after each mutation so banners stay live.
+function _csAssignFromSeatPicker(unitId, seatId, personId){
+  if(!_csAssignments[unitId]) _csAssignments[unitId] = {};
+  // Free up the person from any other seat first (drag-from-one-seat-to-another)
+  Object.keys(_csAssignments[unitId]).forEach(sid => {
+    if(_csAssignments[unitId][sid] === personId) delete _csAssignments[unitId][sid];
+  });
+  if(personId) _csAssignments[unitId][seatId] = personId;
+  else         delete _csAssignments[unitId][seatId];
+  _renderCrewSelectBody();
+}
+
+function _csUnassignSeat(unitId, seatId){
+  if(_csAssignments[unitId]) delete _csAssignments[unitId][seatId];
+  _renderCrewSelectBody();
+}
+
+// Click a roster row → place them in the next empty seat. Driver seat first
+// if the person is driver-cert qualified and the driver seat is empty.
+function _csQuickAssign(unitId, personId){
+  const found = getAllUnits().find(x => x.unit.id === unitId);
+  if(!found) return;
+  const unit       = found.unit;
+  const layout     = getSeatingLayoutForUnit(unit);
+  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert || null;
+  const person     = personnel.find(p => p.id === personId);
+  if(!person) return;
+  if(!_csAssignments[unitId]) _csAssignments[unitId] = {};
+  const a = _csAssignments[unitId];
+  // Drop them from any existing seat first.
+  Object.keys(a).forEach(sid => { if(a[sid] === personId) delete a[sid]; });
+  // Prefer empty driver seat if person is driver-certified.
+  if(driverCert && personHasCert(person, driverCert)){
+    const drvSeat = (layout.seats || []).find(s => s.isDriver && !a[s.id]);
+    if(drvSeat){ a[drvSeat.id] = personId; _renderCrewSelectBody(); return; }
+  }
+  // Otherwise, first empty seat whose preferredCerts match (best-fit).
+  const fits = (layout.seats || []).find(s => !a[s.id] && !s.isDriver &&
+    (s.preferredCerts || []).some(c => personHasCert(person, c)));
+  if(fits){ a[fits.id] = personId; _renderCrewSelectBody(); return; }
+  // Else: first empty seat at all.
+  const any = (layout.seats || []).find(s => !a[s.id]);
+  if(any){ a[any.id] = personId; _renderCrewSelectBody(); return; }
+  setStatus('⚠️ All seats full on this apparatus.');
+}
+
+function _csToggleOverride(unitId){
+  if(_csOverrides.has(unitId)) _csOverrides.delete(unitId);
+  else _csOverrides.add(unitId);
+  _renderCrewSelectBody();
+}
+
+// Enable/disable the confirm button. Allowed iff every unit has a driver AND
+// (min crew met OR override toggled). Mirrors the executeDispatch gate.
+function _updateCrewSelectConfirmState(){
+  const btn = document.getElementById('cs-confirm-btn');
+  if(!btn) return;
+  const reasons = [];
+  _csUnitIds.forEach(uid => {
+    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
+    const ev  = (typeof evaluateCrewSelection === 'function')
+      ? evaluateCrewSelection(uid, ids)
+      : { hasDriver:true, minMet:true };
+    if(!ev.hasDriver){ reasons.push(uid + ' (no driver)'); return; }
+    if(!ev.minMet && !_csOverrides.has(uid)){ reasons.push(uid + ' (below min)'); return; }
+  });
+  btn.disabled = reasons.length > 0;
+  btn.title = reasons.length
+    ? 'Fix or override the apparatus with red banners before dispatching.'
+    : 'Dispatch all apparatus with the selected crews.';
+}
+
+// Commits manual assignments then triggers executeDispatch with the preassigned
+// flag so the auto-matcher doesn't override our choices.
+function confirmCrewDispatch(){
+  const inc = incidents.find(x => x.id === activeDispatchId);
+  if(!inc){ setStatus('⚠️ No active incident.'); return; }
+  // Gate one more time defensively.
+  for(const uid of _csUnitIds){
+    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
+    const ev  = evaluateCrewSelection(uid, ids);
+    if(!ev.hasDriver){ setStatus('⚠️ Cannot dispatch — at least one apparatus has no qualified driver.'); return; }
+    if(!ev.minMet && !_csOverrides.has(uid)){ setStatus('⚠️ Cannot dispatch — at least one apparatus is below minimum crew without override.'); return; }
+  }
+  // Commit each crew. assignSpecificCrewToUnit mutates personnel status so the
+  // existing executeDispatch loop will detect them as already-assigned and
+  // skip auto-fill. Volunteers go to status='responding' so the awaiting_crew
+  // gate triggers and they animate to the station before the apparatus rolls.
+  _csUnitIds.forEach(uid => {
+    const ids = Object.values(_csAssignments[uid] || {}).filter(Boolean);
+    if(typeof assignSpecificCrewToUnit === 'function'){
+      assignSpecificCrewToUnit(uid, inc.id, ids);
+    }
+    // Carry over per-unit override toggles into the existing dispatch system
+    // so the staffing gate in executeDispatch lets these through.
+    if(_csOverrides.has(uid)) _overrideUnderstaffed.add(uid);
+  });
+  // Close the picker but keep the dispatch (call) modal open so the player
+  // sees the units go enroute.
+  closeCrewSelectModal();
+  executeDispatch({ preassigned: true, keepCallModalOpen: true });
+}
+
+// HTML escape inside the crew-select scope (mirrors _escPersonHtml).
+function _escCsHtml(str){
+  return String(str ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function executeDispatch(opts = {}){
   const inc = incidents.find(x=>x.id===activeDispatchId);
   if(!inc) return;
 
@@ -2252,6 +2726,11 @@ function executeDispatch(){
   // Phase 5B — pre-flight crew gate. Driver missing is a hard block; below-min
   // crew is allowed only with the per-row Override toggle (or for units in
   // `dispatched`/`returning` state where personnel are already committed).
+  //
+  // Crew-Select Dispatch (Phase 5+): when a unit has crew pre-assigned for THIS
+  // call by the picker, evaluate the gate against THAT crew rather than the
+  // station's available pool (which now excludes the preassigned crew because
+  // their status was flipped to busy/responding).
   if(typeof hasMinimumCrew === 'function'){
     const blocked = [];
     toDispatch = toDispatch.filter(uid => {
@@ -2260,9 +2739,20 @@ function executeDispatch(){
       // Skip the gate for units mid-call — they already have their crew assigned and
       // are being redirected, not freshly staffed.
       if(found.unit.status === 'dispatched' || found.unit.status === 'returning') return true;
-      const m = hasMinimumCrew(uid);
-      if(!m.hasDriver){ blocked.push({uid, reason:'no qualified driver'}); return false; }
-      if(!m.ok && !_overrideUnderstaffed.has(uid)){ blocked.push({uid, reason:'below minimum crew'}); return false; }
+      // Preassigned crew? Use evaluateCrewSelection on those personnel.
+      const preassignedIds = (typeof personnel !== 'undefined' ? personnel : [])
+        .filter(p => p.currentAssignment?.unitId === uid && p.currentAssignment?.callId === inc.id)
+        .map(p => p.id);
+      let mHasDriver, mOk;
+      if(preassignedIds.length && typeof evaluateCrewSelection === 'function'){
+        const ev = evaluateCrewSelection(uid, preassignedIds);
+        mHasDriver = ev.hasDriver; mOk = ev.minMet;
+      } else {
+        const m = hasMinimumCrew(uid);
+        mHasDriver = m.hasDriver; mOk = m.ok;
+      }
+      if(!mHasDriver){ blocked.push({uid, reason:'no qualified driver'}); return false; }
+      if(!mOk && !_overrideUnderstaffed.has(uid)){ blocked.push({uid, reason:'below minimum crew'}); return false; }
       return true;
     });
     if(blocked.length){
@@ -2271,9 +2761,18 @@ function executeDispatch(){
         return (found ? (typeof getUnitDisplayName === 'function' ? getUnitDisplayName(found.unit, found.station) : found.unit.name) : b.uid) + ' (' + b.reason + ')';
       }).join(', ');
       setStatus(`⚠️ Cannot dispatch: ${label}`);
+      // Crew-Select Dispatch defensive cleanup: if a blocked unit had crew
+      // pre-assigned by the picker, release those personnel so they don't
+      // stay stuck on 'busy'/'responding' for a dispatch that never happened.
+      if(opts.preassigned && typeof releasePersonnelFromUnit === 'function'){
+        blocked.forEach(b => releasePersonnelFromUnit(b.uid));
+      }
     }
   }
-  if(!toDispatch.length){ closeDispatch(); return; }
+  if(!toDispatch.length){
+    if(!opts.keepCallModalOpen) closeDispatch();
+    return;
+  }
 
   // Stagger departures by 3 game-seconds per unit (scaled to real time by gameSpeed)
   toDispatch.forEach((uid, idx) => {
@@ -2287,14 +2786,32 @@ function executeDispatch(){
       const isReturning  = unit.status==='returning';
       const isDispatched = unit.status==='dispatched';
       if(!isAvailable&&!isReturning&&!isDispatched) return;  // on scene — skip
+      // Crew continuity on mid-cycle redispatch: clear any pending post-call
+      // release timer so `_tickPostCallRelease` doesn't strip the crew mid-call.
+      // The timer is set in `onUnitReturned` when an apparatus arrives back at
+      // station and grants a `volunteerPostCallReleaseGameSec` grace window
+      // before releasing personnel. Re-grabbing the unit cancels that wind-down.
+      unit._releasePersonnelAtAbsSec = null;
       // Phase 5B — mark crew as busy on this call so they don't get picked for another unit.
       // Skip this for mid-call redirects; their crew is already assigned.
+      //
+      // Crew-Select Dispatch (Phase 5+): if a crew was pre-assigned by the
+      // "Dispatch w/ Crew…" picker, skip the auto-matcher entirely — those
+      // personnel are already mutated to status='busy'/'responding' and
+      // currentAssignment.{unitId,callId} is set. Use the existing
+      // assignment as the responding-volunteer source.
       let respondingVolunteers = [];
-      if(isAvailable && typeof assignPersonnelToUnit === 'function'){
-        const res = assignPersonnelToUnit(uid, inc.id);
-        // Phase 5D bug-fix — pick out the volunteers who need to travel to the
-        // station before the apparatus can depart.
-        respondingVolunteers = (res?.assigned || []).filter(p => p.status === 'responding');
+      if(isAvailable){
+        const preassigned = (typeof personnel !== 'undefined' ? personnel : [])
+          .filter(p => p.currentAssignment?.unitId === uid && p.currentAssignment?.callId === inc.id);
+        if(preassigned.length){
+          respondingVolunteers = preassigned.filter(p => p.status === 'responding');
+        } else if(typeof assignPersonnelToUnit === 'function'){
+          const res = assignPersonnelToUnit(uid, inc.id);
+          // Phase 5D bug-fix — pick out the volunteers who need to travel to the
+          // station before the apparatus can depart.
+          respondingVolunteers = (res?.assigned || []).filter(p => p.status === 'responding');
+        }
       }
 
       // For returning or enroute units: capture position and stop current animation
@@ -2319,6 +2836,20 @@ function executeDispatch(){
         }
       }
 
+      // Crew continuity on mid-cycle redispatch: when a returning or enroute
+      // unit is grabbed for a new call, the crew already on board rides along.
+      // Re-point their currentAssignment.callId to the NEW incident so on-scene
+      // roster, provider-pickers, and stabilization filters all find them.
+      // Without this, getOnSceneRoster(newIncId) filters by callId and misses
+      // the crew that's physically in the cab.
+      if((isReturning || isDispatched) && typeof personnel !== 'undefined'){
+        personnel.forEach(p => {
+          if(p.currentAssignment?.unitId === uid){
+            p.currentAssignment.callId = inc.id;
+          }
+        });
+      }
+
       inc.units.push(uid);
       unit.incidentId=inc.id;
 
@@ -2331,19 +2862,84 @@ function executeDispatch(){
       if(respondingVolunteers.length && typeof triggerVolunteerStationResponse === 'function'){
         unit.status = 'awaiting_crew';
         unit._awaitingCrewCount = respondingVolunteers.length;
+        // Phase 5 bugfix — stash an abort signal on the unit so the player can
+        // force the apparatus out via forceVolunteerCrewDeparture(). Also keep
+        // the responder list around for any UI that wants to surface it.
+        unit._awaitingAbortSignal = { aborted: false };
+        unit._awaitingResponders  = respondingVolunteers.slice();
         renderStationList();
         _refreshDispatchModalIfOpen(inc.id);
         setStatus(`⏳ ${respondingVolunteers.length} volunteer${respondingVolunteers.length===1?'':'s'} responding to ${station.name}…`);
-        triggerVolunteerStationResponse({ lat: station.lat, lng: station.lng }, respondingVolunteers).then(() => {
+        triggerVolunteerStationResponse({ lat: station.lat, lng: station.lng }, respondingVolunteers, {
+          abortSignal: unit._awaitingAbortSignal
+        }).then((res) => {
           // Re-check unit state — player may have cancelled mid-assembly.
           if(unit.status !== 'awaiting_crew') return;
           unit._awaitingCrewCount = 0;
+          unit._awaitingAbortSignal = null;
+          unit._awaitingResponders  = null;
+          // Phase 5 bugfix v2 — empty-crew dispatch guard. After volunteer
+          // assembly resolves, verify the unit has at least one crew member
+          // still assigned AND a qualified driver among them. If not, abort
+          // the dispatch — send the unit back to available and release the
+          // incident slot so the call falls back to needs_dispatch.
+          const crewNow = (typeof personnel !== 'undefined' ? personnel : [])
+            .filter(p => p.currentAssignment?.unitId === unit.id);
+          const hasDriverNow = (typeof hasQualifiedDriver === 'function')
+            ? hasQualifiedDriver(unit.id, crewNow) : crewNow.length > 0;
+          if(!crewNow.length || !hasDriverNow){
+            // Release everyone we'd assigned (should already be released by
+            // the no-show handler, but defensive).
+            crewNow.forEach(p => { p.status = 'available'; p.currentAssignment = null; });
+            unit.status = 'available';
+            // Pull this unit from the incident — if it's the last one, downgrade
+            // the incident back to needs_dispatch so the player can pick again.
+            inc.units = inc.units.filter(id => id !== unit.id);
+            if(inc.units.length === 0 && inc.status !== 'resolved'){
+              inc.status = 'needs_dispatch';
+              if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+            }
+            unit.incidentId = null;
+            setStatus(`⚠️ ${unit.name} dispatch cancelled — no crew arrived${!hasDriverNow ? ' / no qualified driver' : ''}.`);
+            renderStationList();
+            renderIncidentList();
+            _refreshDispatchModalIfOpen(inc.id);
+            return;
+          }
           unit.status='dispatched';
+          if(res?.forced && typeof setStatus === 'function'){
+            setStatus(`🚒 ${unit.name} forced out — departing with on-station crew.`);
+          }
           routeAndAnimate(unit, station, inc, fromLatLng);
           renderStationList();
           _refreshDispatchModalIfOpen(inc.id);
         });
       } else {
+        // Phase 5 bugfix v2 — career-only path empty-crew guard. Mirrors the
+        // volunteer path's check below. If assignPersonnelToUnit didn't put
+        // anyone on the unit (e.g. all eligible career personnel are on other
+        // calls and player overrode understaffed), the unit must not roll empty.
+        if(isAvailable){
+          const crewNow = (typeof personnel !== 'undefined' ? personnel : [])
+            .filter(p => p.currentAssignment?.unitId === unit.id);
+          const hasDriverNow = (typeof hasQualifiedDriver === 'function')
+            ? hasQualifiedDriver(unit.id, crewNow) : crewNow.length > 0;
+          if(!crewNow.length || !hasDriverNow){
+            crewNow.forEach(p => { p.status = 'available'; p.currentAssignment = null; });
+            unit.status = 'available';
+            inc.units = inc.units.filter(id => id !== unit.id);
+            if(inc.units.length === 0 && inc.status !== 'resolved'){
+              inc.status = 'needs_dispatch';
+              if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
+            }
+            unit.incidentId = null;
+            setStatus(`⚠️ ${unit.name} dispatch cancelled — no crew available${!hasDriverNow ? ' / no qualified driver' : ''}.`);
+            renderStationList();
+            renderIncidentList();
+            _refreshDispatchModalIfOpen(inc.id);
+            return;
+          }
+        }
         unit.status='dispatched';
         routeAndAnimate(unit, station, inc, fromLatLng);
         renderStationList();
@@ -2356,8 +2952,16 @@ function executeDispatch(){
   if(inc.marker) inc.marker.setIcon(incidentIcon(inc));
   renderIncidentList();
   logCall(inc,`Units dispatched: ${toDispatch.length}`);
-  closeDispatch();
-  setStatus(`🚒 ${toDispatch.length} unit(s) dispatched to ${inc.label}`);
+  if(opts.keepCallModalOpen){
+    // Crew-Select Dispatch path: keep the call modal open so the player can
+    // see the units transition from selected → enroute without reopening.
+    selectedUnitsForDispatch = new Set(inc.units);  // refresh selection to match reality
+    _overrideUnderstaffed    = new Set();
+    renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  } else {
+    closeDispatch();
+  }
+  setStatus(`🚒 ${toDispatch.length} unit(s) dispatched to ${inc.label}${opts.preassigned ? ' (custom crew)' : ''}`);
 }
 
 // ── ROUTING + ANIMATION ───────────────────────────────────────────────────────
@@ -2567,6 +3171,13 @@ function onUnitArrived(unit, inc){
         });
         if(catKey) recordPersonStat(p.id, catKey, 1, null);
       });
+    }
+    // Phase 5 bugfix — auto-assign arriving providers to patients (equal
+    // distribution). Pulls every provider on this unit, distributes them
+    // across patients that need stabilization. Player can override via the
+    // Transport tab afterward.
+    if(typeof autoAssignArrivingCrewToPatients === 'function'){
+      autoAssignArrivingCrewToPatients(unit, inc);
     }
   }
 }
@@ -2991,6 +3602,14 @@ function startTransport(unit, patient, hospital, inc){
   const found = getAllUnits().find(({unit:u}) => u.id === unit.id);
   if(!found) return;
   const {station} = found;
+  // Phase 5 bugfix — ambulance transport requires at least one EMS provider
+  // riding along. Check the unit's currently-assigned crew before committing
+  // the transport. If no provider is on board, refuse with a status message
+  // so the player can either change the unit or assign a provider first.
+  if(typeof unitHasOnboardProvider === 'function' && !unitHasOnboardProvider(unit.id)){
+    setStatus(`⚠️ ${unit.name} cannot transport — no EMS provider on board.`);
+    return;
+  }
   // Current position: on-scene unit is at incident location; animMarker already removed on arrival
   const fromLat = inc?.lat ?? station.lat;
   const fromLng = inc?.lng ?? station.lng;
@@ -3013,6 +3632,21 @@ function startTransport(unit, patient, hospital, inc){
   renderStationList();
   setStatus(`🚑 ${unit.name} transporting patient to ${hospital.name}`);
   routeToHospital(unit, {lat:fromLat, lng:fromLng}, hospital);
+
+  // Phase 5 bugfix — medical incidents auto-resolve when every patient has
+  // left the scene. The legacy flow waited for resolutionProgress to reach 1
+  // even when there was nothing left to do on scene. Now: if this transport
+  // means all patients are in_transport / admitted / discharged, kick the
+  // scene-cleared handler so the call closes immediately (or enters
+  // transport_pending if suspects still need handling).
+  if(inc && inc.status !== 'resolved' && inc.status !== 'transport_pending'){
+    const allPatientsOff = (inc.patients || []).every(p =>
+      ['in_transport','admitted','discharged','transported'].includes(p.status)
+    );
+    if(allPatientsOff && (inc.patients || []).length > 0){
+      onSceneCleared(inc.id);
+    }
+  }
 }
 
 // Routes a unit to a hospital for patient transport (or helicopter straight-line).
@@ -3855,15 +4489,22 @@ function cancelUnitFromCall(unitId, incId){
   // Phase 5D bug-fix — if cancelling while volunteer crew is still responding
   // to the station, release every assigned responder so they don't stay stuck.
   // The watchdog inside triggerVolunteerStationResponse handles its own cleanup.
+  // Phase 5 bugfix — also trip the abort signal so the response-promise
+  // resolves immediately and clean up the per-unit awaiting state.
   const wasAwaitingCrew = unit.status === 'awaiting_crew';
-  if(wasAwaitingCrew && typeof personnel !== 'undefined'){
-    personnel.forEach(p => {
-      if(p.currentAssignment?.unitId === unit.id){
-        p.status = 'available';
-        p.currentAssignment = null;
-      }
-    });
+  if(wasAwaitingCrew){
+    if(unit._awaitingAbortSignal) unit._awaitingAbortSignal.aborted = true;
+    if(typeof personnel !== 'undefined'){
+      personnel.forEach(p => {
+        if(p.currentAssignment?.unitId === unit.id){
+          p.status = 'available';
+          p.currentAssignment = null;
+        }
+      });
+    }
     unit._awaitingCrewCount = 0;
+    unit._awaitingAbortSignal = null;
+    unit._awaitingResponders  = null;
   }
 
   // Stop current animation by bumping the generation counter, clean up visuals
@@ -3996,6 +4637,14 @@ async function routeAndAnimateReturn(unit, station, fromLat, fromLng){
   // the cancelUnitFromCall path which calls us directly without going through resolveIncident.
   unit.status='returning';
   unit.incidentId=null;
+  // Phase 5 bugfix — release any patient assignments held by this unit's crew
+  // when the unit leaves scene. Providers ride home with the unit but their
+  // patient continuity ends at scene departure. (Patients that are being
+  // transported live on `unit.transportPatients`, separate from `inc.patients`,
+  // so the ambulance-on-transport case is unaffected by this clear.)
+  if(typeof releaseCrewPatientAssignments === 'function'){
+    releaseCrewPatientAssignments(unit.id);
+  }
   // Remove any stale marker before creating a new one — prevents ghost dots on reroute
   if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
   const dotColor=(BAM_CONFIG.unitTypes[unit.typeKey]?.color)||'#aaaaaa';
@@ -4063,21 +4712,53 @@ async function routeAndAnimateReturn(unit, station, fromLat, fromLng){
 }
 
 // Called when a returning unit reaches its station.
+//
+// Phase 5 bugfix — crew is no longer released immediately. The apparatus goes
+// 'available' so it can be re-dispatched, but the assigned personnel stay
+// marked busy on this unit for a configurable post-call delay
+// (BAM_CONFIG.volunteerPostCallReleaseGameSec). After that delay, the next
+// pass of `_tickPostCallRelease` flips them to 'available', and the next
+// hourly volunteer availability roll re-evaluates state. This preserves
+// "personnel continuity" — when a unit arrives back at the station, its
+// staffing chip still shows the crew (no longer flashes "understaffed").
 function onUnitReturned(unit){
   if(unit.returnLine){ unit.returnLine.remove(); unit.returnLine=null; }
   if(unit.animMarker){ unit.animMarker.remove(); unit.animMarker=null; }
   unit.status='available';
   unit.incidentId=null;
   unit._returnRemSec=0;
-  // Phase 5B — release the crew that was assigned to this unit on the call.
-  // Their status goes back to 'available' for future dispatches.
-  if(typeof releasePersonnelFromUnit === 'function') releasePersonnelFromUnit(unit.id);
+  const delaySec = BAM_CONFIG.volunteerPostCallReleaseGameSec ?? 300;
+  unit._releasePersonnelAtAbsSec = ((gameDay - 1) * 86400) + gameSeconds + delaySec;
   renderStationList();
   setStatus(`${unit.name} returned to station.`);
 }
 
+// Phase 5 bugfix — runs every game-clock tick. Releases personnel from any
+// unit whose post-call delay has elapsed. Walks the small set of units that
+// have an active `_releasePersonnelAtAbsSec` so this is cheap when nothing
+// is pending.
+function _tickPostCallRelease(){
+  if(typeof stations === 'undefined') return;
+  const nowAbs = ((gameDay - 1) * 86400) + gameSeconds;
+  stations.forEach(s => {
+    (s.units || []).forEach(u => {
+      if(u._releasePersonnelAtAbsSec == null) return;
+      if(nowAbs < u._releasePersonnelAtAbsSec) return;
+      // Threshold reached — release the assigned crew now.
+      if(typeof releasePersonnelFromUnit === 'function'){
+        releasePersonnelFromUnit(u.id);
+      }
+      u._releasePersonnelAtAbsSec = null;
+    });
+  });
+}
+
 // Builds the animated dot icon for a unit, optionally with AVL callsign label.
 // Label background reflects unit status using the player-configurable avlColors.
+//
+// Phase 5 bugfix v2 — the dot itself is now clickable (opens Unit Details).
+// Previously only the AVL label had a click handler; if the player had labels
+// turned off the map dot was un-clickable.
 function _buildUnitDotIcon(unit, dotColor){
   let labelHtml = '';
   if(showUnitLabels){
@@ -4102,7 +4783,7 @@ function _buildUnitDotIcon(unit, dotColor){
   }
   return L.divIcon({
     className:'',
-    html:`<div style="position:relative;">${labelHtml}<div class="unit-marker-dot" style="background:${dotColor};"></div></div>`,
+    html:`<div style="position:relative;cursor:pointer;" onclick="event.stopPropagation(); openUnitDetails('${unit.id}')" title="Click for unit details">${labelHtml}<div class="unit-marker-dot" style="background:${dotColor};pointer-events:none;"></div></div>`,
     iconSize:[12,12], iconAnchor:[6,6]
   });
 }
@@ -4229,11 +4910,13 @@ async function loadSettings(){
     if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
     // Phase 5D — restore volunteer layer toggle state.
     if(s.volunteerLayerVisibility && typeof volunteerLayerVisibility !== 'undefined'){
-      Object.assign(volunteerLayerVisibility, s.volunteerLayerVisibility);
+      // Phase 5 bugfix — strip legacy `works` flag on load so old settings
+      // don't reintroduce removed state.
+      const { works: _ignoredWorks, ...cleanLayer } = s.volunteerLayerVisibility;
+      Object.assign(volunteerLayerVisibility, cleanLayer);
       // Sync the checkboxes in the layer panel (defensive — panel may not be in DOM yet).
       const rChk = document.getElementById('vol-resp-chk'); if(rChk) rChk.checked = !!volunteerLayerVisibility.responders;
       const hChk = document.getElementById('vol-home-chk'); if(hChk) hChk.checked = !!volunteerLayerVisibility.homes;
-      const wChk = document.getElementById('vol-work-chk'); if(wChk) wChk.checked = !!volunteerLayerVisibility.works;
       if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
     }
   }catch(e){
@@ -4344,12 +5027,16 @@ function _updateDispatchStabBars(){
 // Updates hospital patient stage progress bars in-place.
 // IDs are set by _renderDeptTab() when building the patient rows.
 function _updateHospitalProgressBars(){
+  // Phase 5 bugfix v2 — absolute game-time (matches hospitals.js fix). The
+  // in-place tick was the visible symptom of the day-boundary freeze: the bar
+  // never moved past 0% because elapsed went negative.
+  const nowAbs=((gameDay-1)*86400)+gameSeconds;
   hospitals.forEach(h=>{
     Object.values(h.departments).forEach(dept=>{
       dept.patients.forEach(pt=>{
         const fillEl=document.getElementById('pt-stage-fill-'+pt.id);
         if(!fillEl) return;
-        const elapsed=Math.max(0,gameSeconds-(pt.stageStartSec||gameSeconds));
+        const elapsed=Math.max(0,nowAbs-(pt.stageStartSec??nowAbs));
         const pct=pt.stageDurationSec?Math.min(100,Math.round((elapsed/pt.stageDurationSec)*100)):0;
         const remaining=Math.max(0,(pt.stageDurationSec||0)-elapsed);
         const stageColor=pct>=90?'var(--green)':pct>=50?'var(--gold)':'var(--ems)';
@@ -4496,9 +5183,24 @@ function setGameSpeed(speed){
 // Advances the in-game clock by gameSpeed seconds. Called every real second.
 // Also ticks any on-scene incident resolution progress.
 function _tickGameClock(){
+  // Phase 5 bugfix — snapshot the pre-advance hour so we can detect crossings.
+  const _prevAbsHour = Math.floor((gameDay - 1) * 24 + gameSeconds / 3600);
   if(gameSpeed>0){
     gameSeconds+=gameSpeed;
     if(gameSeconds>=86400){ gameSeconds-=86400; gameDay++; }
+  }
+  // Phase 5 bugfix — hourly volunteer availability re-roll. Only fires when
+  // the game clock has actually advanced past an hour boundary (so pausing
+  // pauses re-rolls, per player spec). Busy/responding volunteers are skipped
+  // inside the helper.
+  if(gameSpeed > 0){
+    const _newAbsHour = Math.floor((gameDay - 1) * 24 + gameSeconds / 3600);
+    if(_newAbsHour > _prevAbsHour && typeof recomputeVolunteerAvailabilityHour === 'function'){
+      recomputeVolunteerAvailabilityHour();
+    }
+    // Post-call personnel release timer — flips returning-unit crews from busy
+    // to available once the post-call delay elapses.
+    if(typeof _tickPostCallRelease === 'function') _tickPostCallRelease();
   }
   // Phase 5C — once per game-day rollover, deduct career salaries from the player's
   // money and emit a consolidated [SALARIES] cashflow line. Safe no-op on worlds
@@ -4595,33 +5297,15 @@ function _tickGameClock(){
      && typeof renderUnitList === 'function') renderUnitList();
 }
 
-// Advances stabilization progress for all patients on an incident.
-// Each on-scene unit adds to the effective rate based on its providerLevel.
-function tickPatientStabilization(inc, onSceneUnits, deltaGameSec){
-  if(!inc.patients?.length) return;
-  // Sum effective stabilization rate from all on-scene units
-  let totalRate = 0;
-  onSceneUnits.forEach(({unit}) => {
-    const level = BAM_CONFIG.unitTypes[unit.typeKey]?.providerLevel;
-    totalRate += BAM_CONFIG.stabilizationRates[level] || 0;
-  });
-  if(totalRate <= 0) return;
-
-  let modalNeedsUpdate = false;
-  inc.patients.forEach(pt => {
-    if(pt.status !== 'stabilizing') return;
-    const injCfg = BAM_CONFIG.injuryTypes[pt.injuryType];
-    const stabTimeSec = injCfg?.stabilizeTimeSec || 60;
-    pt.stabilizeProgress = Math.min(1, pt.stabilizeProgress + (totalRate * deltaGameSec) / stabTimeSec);
-    if(pt.stabilizeProgress >= 1.0) pt.status = 'stabilized';
-    modalNeedsUpdate = true;
-  });
-
-  // Refresh dispatch modal Transport tab if open for this incident
-  if(modalNeedsUpdate && activeDispatchId === inc.id){
-    const modal = document.getElementById('dispatch-modal');
-    if(modal?.classList.contains('open')) _refreshTransportTab(inc);
-  }
+// Phase 5 bugfix — apparatus-based stabilization REMOVED. Stabilization is
+// now entirely personnel-driven via assignPersonToPatient + tickPersonnelStabilization
+// in personnel.js. Apparatus on scene no longer contributes any rate by
+// themselves; only providers ASSIGNED to a specific patient contribute.
+//
+// Function kept as a no-op stub so any straggling caller doesn't throw — the
+// real work happens in `tickPersonnelStabilization`.
+function tickPatientStabilization(/* inc, onSceneUnits, deltaGameSec */){
+  // intentionally empty — see tickPersonnelStabilization
 }
 
 // ── NEW GAME ──────────────────────────────────────────────────────────────────
@@ -4801,8 +5485,13 @@ function buildSaveData(){
     jails:          getJailSaveData(),
     suspects:       getSuspectSaveData(),
     cashflowLog:    cashflowLog.slice(0, 200),
-    // Phase 5B — career personnel roster. Volunteers (5D) will share this array.
-    personnel:      (typeof personnel !== 'undefined' ? personnel : []).map(p => ({...p, currentAssignment:null, status: p.status==='busy' ? 'available' : p.status})),
+    // Phase 5B — career personnel roster. Volunteers (5D) share this array.
+    // Phase 5 bugfix — strip removed fields on serialize so new saves don't ship
+    // legacy work-location data forward.
+    personnel:      (typeof personnel !== 'undefined' ? personnel : []).map(p => {
+      const { work: _stripWork, ...rest } = p;
+      return { ...rest, currentAssignment:null, status: p.status==='busy' ? 'available' : p.status };
+    }),
   };
 }
 
@@ -4936,8 +5625,26 @@ async function loadFromSlot(name){
         || (typeof _defaultRankKeyFromCerts === 'function'
               ? _defaultRankKeyFromCerts(certs, p.preference)
               : null);
+      // Phase 5 bugfix — silent migration: strip removed fields. Work locations
+      // and the legacy `availability.defaultAvailable` flag are no longer used;
+      // the spread copies everything else verbatim. Legacy volunteers also
+      // need the new state-model fields backfilled so they aren't stuck in an
+      // implicit-unavailable state until the next hourly tick.
+      const { work: _stripWork, ...pSansWork } = p;
+      let availability;
+      if(p.availability && typeof p.availability === 'object'){
+        const { defaultAvailable: _ignored, ...rest } = p.availability;
+        availability = {
+          currentState:        rest.currentState        || 'home',
+          currentLocation:     rest.currentLocation     || null,
+          nextRollGameHour:    rest.nextRollGameHour    || 0,
+          schedule:            Array.isArray(rest.schedule) ? rest.schedule : [],
+          forceAvailableUntil: rest.forceAvailableUntil || null
+        };
+      }
       return {
-        ...p,
+        ...pSansWork,
+        ...(availability !== undefined ? { availability } : {}),
         status:            p.status || 'available',
         currentAssignment: null,
         rankKey:           rankKey,
@@ -5393,7 +6100,6 @@ const LayerControl=L.Control.extend({
            volunteers.js (responders ON, homes OFF, works OFF). -->
       <label><input type="checkbox" id="vol-resp-chk" checked onchange="setVolunteerLayerVisible('responders', this.checked)"/> Volunteer Responders</label>
       <label><input type="checkbox" id="vol-home-chk" onchange="setVolunteerLayerVisible('homes', this.checked)"/> Volunteer Home Locations</label>
-      <label><input type="checkbox" id="vol-work-chk" onchange="setVolunteerLayerVisible('works', this.checked)"/> Volunteer Work Locations</label>
     </div>`;
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);

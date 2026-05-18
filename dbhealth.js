@@ -180,9 +180,7 @@ function findOrphans(){
     if(p.home?.esnId && !esnIds.has(p.home.esnId)){
       out.push({ kind: 'personnel.home.esnId', id: p.id, context: `→ ${p.home.esnId}` });
     }
-    if(p.work?.esnId && !esnIds.has(p.work.esnId)){
-      out.push({ kind: 'personnel.work.esnId', id: p.id, context: `→ ${p.work.esnId}` });
-    }
+    // Phase 5 bugfix — `personnel.work` check removed; work locations no longer exist.
   });
 
   // DC → ESN
@@ -228,14 +226,20 @@ function _renderVolunteerLocationsSection(){
 
   return `<div class="section-title" style="margin-top:14px;">Volunteer Locations</div>
     <div style="font-size:.74rem;color:var(--muted);margin-bottom:6px;">
-      Regenerates home and work locations for all auto-generated, non-customized, non-super volunteers at the selected stations. Personnel you have manually edited or marked as super responders are skipped.
+      Regenerates home locations for all auto-generated, non-customized, non-super volunteers at the selected stations. Personnel you have manually edited or marked as super responders are skipped.
     </div>
     <div style="border:1px solid var(--border);border-radius:4px;padding:6px 8px;max-height:200px;overflow-y:auto;">
       ${checkboxes}
     </div>
-    <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+    <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">
       <button class="btn-sm" onclick="_dbhealthResetSelectedVolunteers()" ${_dbhealthVolResetSelection.size === 0 ? 'disabled' : ''}>Reset Selected</button>
-      <span style="font-size:.7rem;color:var(--muted);">Each reset regenerates the volunteer's home (and work) from current OSM data. Non-destructive otherwise — stats and certifications are preserved.</span>
+      <button class="btn-sm" onclick="_dbhealthSelectAllVolStations()" ${stationsList.length === 0 ? 'disabled' : ''}>Select All</button>
+      <button class="btn-sm" onclick="_dbhealthResetAllVolunteers()" ${stationsList.length === 0 ? 'disabled' : ''} title="Reset homes for every auto-generated volunteer across every station">⚡ Reset All</button>
+      <button class="btn-sm danger" onclick="_dbhealthOverrideResetAllVolunteers()" ${stationsList.length === 0 ? 'disabled' : ''} title="DANGEROUS: also resets manually-edited and super responders. Triple-confirms.">⚠ Override Reset All</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+      Each reset regenerates the volunteer's home from current OSM data. Non-destructive otherwise — stats and certifications are preserved.
+      <b style="color:var(--gold);">Reset All</b> skips customized and super responders. <b style="color:var(--accent);">Override Reset All</b> includes them — use with care.
     </div>
   `;
 }
@@ -248,21 +252,73 @@ function _dbhealthToggleStationSelection(stationId, checked){
 
 async function _dbhealthResetSelectedVolunteers(){
   if(!_dbhealthVolResetSelection.size) return;
-  if(!confirm(`Regenerate volunteer home & work for ${_dbhealthVolResetSelection.size} station(s)? Customized and super-responder personnel are skipped.`)) return;
+  if(!confirm(`Regenerate volunteer homes for ${_dbhealthVolResetSelection.size} station(s)? Customized and super-responder personnel are skipped.`)) return;
   const list = (typeof personnel !== 'undefined' ? personnel : []).filter(p =>
        p.type === 'volunteer'
     && _dbhealthVolResetSelection.has(p.stationId)
     && !p.isCustomized
     && !p.isSuperResponder
   );
+  await _dbhealthRunVolunteerReset(list);
+}
+
+// Phase 5 bugfix v2 — Reset All: skips customized + super responders, runs
+// across every station with volunteers regardless of selection.
+async function _dbhealthResetAllVolunteers(){
+  const list = (typeof personnel !== 'undefined' ? personnel : []).filter(p =>
+       p.type === 'volunteer'
+    && !p.isCustomized
+    && !p.isSuperResponder
+  );
+  if(!list.length){
+    if(typeof setStatus === 'function') setStatus('No eligible volunteers to reset.');
+    return;
+  }
+  if(!confirm(`Reset homes for ALL ${list.length} eligible volunteer${list.length===1?'':'s'} across every station? Customized + super responders are still skipped.`)) return;
+  await _dbhealthRunVolunteerReset(list);
+}
+
+// Phase 5 bugfix v2 — Override Reset All: includes customized + super
+// responders. Triple-confirm because this overwrites manual edits.
+async function _dbhealthOverrideResetAllVolunteers(){
+  const list = (typeof personnel !== 'undefined' ? personnel : []).filter(p => p.type === 'volunteer');
+  if(!list.length){
+    if(typeof setStatus === 'function') setStatus('No volunteers to reset.');
+    return;
+  }
+  const custCount  = list.filter(p => p.isCustomized).length;
+  const superCount = list.filter(p => p.isSuperResponder).length;
+  if(!confirm(`⚠ OVERRIDE RESET: This will overwrite homes for ALL ${list.length} volunteers, INCLUDING ${custCount} manually edited and ${superCount} super-responder${superCount===1?'':'s'}. Continue?`)) return;
+  if(!confirm(`Are you sure? Manually-set home locations will be lost.`)) return;
+  if(!confirm(`Last confirmation. This cannot be undone. Override reset every volunteer's home?`)) return;
+  // Clear the customization flags so a future "Reset All" doesn't keep
+  // skipping them. Player explicitly chose to overwrite manual edits.
+  list.forEach(p => {
+    if(p.isCustomized) p.isCustomized = false;
+    if(p.playerEdited) p.playerEdited = false;
+  });
+  await _dbhealthRunVolunteerReset(list);
+}
+
+// Shared worker — sequential to stay polite on Overpass.
+async function _dbhealthRunVolunteerReset(list){
   let count = 0;
   for(const p of list){
     if(typeof generateVolunteerHome === 'function') await generateVolunteerHome(p);
-    if(typeof generateVolunteerWork === 'function') await generateVolunteerWork(p);
     count++;
   }
-  if(typeof setStatus === 'function') setStatus(`Reset ${count} volunteer location(s).`);
+  if(typeof setStatus === 'function') setStatus(`Reset ${count} volunteer home${count===1?'':'s'}.`);
   if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+  renderDatabaseHealthPanel();
+}
+
+// Selects every station with at least one volunteer in the bulk-reset checkbox list.
+function _dbhealthSelectAllVolStations(){
+  const stationsList = (typeof stations !== 'undefined' ? stations : []).filter(s =>
+    (typeof personnel !== 'undefined' ? personnel : [])
+      .some(p => p.stationId === s.id && p.type === 'volunteer')
+  );
+  stationsList.forEach(s => _dbhealthVolResetSelection.add(s.id));
   renderDatabaseHealthPanel();
 }
 

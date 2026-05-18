@@ -248,10 +248,12 @@ function admitPatient(hospitalId, patient, transportUnit){
     return;
   }
 
-  // Fill in patient state for hospital tracking
+  // Fill in patient state for hospital tracking.
+  // Phase 5 bugfix v2 — arrivalGameSec is absolute game-time (day*86400+sec)
+  // so the "In hospital" display doesn't go negative across midnight.
   patient.status            = 'admitted';
   patient.hospitalId        = hospitalId;
-  patient.arrivalGameSec    = gameSeconds;
+  patient.arrivalGameSec    = ((gameDay - 1) * 86400) + gameSeconds;
   patient.stage             = firstStage;
   patient.stageQueue        = stageQueue;
   patient.revenueEarned     = 0;
@@ -281,11 +283,17 @@ function admitPatient(hospitalId, patient, transportUnit){
 }
 
 // Rolls a random stage duration from config and stamps the start time.
+//
+// Phase 5 bugfix v2 — `stageStartSec` is now an ABSOLUTE game-time (day*86400
+// + secOfDay) rather than the day-local `gameSeconds`. The legacy code froze
+// any patient whose stage timer crossed a day boundary because
+// `gameSeconds - stageStartSec` went negative at midnight. The hospital tick
+// now compares against the same absolute reference.
 function _startPatientStage(hospital, dept, patient){
   const deptCfg             = BAM_CONFIG.hospitalDepartments[patient.stage];
   const minSec              = deptCfg?.stageDurationMinSec || 600;
   const maxSec              = deptCfg?.stageDurationMaxSec || 1800;
-  patient.stageStartSec     = gameSeconds;
+  patient.stageStartSec     = ((gameDay - 1) * 86400) + gameSeconds;
   patient.stageDurationSec  = Math.round(_hospRandRange(minSec, maxSec));
 }
 
@@ -295,6 +303,11 @@ function _startPatientStage(hospital, dept, patient){
 // Advances stage timers and moves patients through their stage chain.
 function tickHospitalPatients(deltaGameSec){
   let modalNeedsUpdate = false;
+  // Phase 5 bugfix v2 — absolute game-time so day-boundary crossings don't
+  // freeze patients. Also auto-migrate any legacy patient records whose
+  // stageStartSec was stamped with day-local seconds (pre-fix) so they
+  // unfreeze on first tick rather than requiring a manual release.
+  const nowAbs = ((gameDay - 1) * 86400) + gameSeconds;
 
   hospitals.forEach(hospital => {
     Object.entries(hospital.departments).forEach(([deptKey, dept]) => {
@@ -302,7 +315,15 @@ function tickHospitalPatients(deltaGameSec){
       [...dept.patients].forEach(patient => {
         if(patient.status !== 'admitted') return;
 
-        const elapsed = gameSeconds - patient.stageStartSec;
+        // Legacy migration: if stageStartSec is suspiciously larger than nowAbs
+        // (impossible under absolute time) OR much smaller than reasonable,
+        // restamp to nowAbs so the timer restarts at this point. Conservative
+        // — only triggers when the difference is impossible.
+        if(patient.stageStartSec == null || patient.stageStartSec > nowAbs){
+          patient.stageStartSec = nowAbs;
+        }
+
+        const elapsed = nowAbs - patient.stageStartSec;
         if(elapsed >= patient.stageDurationSec){
           // Stage complete — move to next or discharge
           _advancePatientStage(hospital, patient);
@@ -313,6 +334,43 @@ function tickHospitalPatients(deltaGameSec){
   });
 
   if(modalNeedsUpdate && _activeHospitalId) _renderHospitalModal();
+}
+
+// Phase 5 bugfix v2 — manual patient release failsafe. The player can force a
+// stuck patient (e.g. one whose stage timer was lost across a save migration)
+// straight to discharge from the hospital modal. Returns true on success.
+function manuallyReleasePatient(hospitalId, patientId){
+  const h = hospitals.find(x => x.id === hospitalId);
+  if(!h) return false;
+  for(const dept of Object.values(h.departments || {})){
+    const pat = (dept.patients || []).find(p => p.id === patientId);
+    if(pat){
+      dispatchPatientManualRelease(h, dept, pat);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Internal: removes a patient from their current department and discharges
+// them immediately, mirroring the natural discharge flow. Exposed via the
+// "Release" button in the hospital modal.
+function dispatchPatientManualRelease(hospital, dept, patient){
+  dept.patients = (dept.patients || []).filter(p => p.id !== patient.id);
+  dept.occupiedBeds = Math.max(0, (dept.occupiedBeds || 0) - 1);
+  patient.stageQueue = [];  // skip remaining stages
+  dischargePatient(hospital, patient);
+  if(_activeHospitalId === hospital.id) _renderHospitalModal();
+}
+
+// Click handler for the per-patient Release button. Adds a confirm gate so
+// accidental clicks don't discharge progressing patients.
+function _hospManualReleaseClick(hospitalId, patientId){
+  if(typeof confirm === 'function' && !confirm('Force-release this patient? They will be discharged immediately.')) return;
+  const ok = manuallyReleasePatient(hospitalId, patientId);
+  if(typeof setStatus === 'function'){
+    setStatus(ok ? 'Patient released.' : '⚠️ Could not release patient (not found).');
+  }
 }
 
 // Moves a patient to their next stage, or discharges them if the queue is empty.
@@ -557,12 +615,17 @@ function _renderDeptTab(hospital, deptKey){
     patientRows = dept.patients.map(pt => {
       const injCfg    = BAM_CONFIG.injuryTypes[pt.injuryType] || {};
       const dptLabel  = BAM_CONFIG.hospitalDepartments[pt.stage]?.label || pt.stage;
-      const elapsed   = Math.max(0, gameSeconds - (pt.stageStartSec || gameSeconds));
+      // Phase 5 bugfix v2 — absolute game-time elapsed computation, matching
+      // the absolute reference used by tickHospitalPatients. Legacy patients
+      // whose stageStartSec was day-local pre-fix get a sane re-stamp on
+      // first tick; this fallback ensures we never display negative elapsed.
+      const nowAbs    = ((gameDay - 1) * 86400) + gameSeconds;
+      const elapsed   = Math.max(0, nowAbs - (pt.stageStartSec ?? nowAbs));
       const pct       = pt.stageDurationSec
                           ? Math.min(100, Math.round((elapsed / pt.stageDurationSec) * 100))
                           : 0;
       const remaining = Math.max(0, (pt.stageDurationSec || 0) - elapsed);
-      const timeInHosp = Math.max(0, gameSeconds - (pt.arrivalGameSec || gameSeconds));
+      const timeInHosp = Math.max(0, nowAbs - (pt.arrivalGameSec ?? nowAbs));
 
       const tierColors = { minor:'var(--green)', serious:'var(--gold)', critical:'var(--accent)' };
       const tierColor  = tierColors[pt.tier] || 'var(--muted)';
@@ -603,6 +666,11 @@ function _renderDeptTab(hospital, deptKey){
                 style="font-size:.8rem;color:var(--muted);font-family:var(--mono);">
             ${remaining > 0 ? formatETA(remaining) + ' left' : 'complete'}
           </span>
+          <button class="btn-sm" style="font-size:.7rem;padding:2px 8px;"
+                  onclick="_hospManualReleaseClick('${hospital.id}','${pt.id}')"
+                  title="Force-discharge this patient. Failsafe for stuck-at-0% bugs.">
+            ⏏ Release
+          </button>
         </div>
       </div>`;
     }).join('');

@@ -2,13 +2,7 @@
 
 ## Phase 5 Bugs
 
-### Systems
--Volunteers responding to the station do not use roads. Also their speed should be minimum 50mph.
 
+Remove crew assignment/prisoner transport/patient transport based on generic numbers in config and move completely to the seats system. For responders, there should be a field for preferred certification, and then one for 'nice to haves' that weight the auto selection to be more likely to add people that also have the nice to haves. For example, an engine cab seat might have FF1 as preferred, but FF2 or EMT (one or both, if an individual has both they are weighted higher in the assignment) as a 'nice to have'. For patients, there is a boolean true/falce if this seat is for patient transport and same for suspects/prisoners. This is likely a large wide reaching change. So search far and wide and also verify intent with a lot of questions please.
 
-
--In call modal, transport tab, move assigning of on scene medical providers to this tab.
--Widen the station modal. Add three tabs, one for roster one for personnel training and one for shifts.
--When creating a new station, allow for the setting of career vs volunteer as well as pregenerating staffing.
-
-Holy buggy. Vol System absolutely borked.
+New window/modal dedicated to apparatus purchases. 3 Main Tabs, Fire, EMS, and Police. Add seperate search functions in each tab for the station you are purchasing for, for the apparatus name, and for capability tags. Accessable from new button on left sidebar and also accessable from station details modal, which automatically picks the filter for the station you clicked on it from. Verify that lists update with new stations as well. New modal for this purchase window shows once a unit type is selected, a seat map, eventually "equipment slots/bays" (working title), and maybe other things. But for now just the seat map. And allows you to name it here in advance. Ask lots of questions to verify intent please.

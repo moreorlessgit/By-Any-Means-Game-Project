@@ -326,4 +326,25 @@ Heaviest sub-phase. Volunteers respond from OSM-derived home/work locations, wit
 
 *Phase 5 complete.* Personnel substrate ready for the post-Phase-5 call resolution overhaul.
 
-*Last updated: 2026-05-17. Phase 5 complete — career + volunteer personnel, training, shifts, ranks, salary tick, OSM cache + hybrid fallback, direct-to-scene helpers, stats + history, span-of-control banner, personnel-driven stabilization, Database Health panel.*
+---
+
+## Phase 5+ Crew-Select Dispatch, Seating Layouts, Continuity Fixes ✅
+
+- **Seating layouts as a first-class config concept** — Each apparatus' cab layout lives inline on `BAM_CONFIG.unitTypes[typeKey].seats` (alongside `tags`/`cost`/`personnel`/`maxTransportCapacity`). Each seat: `{ id, label, isDriver?, preferredCerts[] }`. Fire apparatus default to Driver/Operator + Officer + Cab Seats; ambulances to Driver + Front Passenger + Captain's Chair + Bench; police to Driver + Front Passenger; helicopters to Pilot + Flight Medics. Capacity (seat count) is decoupled from the dispatch staffing gate (`crewDefaults.min`/`ideal`) — seats define the cab, min/ideal define what the matcher demands.
+- **"Dispatch w/ Crew…" button + Crew-Select modal** — Second primary footer button on the call window, beside `Dispatch Selected`. Opens a 1100px modal that surfaces one card per selected *available* apparatus (returning/dispatched units skip — their crew is already committed). Each card has:
+  - Live staffing banner (🟢 Ideal · 🟡 Min only · 🔴 Below min · 🚫 No driver) that updates as crew is swapped.
+  - Seats column with per-seat dropdown + clear button + preferred-cert hint.
+  - Roster column listing every available responder for the station (career on-duty + volunteers at home/roaming), each with location chip (`Station` / `Home · X.X mi · ~Nm` / `Roaming · X.X mi · ~Nm`), rank, and cert chips (green when the cert fits a seat, gold for driver-cert).
+  - Per-unit `Override (respond understaffed)` checkbox — same gate behavior as the auto path.
+  - Confirm button blocks when any apparatus is missing a driver or below-min without override; mirrors `executeDispatch`'s pre-flight gate.
+- **Auto-seed best fit on open** — Seats pre-populate by driver-first then preferred-cert match; player swaps freely from there.
+- **Quick-assign roster clicks** — Clicking a responder in the roster drops them into the best-fit empty seat (driver seat first if cert-qualified, then preferred-cert match, then first empty seat).
+- **Backend integration** — Four new helpers in `personnel.js`: `getSeatingLayoutForUnit(unit)`, `getCrewCandidatesForUnit(unitId)` (returns career on-duty + volunteer home/roaming, each annotated with `_pickerMeta: { state, distanceMi, etaMin }`), `evaluateCrewSelection(unitId, personIds)` (pure analyzer — returns `{ ok, hasDriver, minMet, missing, idealMet, idealMissing }`), `assignSpecificCrewToUnit(unitId, callId, personIds)` (commits manual crew with the same status mutations as the auto path — career→busy, volunteer→responding).
+- **`executeDispatch` accepts `opts = { preassigned, keepCallModalOpen }`** — When preassigned crew exists for `(unitId, callId)`, the auto-matcher is skipped and the existing assignments are used (volunteer station-response gate still fires via `respondingVolunteers`). Pre-flight gate evaluates against preassigned crew via `evaluateCrewSelection` rather than the station pool (whose available list now excludes the just-assigned crew). `keepCallModalOpen` keeps the dispatch modal open after dispatch + re-renders to show units enroute. Defensive cleanup releases preassigned personnel if their unit gets blocked at the gate.
+- **Crew continuity on mid-cycle redispatch — two bug fixes:**
+  - *Stale `callId`:* Redispatching a `returning` (or `dispatched`) unit to a new call now re-points every crew member's `currentAssignment.callId` to the new incident. Previously the cab's crew rode to the new scene but `getOnSceneRoster(newIncId)` (which filters by `callId`) wouldn't find them, breaking the Personnel tab + patient-provider pickers on the new call.
+  - *Stale post-call release timer:* `unit._releasePersonnelAtAbsSec` (the post-arrival grace-window timer set in `onUnitReturned`) is cleared at the top of every redispatch path. Previously, redispatching a unit within the 5-minute grace window left the timer set, and `_tickPostCallRelease` would strip the entire crew mid-call when the threshold passed.
+- **Unit Details modal — informational seating section** — New "Seating Layout (N seats)" section between Type & Capability and the existing crew roster. Each seat lists position number, label, ★ Driver flag, driver-cert chip (gold), preferred-cert chips, or "No cert preference" hint. Sub-card surfaces dispatch crew standards (driver cert, min crew, ideal crew) side-by-side so it's easy to cross-reference seating with `crewDefaults`. Read-only for now; same data drives the picker, and the same `seats[]` array will host assigned-seat persistence + per-seat equipment in the future.
+- **Call spawn rate** — `spawn.intervalMinMs` / `intervalMaxMs` retuned from 90s–180s to 240s–360s (~1 call every 5 minutes on average).
+
+*Last updated: 2026-05-18. Crew-Select Dispatch, seating layouts moved into unit configs, Unit Details seating section, two crew-continuity bug fixes on mid-cycle redispatch, call spawn rate retuned.*

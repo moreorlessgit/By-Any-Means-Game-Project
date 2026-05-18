@@ -413,6 +413,8 @@ function _renderUnitDetails(){
           <div style="color:var(--muted);">Transport</div><div>${_escUnitHtml(loadText)}</div>
         </div>
 
+        ${_renderUnitSeatingSection(unit)}
+
         ${typeof renderUnitCrewRosterHTML === 'function' ? renderUnitCrewRosterHTML(unit.id) : ''}
 
         <div class="section-title" style="margin-top:14px;">Dispatch Center</div>
@@ -427,6 +429,8 @@ function _renderUnitDetails(){
               ⚠ This station's ESNs are covered by multiple DCs. Pick a preferred DC from Manage Station.
             </div>` : ''}
         </div>
+
+        ${unit.status === 'awaiting_crew' ? _renderAwaitingCrewBlock(unit, station) : ''}
 
         <div class="section-title" style="margin-top:14px;">Actions</div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -521,4 +525,191 @@ function _escUnitHtml(str){
   return String(str ?? '')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// =============================================================================
+// SEATING LAYOUT  (informational — Unit Details modal)
+// =============================================================================
+// Reads the seating layout from BAM_CONFIG.unitTypes[typeKey].seats and the
+// dispatch crew minimums from crewDefaults. Read-only for now; the same data
+// drives the Crew-Select Dispatch picker, and will eventually host assigned-
+// seat persistence and per-seat equipment loadouts.
+function _renderUnitSeatingSection(unit){
+  if(!unit) return '';
+  const layout = (typeof getSeatingLayoutForUnit === 'function')
+    ? getSeatingLayoutForUnit(unit) : null;
+  if(!layout || !Array.isArray(layout.seats) || !layout.seats.length) return '';
+
+  const crewCfg    = BAM_CONFIG.crewDefaults?.[unit.typeKey] || {};
+  const certDefs   = BAM_CONFIG.certifications || {};
+  const driverCert = crewCfg.driverCert || null;
+
+  // Format min/ideal crew as cert chips so the player can compare at a glance.
+  const fmtReq = (reqMap) => {
+    const entries = Object.entries(reqMap || {});
+    if(!entries.length) return '<span style="color:var(--muted);">none</span>';
+    return entries.map(([cert, n]) => {
+      const lbl = certDefs[cert]?.label || cert;
+      return `<span class="cs-cert-chip">${n}× ${_escUnitHtml(lbl)}</span>`;
+    }).join('');
+  };
+
+  const seatsHtml = layout.seats.map((seat, idx) => {
+    const isDriverSeat = !!seat.isDriver;
+    const driverTag = isDriverSeat
+      ? `<span style="color:var(--gold);font-size:.65rem;letter-spacing:1px;margin-left:6px;">★ DRIVER</span>`
+      : '';
+    const driverCertChip = (isDriverSeat && driverCert)
+      ? `<span class="cs-cert-chip driver">${_escUnitHtml(certDefs[driverCert]?.label || driverCert)}</span>`
+      : '';
+    const prefChips = (seat.preferredCerts || []).map(c =>
+      `<span class="cs-cert-chip">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
+    const noPrefHint = (!driverCertChip && !prefChips)
+      ? '<span style="color:var(--muted);font-size:.72rem;font-style:italic;">No cert preference</span>'
+      : '';
+    return `<div class="cs-seat-row${isDriverSeat ? ' driver' : ''}" style="cursor:default;">
+      <div style="flex:1;min-width:0;">
+        <div class="cs-seat-label">
+          ${idx + 1}. ${_escUnitHtml(seat.label)}${driverTag}
+        </div>
+        <div style="margin-top:3px;">${driverCertChip}${prefChips}${noPrefHint}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // "Crew Standards" sub-card surfaces min/ideal alongside seats. The two
+  // concepts are decoupled (seats = capacity; min/ideal = dispatch gate) but
+  // the player thinks about them together, so render them side-by-side.
+  return `<div class="section-title" style="margin-top:14px;">Seating Layout (${layout.seats.length} seats)</div>
+    ${seatsHtml}
+    <div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:3px;">
+      <div style="font-size:.7rem;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Dispatch Crew Standards</div>
+      <div style="display:grid;grid-template-columns:90px 1fr;gap:6px 10px;font-size:.78rem;align-items:start;">
+        <div style="color:var(--muted);">Driver</div>
+        <div>${driverCert
+          ? `<span class="cs-cert-chip driver">${_escUnitHtml(certDefs[driverCert]?.label || driverCert)}</span>`
+          : '<span style="color:var(--muted);">No driver gate</span>'}</div>
+        <div style="color:var(--muted);">Min crew</div>
+        <div>${fmtReq(crewCfg.min)}</div>
+        <div style="color:var(--muted);">Ideal crew</div>
+        <div>${fmtReq(crewCfg.ideal)}</div>
+      </div>
+    </div>`;
+}
+
+// =============================================================================
+// AWAITING-CREW BLOCK  (Phase 5 bugfix)
+// =============================================================================
+// Shown in the Unit Details modal when the apparatus is staged at-station
+// waiting on volunteer responders to assemble. Surfaces:
+//   • progress (arrived / total)
+//   • a per-responder mini-list with their current state
+//   • a "Send Anyway (driver only)" button that calls
+//     forceVolunteerCrewDeparture. Disabled when no driver-cert-qualified
+//     person is currently at the station.
+function _renderAwaitingCrewBlock(unit, station){
+  const responders = unit._awaitingResponders || [];
+  const total = unit._awaitingCrewCount || responders.length || 0;
+  // Volunteers who have made it to the station have status 'busy'.
+  const arrived = responders.filter(p => p.status === 'busy').length;
+
+  // Determine driver-gate status. We need at least one person at the station
+  // with the apparatus's driver cert.
+  const driverCert = BAM_CONFIG.crewDefaults?.[unit.typeKey]?.driverCert;
+  let driverOk = true, driverLabel = '';
+  if(driverCert){
+    driverLabel = BAM_CONFIG.certifications?.[driverCert]?.label || driverCert;
+    const STATION_RADIUS_KM = 0.05;
+    const atStation = (typeof personnel !== 'undefined' ? personnel : []).filter(p => {
+      if(p.stationId !== station.id) return false;
+      if(typeof personHasCert !== 'function' || !personHasCert(p, driverCert)) return false;
+      if(p.type !== 'volunteer') return (typeof isOnDutyNow === 'function') ? isOnDutyNow(p) : true;
+      if(p.status !== 'busy') return false;
+      const loc = p.currentLocation;
+      if(!loc) return false;
+      const dx = (typeof haversineKm === 'function')
+        ? haversineKm(loc.lat, loc.lng, station.lat, station.lng)
+        : 999;
+      return dx <= STATION_RADIUS_KM;
+    });
+    driverOk = atStation.length > 0;
+  }
+
+  // Phase 5 bugfix v2 — show each responder's certs as small chips so the
+  // player can read crew composition at a glance. Sorted by cert tier so the
+  // most senior cert shows first.
+  const certDefs = BAM_CONFIG.certifications || {};
+  const _certPriority = (cId) => {
+    // Higher number = displayed first. Keep this lightweight; sorting is per row.
+    const order = { ccp:9, phrn:9, paramedic:8, aemt:7, emt:6, emr:5,
+                    fire_officer_2:9, fire_officer_1:8, ff2:7, ff1:6,
+                    pump_ops_1:5, evoc_large:4, evoc_small:3,
+                    patrol_supervisor:9, patrol_officer:8, fire_police:5 };
+    return order[cId] || 1;
+  };
+  const _certChips = (p) => {
+    const certs = (p.certs || []).slice().sort((a,b) => _certPriority(b) - _certPriority(a));
+    if(!certs.length) return '<span style="font-size:.66rem;color:var(--muted);">no certs</span>';
+    return certs.map(c => {
+      const label = certDefs[c]?.label || c;
+      const cat = certDefs[c]?.category || 'shared';
+      const bg = cat === 'fire'   ? 'rgba(224,92,26,.15)'
+               : cat === 'ems'    ? 'rgba(46,168,255,.15)'
+               : cat === 'police' ? 'rgba(88,101,242,.15)'
+               : 'rgba(200,200,200,.12)';
+      return `<span style="display:inline-block;font-size:.62rem;padding:0 5px;border-radius:8px;background:${bg};margin-right:3px;">${_escUnitHtml(label)}</span>`;
+    }).join('');
+  };
+  const rosterList = responders.length ? responders.map(p => {
+    const stateBadge = p.status === 'busy'
+      ? '<span style="color:var(--green);font-weight:700;font-size:.66rem;">at station</span>'
+      : p.status === 'responding'
+        ? '<span style="color:var(--gold);font-size:.66rem;">responding</span>'
+        : '<span style="color:var(--muted);font-size:.66rem;">' + _escUnitHtml(p.status||'pending') + '</span>';
+    return `<div style="padding:4px 2px;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:.78rem;">
+        <span>${_escUnitHtml(p.name || p.id)}</span>${stateBadge}
+      </div>
+      <div style="margin-top:2px;">${_certChips(p)}</div>
+    </div>`;
+  }).join('') : '<div style="font-size:.78rem;color:var(--muted);">No responders tracked.</div>';
+
+  const forceBtn = driverOk
+    ? `<button class="btn-sm" style="background:var(--accent);color:#fff;" onclick="_unitDetailsForceOut()" title="Depart with whoever's at the station now. Responders en route will be released.">🚒 Send Anyway</button>`
+    : `<button class="btn-sm" disabled title="No ${_escUnitHtml(driverLabel)}-certified driver at the station yet.">🚒 Send Anyway</button>`;
+
+  return `<div class="section-title" style="margin-top:14px;">Crew Assembling</div>
+    <div style="background:rgba(251,191,36,0.08);border:1px solid var(--gold);border-radius:4px;padding:8px 10px;font-size:.82rem;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <span style="color:var(--gold);font-weight:700;">⏳ ${arrived} / ${total} at station</span>
+        ${forceBtn}
+      </div>
+      <div style="max-height:140px;overflow-y:auto;border-top:1px solid rgba(255,255,255,0.06);padding-top:4px;">
+        ${rosterList}
+      </div>
+      ${!driverOk ? `<div style="font-size:.72rem;color:var(--muted);margin-top:6px;">
+        Need a ${_escUnitHtml(driverLabel)}-certified driver at the station to force-out.
+      </div>` : ''}
+    </div>`;
+}
+
+// Click handler for the awaiting-crew "Send Anyway" button.
+function _unitDetailsForceOut(){
+  if(!_activeUnitDetailsId) return;
+  if(typeof forceVolunteerCrewDeparture !== 'function') return;
+  const res = forceVolunteerCrewDeparture(_activeUnitDetailsId);
+  if(!res?.ok){
+    const reason = res?.reason || 'unknown';
+    if(reason.startsWith('no_driver_at_station')){
+      const label = reason.split(':')[1] || 'driver';
+      setStatus(`⚠️ Cannot force-out: no ${label}-certified driver at the station yet.`);
+    } else if(reason === 'not_awaiting_crew'){
+      setStatus('⚠️ Unit is no longer awaiting crew.');
+    } else {
+      setStatus(`⚠️ Force-out failed: ${reason}`);
+    }
+    return;
+  }
+  // The dispatch .then() handler will flip to 'dispatched' and route.
+  _renderUnitDetails();
 }

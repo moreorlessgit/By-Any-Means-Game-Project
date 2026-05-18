@@ -50,6 +50,10 @@
 
 **Certifications** — Qualifications held by personnel (e.g., FF1, FF2, Paramedic, EMT, AEMT, LEO, Driver/Operator). In Phase 4, units will require minimum certified personnel to respond (e.g., an ALS ambulance needs at least one Paramedic).
 
+**Crew Continuity** — Design rule that an apparatus' assigned crew stays attached through the full call cycle and into post-arrival idle. A `returning` unit's crew remains on the unit so it can be redispatched mid-return without re-staffing; an `available` unit retains its crew for a grace window (`volunteerPostCallReleaseGameSec`) after arrival. Mid-cycle redispatch re-points each crew member's `currentAssignment.callId` to the new incident and cancels the post-call release timer.
+
+**Crew-Select Dispatch** — Optional manual-crew flow opened by the `👥 Dispatch w/ Crew…` button on the call modal. Per-apparatus picker showing seats (left) + available responders at station/home/roaming (right). Player picks who rides where; the modal validates driver-cert + min-crew live, then dispatches with the chosen crew instead of running the auto-matcher. Separate from the existing `Dispatch Selected` button, which still auto-fills crew greedily.
+
 **Dispatch Stagger** — In a multi-unit dispatch, units are staggered in departure time by 3 game-seconds per unit in the batch. This prevents all units from being routed simultaneously and creates realistic staged response.
 
 **Enroute** — A unit status indicating the unit is actively traveling toward an incident. Enroute units display a bright green AVL label on the map and can be rerouted mid-travel from their current position.
@@ -67,6 +71,8 @@
 **Response Plan** — A named auto-assignment plan that pulls the closest available unit(s) by ETA for each required capability tag. Functionally similar to box alarms but assignment is based on proximity rather than fixed pre-selected units.
 
 **Returning** — A unit status indicating the unit is traveling back to its home station after call resolution. Displayed as a yellow AVL label. Units show remaining ETA to station in the station list and dispatch modal.
+
+**Seating Layout** — Per-apparatus cab seat map living on `BAM_CONFIG.unitTypes[typeKey].seats`. Each seat has an `id`, `label`, optional `isDriver` flag, and `preferredCerts` hint. Drives the Crew-Select Dispatch picker and the Unit Details modal's informational seating section. Seat count = capacity; the dispatch staffing gate uses the separate `crewDefaults.min`/`ideal` requirements. Will host assigned-seat persistence and per-seat equipment loadouts in the future.
 
 **Spawnmode** — The placement rule for incident locations within an ESN:
   - `building` — Spawns on a building centroid (structure fires, gas leaks)
