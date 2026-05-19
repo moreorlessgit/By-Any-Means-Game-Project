@@ -41,9 +41,11 @@ function renderDatabaseHealthPanel(){
   el.innerHTML = `
     ${_renderOsmCacheSection()}
     ${_renderOrphanInspectorSection()}
-    ${_renderVolunteerLocationsSection()}
     ${_renderWorldResetSection()}
   `;
+  // Note: the Volunteer Locations bulk-reset section was removed when the
+  // volunteer system shifted to abstract assembly delays — there are no
+  // physical homes left to regenerate.
 }
 
 // Phase 5E bug-fix — public hook other modules can call to refresh the panel
@@ -177,10 +179,8 @@ function findOrphans(){
     if(p.pinnedUnitId && !unitIds.has(p.pinnedUnitId)){
       out.push({ kind: 'personnel.pinnedUnitId', id: p.id, context: `→ ${p.pinnedUnitId}` });
     }
-    if(p.home?.esnId && !esnIds.has(p.home.esnId)){
-      out.push({ kind: 'personnel.home.esnId', id: p.id, context: `→ ${p.home.esnId}` });
-    }
-    // Phase 5 bugfix — `personnel.work` check removed; work locations no longer exist.
+    // personnel.home/work checks removed — abstract-assembly refactor dropped
+    // physical volunteer locations.
   });
 
   // DC → ESN

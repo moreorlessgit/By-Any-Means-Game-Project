@@ -68,34 +68,43 @@ const BAM_CONFIG = {
   //   speedMph      — used for ETA calc on straight-line (aircraft) units.
   //
   // SEAT SCHEMA — each entry in `seats[]`:
-  //   id              — unique slot key within the apparatus.
-  //   label           — display name. Rename freely.
-  //   isDriver        — true marks the driver/operator seat (label-only flag).
-  //                     A driver seat is ALWAYS hard-required for dispatch.
-  //   requiredCert    — HARD cert gate. The seat MUST be filled by a person
-  //                     who holds this cert (or an equivalent via `satisfies`)
-  //                     for the apparatus to roll. Marking requiredCert also
-  //                     makes the seat required-to-roll. Leave empty/undefined
-  //                     for seats that are nice-to-fill but not blocking.
-  //   preferredCerts  — array of equally-valid preferred certs. Holding any of
-  //                     them scores well for this seat. Not a hard filter.
-  //   niceToHaveCerts — additive scoring bonus per cert held. Stackable —
-  //                     a candidate holding two nice-to-haves outscores one.
-  //   isPatientSeat   — true = stretcher/patient bay. Responders cannot occupy.
-  //                     Counts toward unit's patient transport capacity.
-  //   isPrisonerSeat  — true = prisoner cage/cell. Responders cannot occupy.
-  //                     Counts toward unit's prisoner transport capacity.
+  //   id                    — unique slot key within the apparatus.
+  //   label                 — display name. Rename freely.
+  //   isDriver              — true marks the driver/operator seat (label-only).
+  //                           A driver seat is ALWAYS hard-required for dispatch
+  //                           when it has a requiredCert.
+  //   requiredCert          — HARD cert gate. The seat MUST be filled by a person
+  //                           who holds this cert (or an equivalent via the cert
+  //                           hierarchy's `satisfies` chain, or any cert in
+  //                           `interchangeableCerts` below). Leave null/undefined
+  //                           for an optional seat — nice to fill, doesn't block.
+  //   interchangeableCerts  — array of certs that ALSO satisfy this seat's hard
+  //                           gate. Use when several certs are equally acceptable
+  //                           (e.g., a fire cab seat that takes fire_support OR
+  //                           fire_exterior OR ff1 OR ff2).
+  //   niceToHaveCerts       — additive scoring bonus per cert held. Stackable —
+  //                           a candidate holding two nice-to-haves outscores one.
+  //   isPatientSeat         — true = stretcher. Responders cannot occupy. Counts
+  //                           toward patient transport capacity.
+  //   isPrisonerSeat        — true = prisoner cage/cell. Responders cannot occupy.
+  //                           Counts toward prisoner transport capacity.
   //
-  // Mutually exclusive: a seat is EITHER a responder seat (with
-  // requiredCert/preferredCerts/niceToHaveCerts) OR a patient seat OR a
-  // prisoner seat. The matcher silently skips isPatientSeat / isPrisonerSeat
-  // seats during crew assignment.
+  // Mutually exclusive: a seat is EITHER a responder seat (with requiredCert /
+  // interchangeableCerts / niceToHaveCerts) OR a patient seat OR a prisoner seat.
+  // The matcher silently skips isPatientSeat / isPrisonerSeat seats during crew
+  // assignment.
   //
-  // DISPATCH GATE — apparatus rolls when every seat with `requiredCert`
-  // (which includes every isDriver seat per its own requiredCert) is filled.
-  // All other responder seats are fill-if-available; the ideal-wait timer
-  // ([volunteerAssemblyMaxGameMin] game-minutes) caps how long the apparatus
-  // holds for non-required seats to assemble at the station.
+  // PER-UNIT-TYPE FLAG — autoFillOptionalSeats:
+  //   true  — default-dispatch auto-fill should fill EVERY responder seat (fire
+  //           apparatus). Ideal-crew status requires every seat filled.
+  //   false — default-dispatch auto-fill fills only requiredCert seats + the
+  //           driver seat; optional seats stay empty (ambulances ride 2-person,
+  //           single-officer patrol is normal). Ideal-crew status only needs the
+  //           required floor.
+  //
+  // DISPATCH GATE — apparatus rolls when every seat with `requiredCert` (which
+  // includes the driver seat when it carries one) is filled. Optional seats do
+  // NOT block dispatch.
   // ---------------------------------------------------------------------------
   unitTypes: {
     // ── FIRE ──────────────────────────────────────────────────────────────────
@@ -108,20 +117,23 @@ const BAM_CONFIG = {
       color:          '#e05c1a',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,   // fire trucks want every seat filled
       seats: [
         { id:'driver',  label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large','pump_ops_1'],
-          niceToHaveCerts:['ff1','ff2'] },
+          niceToHaveCerts:['pump_ops_1','ff1','ff2'] },
         { id:'officer', label:'Officer',
-          preferredCerts:['fire_officer_1','fire_officer_2'],
-          niceToHaveCerts:['ff2','emt'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','fire_officer_2','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
         { id:'cab_1',   label:'Cab Seat 1',
-          preferredCerts:['ff1','ff2'],
-          niceToHaveCerts:['emt','aemt'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt','aemt','hazmat_ops','rescue_tech'] },
         { id:'cab_2',   label:'Cab Seat 2',
-          preferredCerts:['ff1','ff2'],
-          niceToHaveCerts:['emt','aemt'] }
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt','aemt','hazmat_ops','rescue_tech'] }
       ],
     },
     pumper_tanker: {
@@ -133,16 +145,18 @@ const BAM_CONFIG = {
       color:          '#e05c1a',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver',  label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large','pump_ops_1'],
-          niceToHaveCerts:['ff1'] },
+          niceToHaveCerts:['pump_ops_1','ff1'] },
         { id:'officer', label:'Officer',
-          preferredCerts:['fire_officer_1'],
-          niceToHaveCerts:['ff2','emt'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
         { id:'cab_1',   label:'Cab Seat 1',
-          preferredCerts:['ff1','ff2'],
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
           niceToHaveCerts:['emt'] }
       ],
     },
@@ -155,13 +169,14 @@ const BAM_CONFIG = {
       color:          '#c94800',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver', label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large'],
           niceToHaveCerts:['pump_ops_1','ff1'] },
         { id:'cab_1',  label:'Cab Seat 1',
-          preferredCerts:['ff1','ff2'],
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
           niceToHaveCerts:['emt'] }
       ],
     },
@@ -174,19 +189,22 @@ const BAM_CONFIG = {
       color:          '#e05c1a',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver',  label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large','aerial_operator'],
-          niceToHaveCerts:['ff2'] },
+          niceToHaveCerts:['aerial_operator','ff2'] },
         { id:'officer', label:'Officer',
-          preferredCerts:['fire_officer_1','fire_officer_2'],
-          niceToHaveCerts:['ff2'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','fire_officer_2','ff2'],
+          niceToHaveCerts:[] },
         { id:'cab_1',   label:'Cab Seat 1',
-          preferredCerts:['ff1','ff2'],
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
           niceToHaveCerts:['rescue_tech','emt'] },
         { id:'cab_2',   label:'Cab Seat 2',
-          preferredCerts:['ff1','ff2'],
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
           niceToHaveCerts:['emt'] }
       ],
     },
@@ -199,14 +217,15 @@ const BAM_CONFIG = {
       color:          '#8b4513',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver', label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small'],
           niceToHaveCerts:['wildland_ff','ff1'] },
         { id:'cab_1',  label:'Cab Seat 1',
-          preferredCerts:['wildland_ff','fire_exterior','ff1'],
-          niceToHaveCerts:['ff2'] }
+          requiredCert:'fire_support',
+          interchangeableCerts:['wildland_ff','fire_exterior','ff1','ff2'],
+          niceToHaveCerts:[] }
       ],
     },
     rescue: {
@@ -218,20 +237,23 @@ const BAM_CONFIG = {
       color:          '#e05c1a',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver',  label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large'],
           niceToHaveCerts:['rescue_tech','ff1'] },
         { id:'officer', label:'Officer',
-          preferredCerts:['fire_officer_1'],
-          niceToHaveCerts:['rescue_tech','ff2'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['rescue_tech'] },
         { id:'cab_1',   label:'Cab Seat 1',
-          preferredCerts:['rescue_tech','ff1'],
-          niceToHaveCerts:['ff2','emt'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
         { id:'cab_2',   label:'Cab Seat 2',
-          preferredCerts:['rescue_tech','ff1'],
-          niceToHaveCerts:['ff2','aemt'] }
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['aemt'] }
       ],
     },
     rescue_engine: {
@@ -243,19 +265,22 @@ const BAM_CONFIG = {
       color:          '#e05c1a',
       icon:           '🚒',
       providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
       seats: [
         { id:'driver',  label:'Driver/Operator', isDriver:true,
           requiredCert:'evoc_large',
-          preferredCerts:['evoc_large','pump_ops_1'],
-          niceToHaveCerts:['rescue_tech'] },
+          niceToHaveCerts:['pump_ops_1','rescue_tech'] },
         { id:'officer', label:'Officer',
-          preferredCerts:['fire_officer_1'],
-          niceToHaveCerts:['rescue_tech','ff2'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['rescue_tech'] },
         { id:'cab_1',   label:'Cab Seat 1',
-          preferredCerts:['rescue_tech','ff1'],
-          niceToHaveCerts:['ff2','emt'] },
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
         { id:'cab_2',   label:'Cab Seat 2',
-          preferredCerts:['ff1','ff2'],
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
           niceToHaveCerts:['emt','aemt'] }
       ],
     },
@@ -269,21 +294,18 @@ const BAM_CONFIG = {
       color:          '#2ea8ff',
       icon:           '🚑',
       providerLevel:  'als',
+      autoFillOptionalSeats: false,  // ambulances ride 2-person minimum; extra seats stay empty on default dispatch
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','emt'],
-          niceToHaveCerts:['aemt','paramedic'] },
+          niceToHaveCerts:['emt','aemt','paramedic'] },
         { id:'captains_chair',  label:"Captain's Chair",
           requiredCert:'paramedic',   // ALS amb must roll with a medic
-          preferredCerts:['paramedic'],
           niceToHaveCerts:['ccp','aemt'] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['emt','aemt','paramedic'],
-          niceToHaveCerts:['evoc_small'] },
+          niceToHaveCerts:['emt','aemt','paramedic','evoc_small'] },
         { id:'bench',           label:'Bench Seat',
-          preferredCerts:['emt','aemt','paramedic'],
-          niceToHaveCerts:['ff1'] },
+          niceToHaveCerts:['emt','aemt','paramedic','ff1'] },
         { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
       ],
     },
@@ -296,21 +318,19 @@ const BAM_CONFIG = {
       color:          '#1a7fc4',
       icon:           '🚑',
       providerLevel:  'bls',
+      autoFillOptionalSeats: false,
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','emt'],
-          niceToHaveCerts:['aemt'] },
+          niceToHaveCerts:['emt','aemt'] },
         { id:'captains_chair',  label:"Captain's Chair",
-          requiredCert:'emt',         // BLS amb must roll with an EMT
-          preferredCerts:['emt','aemt'],
-          niceToHaveCerts:['paramedic'] },
+          requiredCert:'emt',                       // BLS amb must roll with an EMT
+          interchangeableCerts:['aemt','paramedic'],
+          niceToHaveCerts:[] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['emt','aemt'],
-          niceToHaveCerts:['emr'] },
+          niceToHaveCerts:['emt','aemt','emr'] },
         { id:'bench',           label:'Bench Seat',
-          preferredCerts:['emt','emr'],
-          niceToHaveCerts:['aemt'] },
+          niceToHaveCerts:['emt','emr','aemt'] },
         { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
       ],
     },
@@ -323,14 +343,13 @@ const BAM_CONFIG = {
       color:          '#2ea8ff',
       icon:           '🚗',
       providerLevel:  'als',
+      autoFillOptionalSeats: false,
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','paramedic','emt'],
-          niceToHaveCerts:['aemt'] },
+          niceToHaveCerts:['paramedic','aemt','emt'] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['paramedic','aemt','emt'],
-          niceToHaveCerts:['ccp'] }
+          niceToHaveCerts:['paramedic','ccp','aemt','emt'] }
       ],
     },
     // ── POLICE ────────────────────────────────────────────────────────────────
@@ -343,14 +362,14 @@ const BAM_CONFIG = {
       color:          '#5865f2',
       icon:           '🚔',
       providerLevel:  null,
+      autoFillOptionalSeats: false,  // single-officer patrol is fine
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','patrol_officer'],
-          niceToHaveCerts:['patrol_supervisor'] },
+          interchangeableCerts:['patrol_officer','patrol_supervisor'],
+          niceToHaveCerts:[] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['patrol_officer'],
-          niceToHaveCerts:['patrol_supervisor'] },
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
         { id:'rear_left',       label:'Rear (Driver Side)',  isPrisonerSeat:true },
         { id:'rear_right',      label:'Rear (Passenger Side)', isPrisonerSeat:true }
       ],
@@ -364,14 +383,14 @@ const BAM_CONFIG = {
       color:          '#5865f2',
       icon:           '🚔',
       providerLevel:  null,
+      autoFillOptionalSeats: false,
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','patrol_supervisor','patrol_officer'],
+          interchangeableCerts:['patrol_supervisor','patrol_officer'],
           niceToHaveCerts:[] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['patrol_officer','patrol_supervisor'],
-          niceToHaveCerts:[] },
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
         { id:'rear_left',       label:'Rear (Driver Side)', isPrisonerSeat:true }
       ],
     },
@@ -384,14 +403,14 @@ const BAM_CONFIG = {
       color:          '#5865f2',
       icon:           '🚔',
       providerLevel:  null,
+      autoFillOptionalSeats: false,
       seats: [
         { id:'driver',          label:'Handler/Driver',  isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','k9_handler'],
-          niceToHaveCerts:['patrol_officer'] },
+          interchangeableCerts:['k9_handler','patrol_officer'],
+          niceToHaveCerts:['k9_handler'] },
         { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['patrol_officer'],
-          niceToHaveCerts:[] },
+          niceToHaveCerts:['patrol_officer'] },
         { id:'rear_cage',       label:'Rear Cage', isPrisonerSeat:true }
       ],
     },
@@ -404,14 +423,14 @@ const BAM_CONFIG = {
       color:          '#64748b',
       icon:           '🚐',
       providerLevel:  null,
+      autoFillOptionalSeats: false,
       seats: [
         { id:'driver',          label:'Driver',          isDriver:true,
           requiredCert:'evoc_small',
-          preferredCerts:['evoc_small','patrol_officer'],
-          niceToHaveCerts:['patrol_supervisor'] },
-        { id:'front_passenger', label:'Front Passenger',
-          preferredCerts:['patrol_officer'],
+          interchangeableCerts:['patrol_officer','patrol_supervisor'],
           niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
         { id:'cell_1', label:'Prisoner Cell 1', isPrisonerSeat:true },
         { id:'cell_2', label:'Prisoner Cell 2', isPrisonerSeat:true },
         { id:'cell_3', label:'Prisoner Cell 3', isPrisonerSeat:true },
@@ -432,20 +451,19 @@ const BAM_CONFIG = {
       providerLevel:  'als',
       straightLine:   true,    // bypasses OSRM; uses direct point-to-point path
       speedMph:       150,     // used for ETA calc and animation duration
+      autoFillOptionalSeats: false,  // flight ops launch with the required medic; second seat is optional
       // Pilot seat has no requiredCert — flight ops aren't gated by EVOC.
       // The hard driver gate is conceptually "we have a pilot" which is
       // assumed always-available in this game.
       seats: [
         { id:'pilot',   label:'Pilot',         isDriver:true,
-          preferredCerts:[],
           niceToHaveCerts:[] },
         { id:'medic_1', label:'Flight Medic 1',
-          requiredCert:'paramedic',   // air ALS must have a medic on board
-          preferredCerts:['paramedic','ccp'],
+          requiredCert:'paramedic',                       // air ALS must have a medic on board
+          interchangeableCerts:['ccp','phrn'],
           niceToHaveCerts:['ff1'] },
         { id:'medic_2', label:'Flight Medic 2',
-          preferredCerts:['ccp','paramedic'],
-          niceToHaveCerts:['aemt'] },
+          niceToHaveCerts:['ccp','paramedic','aemt'] },
         { id:'stretcher', label:'Stretcher', isPatientSeat:true }
       ],
     },
@@ -1430,17 +1448,16 @@ const BAM_CONFIG = {
   // DISPATCH GATE + CREW SCORING  (seat-based — retired crewDefaults)
   // ---------------------------------------------------------------------------
   // The legacy `crewDefaults` block is retired. Crew requirements now live
-  // on each seat (see unitTypes above): `requiredCert` is the HARD gate,
-  // `preferredCerts` is the soft preference, `niceToHaveCerts` is the
-  // weighted bonus list. The values below tune the auto-assign scoring and
-  // the station-assembly timer.
+  // on each seat (see unitTypes above): `requiredCert` + optional
+  // `interchangeableCerts` form the HARD gate; `niceToHaveCerts` is the
+  // weighted scoring bonus. The values below tune the auto-assign scoring
+  // and the station-assembly timer.
   //
   // SCORING (per candidate, per seat):
-  //   • requiredCert hit          — eligibility filter (not scored)
-  //   • preferredCerts any hit    — +crewScorePreferredHit
-  //   • niceToHaveCerts each hit  — +crewScoreNiceToHaveHit (stacks)
-  //   • career on-duty at station — +crewScoreAtStation
-  //   • volunteer travel penalty  — −crewScoreVolEtaPerMin per ETA minute
+  //   • requiredCert/interchangeable hit — eligibility filter; +crewScorePreferredHit baseline bonus
+  //   • niceToHaveCerts each hit         — +crewScoreNiceToHaveHit (stacks)
+  //   • career on-duty at station        — +crewScoreAtStation
+  //   • volunteer travel penalty         — −crewScoreVolEtaPerMin per ETA minute
   //
   // ASSEMBLY TIMER — `volunteerAssemblyMaxGameMin` game-minutes after the
   // apparatus is staged. At expiry:
@@ -1454,13 +1471,24 @@ const BAM_CONFIG = {
   // FORCE-OUT — the player's "Send Anyway" button bypasses the timer. The
   // driver-cert gate is the only block on force-out.
   // ---------------------------------------------------------------------------
-  crewScorePreferredHit:                  100, // points for hitting any preferredCert
+  crewScorePreferredHit:                  100, // points for satisfying the hard gate (requiredCert OR any interchangeableCert)
   crewScoreNiceToHaveHit:                  25, // points per niceToHave the person holds (stacks)
   crewScoreAtStation:                      50, // bonus for career-on-duty at the station
-  crewScoreVolEtaPerMin:                    1, // penalty per minute of volunteer ETA
-  volunteerAssemblyMaxGameMin:             10, // hard cap; matches real-world "out the door in 10"
-  volunteerStationLingerGameMin:           30, // crew stays at station after failed assembly
-  volunteerOriginFreezeWatchdogGameSec:    30, // force straight-line if vol hasn't started moving
+  crewScoreVolEtaPerMin:                    1, // penalty per minute of volunteer assembly delay
+  // Per-station assembly delay defaults. Each volunteer station carries its
+  // own meanGameMin / spreadGameMin in `station.volunteerAssembly`; these are
+  // only the fallback when a station hasn't been customized yet.
+  volunteerAssemblyMeanGameMin:             5,  // base mean for assembly delay (game minutes)
+  volunteerAssemblySpreadGameMin:           2,  // ± spread around the mean
+  volunteerOutOfAreaMultiplier:           1.5,  // multiplier on delay when currentState === 'roaming'
+  volunteerAssemblyFailGameMin:            10,  // hard cap before assembly resolves (roll-with-what-you've-got or fail)
+  volunteerFailedAssemblyLingerGameMin:    30,  // post-assembly linger before normal availability resumes
+  volunteerAtStationHourlyChance:        0.02,  // hourly chance a volunteer is already at-station for the whole hour
+  // Retained for save backward-compat — the old `volunteerAssemblyMaxGameMin`
+  // and `volunteerStationLingerGameMin` keys are read as fallbacks by callers
+  // that haven't migrated to the new names yet.
+  volunteerAssemblyMaxGameMin:             10,  // legacy alias for volunteerAssemblyFailGameMin
+  volunteerStationLingerGameMin:           30,  // legacy alias for volunteerFailedAssemblyLingerGameMin
 
   // ---------------------------------------------------------------------------
   // PERSONNEL / DISPATCH POLICY DEFAULTS  (Phase 5B)
@@ -1611,46 +1639,25 @@ const BAM_CONFIG = {
   // VOLUNTEER + OSM CONSTANTS  (Phase 5D)
   // ---------------------------------------------------------------------------
   // overpassEndpoint           — Public Overpass API. Used to fetch buildings
-  //                              per ESN polygon for volunteer home/work
-  //                              generation. Rate-limited by Overpass — see
-  //                              osmRebuildCooldownSec for per-ESN throttling.
-  // overpassTimeoutMs          — Single-query timeout. Hybrid plan calls for
-  //                              fallback to road-snapped random points on
-  //                              failure/timeout (docs/Phase5.md).
-  // osrmNearestEndpoint        — OSRM's nearest-road API. Used in fallback mode
-  //                              to snap a random polygon point to within a few
-  //                              yards of the nearest roadway, so a fabricated
-  //                              "home" is at least believable as a real address.
-  // osmCacheTtlMs              — Per-ESN cache TTL in REAL-LIFE milliseconds
-  //                              (calendar time, Date.now()-based — not game
-  //                              days). 30 days per docs/data-lifecycle.md §3.
+  //                              per ESN polygon. Retained for future call-
+  //                              generation features (e.g., POI-driven calls).
+  //                              Volunteers no longer consume this data.
+  // overpassTimeoutMs          — Single-query timeout for Overpass fetches.
+  // osmCacheTtlMs              — Per-ESN cache TTL in REAL-LIFE milliseconds.
   // osmRebuildCooldownSec      — Soft per-ESN cooldown so click-happy "Rebuild"
   //                              presses don't hammer Overpass.
-  // volunteerDefaultReliability— Default reliability roll (0..1) used when a
-  //                              volunteer hasn't been customized. Higher =
-  //                              more likely to respond on any given call.
   // ambulanceDriverOnlyDefault — Global default for the per-station ambulance
   //                              driver-only policy. Player-confirmed: FALSE.
   //                              Ambulances complete crew at the station by
   //                              default; driver-only response is opt-in.
   // directToSceneAllowedRoles  — Cert codes whose holders may respond direct
   //                              to scene (POV) instead of reporting to station
-  //                              first. Per Phase5.md: chiefs, fire police,
-  //                              LEOs, EMS, certified responders.
+  //                              first.
   // ---------------------------------------------------------------------------
   overpassEndpoint:            'https://overpass-api.de/api/interpreter',
   overpassTimeoutMs:           10000,
-  osrmNearestEndpoint:         'https://router.project-osrm.org/nearest/v1/driving',
   osmCacheTtlMs:               30 * 24 * 60 * 60 * 1000,
   osmRebuildCooldownSec:       30,
-  volunteerDefaultReliability: 0.8,
-  // volunteerResponseSpeedMph — Speed used to animate volunteers traveling
-  //                              from home (or a roaming location) to the
-  //                              station before the apparatus departs.
-  //                              Phase 5 bugfix: raised to 50 (player spec).
-  //                              Acts as a floor — OSRM-predicted time wins
-  //                              when it implies a faster route.
-  volunteerResponseSpeedMph:   50,
   // Phase 5 bugfix — hourly availability state model.
   //
   // Every game-hour, each idle volunteer re-rolls their state:

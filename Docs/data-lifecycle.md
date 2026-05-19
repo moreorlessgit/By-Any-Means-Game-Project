@@ -43,10 +43,10 @@ There are five distinct categories of cleanup. Each is handled differently.
 - **UI feedback:** Block modal lists exactly what's blocking (e.g. "Engine 5 enroute to Call #142, Medic 5 on scene at Call #137"). Each blocker is clickable → jumps to the relevant call/transport.
 - **"Danger: Force Delete":** Power-user escape hatch behind a second confirmation. Cancels active calls assigned to this station, returns transit units OOS at current location, releases patients/suspects back to scene or last facility.
 - **Personnel/apparatus reassignment:** A general "Reassign" action (separate from delete) must exist for both apparatus and personnel — moving an engine or a firefighter from Station A to Station B without deleting anything. This is a Phase 5 ergonomics requirement that the force-delete path leans on (so the player has a non-destructive option first).
-- **Cascade on actual delete:** Apparatus, personnel home/work records, station-scoped settings (response policies, ideal-crew overrides, etc.) all cascade.
+- **Cascade on actual delete:** Apparatus, personnel records, station-scoped settings (response policies, ideal-crew overrides, per-station `volunteerAssembly` window, etc.) all cascade. *(Personnel no longer carry home/work location fields after the abstract-assembly refactor.)*
 
 ### ESNs
-- **Polygon edit:** Fires building-cache purge for that ESN (see §3). Also triggers volunteer home auto-migration check per Phase5.md — homes outside the new station coverage regenerate, unless personnel is player-customized or super-responder tagged.
+- **Polygon edit:** Fires building-cache purge for that ESN (see §3). The pre-refactor volunteer-home auto-migration is no longer triggered — under the abstract-assembly model volunteers have no physical location to migrate. `autoMigrateVolunteersForESN` is a no-op stub kept so the ESN-edit hook doesn't throw.
 - **Delete:** Blocks if any station/dispatch-center association exists. Force-delete unbinds.
 
 ### Dispatch Centers
@@ -55,15 +55,16 @@ There are five distinct categories of cleanup. Each is handled differently.
 ### Personnel (Phase 5+)
 - **Delete (single person):** Hard delete with confirmation. If on an active call, blocked unless force-delete.
 - **Cascade from station delete:** Yes — personnel belong to a station.
-- **Bulk operations:** "Reset all auto-generated volunteer locations" regenerates homes/works for non-customized, non-super personnel only.
+- **Save-load migration:** `purgeLegacyVolunteerFields(person)` strips `home`, `work`, `currentLocation`, `isCustomized`, `wayId`, `isFallback`, and `availability.currentLocation` from any volunteer record on load, so saves predating the abstract-assembly refactor rehydrate cleanly.
+- ~~**Bulk operations:** "Reset all auto-generated volunteer locations" regenerates homes/works for non-customized, non-super personnel only.~~ *(Superseded — no volunteer locations to reset. The Database Health panel's bulk-reset row is now a no-op pending UI cleanup.)*
 
 ---
 
 ## 3. OSM Building Cache
 
-The cache exists so we don't hammer the public Overpass API every time a volunteer needs a home or work address.
+**Status:** Retained but dormant. The cache was originally built to back volunteer home/work generation; the post-Phase-5 abstract-assembly refactor removed that consumer. The cache is kept because future POI-driven call generation (structure fires at real commercial buildings, MVAs at known intersections) is the obvious next consumer — pre-populating now means that feature is cheap to land.
 
-**Implementation note (Phase 5D ✅):** The cache currently lives on each `esn.osmBuildingCache` and is persisted as part of the save JSON blob (`PrivateWorldSave.state_json`), not in a dedicated Postgres table. The dedicated `osm_building_cache` table sketched below becomes relevant only when Phase 4B forces global-world persistence. Behaviorally the cache rules below all apply.
+**Implementation note:** The cache lives on each `esn.osmBuildingCache` and is persisted as part of the save JSON blob (`PrivateWorldSave.state_json`), not in a dedicated Postgres table. The dedicated `osm_building_cache` table sketched below becomes relevant only when Phase 4B forces global-world persistence. Behaviorally the cache rules below all apply.
 
 **Schema (sketch — future table):**
 ```
@@ -77,13 +78,13 @@ osm_building_cache
 ```
 
 **Lifecycle:**
-- **Fetch trigger:** First time a volunteer in this ESN needs a home/work address. Fetch is per-ESN, per-building-type, batched.
+- **Fetch trigger:** Today the only triggers are the manual "Rebuild Building Cache" button and a lazy refetch inside `pickRandomBuildingInESN` (which itself has no live caller). When the future POI/call-generation system lands, its spawn path will be the live trigger.
 - **TTL:** 30 days. After 30 days, the next read triggers a refetch for that ESN.
-- **Invalidation:** ESN polygon edit immediately purges all `osm_building_cache` rows for that ESN. Refetch happens lazily on next demand.
-- **Manual rebuild:** Player-triggered "Rebuild building cache" button (see §5) purges and refetches synchronously with progress feedback.
+- **Invalidation:** ESN polygon edit immediately purges the cache for that ESN. Refetch happens lazily on next demand.
+- **Manual rebuild:** Player-triggered "Rebuild Building Cache" button (see §5) purges and refetches synchronously with progress feedback.
 
 **What the cache does NOT store:**
-- Specific personnel home/work assignments. Those live on the `personnel` row itself as `home_lat`/`home_lon`/`home_osm_way_id` (and same for work). This way personnel locations survive cache purges and OSM data updates — continuity per Phase5.md.
+- Specific personnel locations. The abstract-assembly refactor removed personnel home/work fields entirely; volunteer "location" is now an abstract availability state (`home` / `roaming` / `at_station` / `unavailable`), not a lat/lon.
 
 **Refetch rate limits:**
 - Single ESN refetch: one Overpass query (or two, if buildings + commercial come in separate queries). Trivial.
@@ -109,14 +110,15 @@ Tools live in **two places**: their natural contextual home AND the central Data
 - **Rebuild Building Cache** — purges and refetches OSM buildings for this ESN. Confirmation: none (operation is non-destructive).
 
 ### Station Edit Modal
-- **Reset Volunteer Locations** — regenerates homes/works for all auto-generated, non-customized, non-super personnel at this station. Confirmation: yes (changes personnel data the player may have grown attached to).
+- ~~**Reset Volunteer Locations** — regenerates homes/works for all auto-generated, non-customized, non-super personnel at this station.~~ *(Superseded by the abstract-assembly refactor — no locations to reset.)*
+- **Volunteer Assembly Window** — edit the per-station mean ± spread (game minutes) that drives `rollVolunteerAssemblyDelaySec`. Defaults seed from `BAM_CONFIG.volunteerAssemblyMeanGameMin` / `volunteerAssemblySpreadGameMin` when the station is first volunteer-flagged.
 - **Reassign Apparatus** — move selected apparatus to another station. Non-destructive.
 - **Reassign Personnel** — move selected personnel to another station. Non-destructive.
 
 ### Operations Modal → Database Health Panel *(new)*
 - **OSM Cache** section: list of ESNs with cached row counts and last-fetched dates. Per-row "Rebuild" button. "Rebuild All" button with progress.
 - **Orphan Inspector**: read-only list of any dangling references found. Should always be empty in a healthy world; non-empty means a cascade rule got skipped somewhere — useful for debugging.
-- **Volunteer Locations**: bulk reset across selected stations.
+- ~~**Volunteer Locations**: bulk reset across selected stations.~~ *(Superseded — pending UI removal.)*
 - **World Reset**: nuclear option. Wipes all stations/units/personnel/calls in the current world, keeps the world record. Triple confirmation.
 
 ### Settings → Account Cleanup *(future)*
@@ -164,5 +166,5 @@ When introducing a new table, decide cascade behavior at migration time, not lat
 ## 9. Open Questions / Future Considerations
 
 - Should the "Rebuild Building Cache" button be rate-limited per-player to prevent accidental Overpass hammering if a player gets click-happy? Probably yes — soft cooldown of ~30 seconds per ESN.
-- Auto-migrated personnel flag: how is this surfaced? Per Phase5.md, "auto-migrated personnel should be flagged so the player can see who moved and why." Likely a notification + a visual marker on the personnel row that persists until the player acknowledges.
+- ~~Auto-migrated personnel flag: how is this surfaced?~~ *(Resolved by deletion — abstract-assembly model has nothing to migrate.)*
 - World Reset confirmation pattern: typed world name? Multi-step wizard? TBD when the Database Health panel is built (5E).

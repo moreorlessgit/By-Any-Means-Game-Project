@@ -2,16 +2,14 @@
 
 ## Phase 5 Bugs
 
-Bug - Dispatch Crew Assignment Modal - picking crew starts with all seats automatically filled. Should let me manually pick. Also make it easier to select and change individuals by making a click on a field change from apparatus to pool and pool to apparatus. Instead of the clear button.
+REFACTOR - Volunteer system. Remove all instances/references of volunteer homes/work locations. Completely gut any mention of volunteers responding from these locations. Volunteer system will change from now on to be abstracted. The physical volunteer system has been too buggy and clunky for us to get working as envisioned. We will retain availability and now stations marked as volunteer will just have a randomized delay associated with assembling a crew, player editable, but defaults to around 5 game minutes +- 2 game minutes. This will still be displayed in the responder list and everything else especially with career staffing should remain the same. Ask lots of questions to verify intent. This is a huge change and we are gutting a lot of our work from today.
 
-Bug- Vols spawn at home location but still frozen in place not moving. Straight line fall back does not work for some reason. OSRM related?
+Bug - Dispatch Crew Assignment Modal - picking crew starts with all seats automatically filled. Should let me manually pick. Also make it easier to select and change individuals by making a click on a field change from apparatus to pool and pool to apparatus. Instead of the clear button.
 
 Bug - Dispatch Crew Assignment Modal - When multiple apparatus selected, available responders pool does not adjust for responders already placed in other apparatus.
 
-Change - Ambulances auto-fill should only fill the required slots. No point wasting the extra seats on personnel unless the call really dictates it as defined by the player.
+Change - Ambulances auto-fill should only fill the required slots. No point wasting the extra seats on personnel unless the call really dictates it as defined by the player. Maybe make the extra seats considered surplus and consider the crew ideal as long as there is a minimum of a driver and EMT aboard.
 
 Bug - Unit details modal, scroll bar broken, always snaps to top of window. Size of unit details could also be increased and more information can probably be put side by side, rather than in a straight line.
-
-Bug - EMT Required slot on ambulance when responding driver only does not fill with spare EMT on scene. Should be allowed to allow ambulances to meet with personnel on scene.
 
 New window/modal dedicated to apparatus purchases. 3 Main Tabs, Fire, EMS, and Police. Add seperate search functions in each tab for the station you are purchasing for, for the apparatus name, and for capability tags. Accessable from new button on left sidebar and also accessable from station details modal, which automatically picks the filter for the station you clicked on it from. Verify that lists update with new stations as well. New modal for this purchase window shows once a unit type is selected, a seat map, eventually "equipment slots/bays" (working title), and maybe other things. But for now just the seat map. And allows you to name it here in advance. Ask lots of questions to verify intent please.

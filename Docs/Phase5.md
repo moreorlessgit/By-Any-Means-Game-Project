@@ -15,7 +15,7 @@ Phase 5 introduces individual named personnel, certifications, crew composition 
 | **5A** | Unit List window/modal + Unit Details window/modal + dispatch center unit prefixes | ✅ Complete |
 | **5B** | Career personnel + certification taxonomy + crew slot rules + min/ideal crew dispatch gating | ✅ Complete |
 | **5C** | Training system + career shifts + ranks + cashflow integration (salaries, training costs) | ✅ Complete |
-| **5D** | Volunteer system: home/work via OSM (with DB cache), direct-to-scene response, PPE rules, availability/schedules, auto-migration on ESN edits | ✅ Complete |
+| **5D** | Volunteer system: home/work via OSM (with DB cache), direct-to-scene response, PPE rules, availability/schedules, auto-migration on ESN edits | ✅ Complete (superseded by post-Phase-5 abstract-assembly refactor — see History) |
 | **5E** | Stats tracking, career history, NIMS/ICS officer ratios, Database Health panel, span-of-control banner, on-scene roster, personnel patient-stabilization | ✅ Complete |
 
 **Persistence note:** Per the planning session for the 5C/5D/5E batch, every new Phase 5 entity (personnel fields, station shifts, ESN OSM cache, stats, history) lives in the save JSON blob (`state_json` on `PrivateWorldSave`). The real Prisma tables sketched in `docs/backend-architecture.md` (personnel, certifications, osm_building_cache) remain deferred until Phase 4B forces global-world persistence.
@@ -49,7 +49,7 @@ This decision keeps the personnel schema simpler (no permissions/visibility laye
 - Each station can be configured as **Career**, **Combination**, or **Volunteer**.
 - **Combination stations:** Career and volunteer personnel can work side by side at the same station. Station type can be changed by the player at any time.
 - **Career staffing:** Career personnel work assigned shifts and are immediately available while on duty.
-- **Volunteer staffing:** Volunteers respond from their current map location before staffing apparatus or responding directly to scene.
+- **Volunteer staffing:** Volunteers respond by rolling a personal assembly delay (per-station mean ± spread game minutes); when the timer elapses they're considered at the station and count toward the crew gate. Direct-to-scene responders skip station assembly entirely. *(Pre-refactor 5D used OSM-routed map travel; that model was retired — see history.md.)*
 
 ---
 
@@ -68,21 +68,36 @@ This decision keeps the personnel schema simpler (no permissions/visibility laye
 
 ## Volunteer System
 
-### Routing & Locations
-- **Volunteer routing:** Volunteers are treated like units for routing purposes and may travel from home (random, defined by ESN, OSM `building:house` tag, stored in database), work (random, OSM `building:commercial`/`industrial`/`retail` tags, defined by ESN, stored in database), station, scene, or custom player-set locations.
-- **Volunteer locations:** Volunteer home/work locations are randomized by default within ESNs covered by their assigned station, using OSM data to fix locations to building. Home/work locations are stored for personnel so there is continuity. Players may manually view/change/set exact locations.
-- **OSM building cache:** Per docs/data-lifecycle.md, OSM building candidates are cached per-ESN in the database with a 30-day TTL and on-demand rebuild. Player gets a "Rebuild building cache" button in the ESN edit modal and in the Database Health panel.
+> **Refactor note (post-Phase-5):** The original 5D shipped with OSM-derived home/work locations, OSRM-routed map travel, and a live responder dot on the map. That model proved fragile (OSRM stalls, marker churn, save bloat) and was replaced with an **abstract assembly** model. Volunteers no longer occupy a physical position on the map; instead, each paged volunteer rolls a personal assembly delay drawn from a per-station window. The sections below describe the current (post-refactor) behavior; the Clarifying Questions section at the bottom retains the original design Q&A as historical context.
+
+### Assembly (replaces OSM Routing)
+- **Per-station delay window:** Each volunteer station carries `station.volunteerAssembly = { meanGameMin, spreadGameMin }`. Defaults come from `BAM_CONFIG.volunteerAssemblyMeanGameMin` / `volunteerAssemblySpreadGameMin` (5 min ± 2 min). Player-editable per station in the station modal.
+- **Personal roll:** When a volunteer is paged, `rollVolunteerAssemblyDelaySec(person, station)` draws a uniform delay in `[mean-spread, mean+spread]`. Roaming responders multiply by `BAM_CONFIG.volunteerOutOfAreaMultiplier` (default 1.5). `at_station` responders skip the timer entirely.
+- **Status flow:** `available → responding` (timer running) → `at_station` (timer elapsed, counted toward the crew gate). The apparatus rolls when every required seat has someone in `at_station`.
+- **Failed assembly:** At the cap (`volunteerAssemblyFailGameMin`, default 10 game-min), the assembly resolves: required-met rolls with whoever's there; required-short aborts. Late arrivals after a successful rollout are tracked as `leftBehind` and linger at the station once their personal timer elapses.
+- **Post-failure linger:** All responders linger at the station for `volunteerFailedAssemblyLingerGameMin` (default 30 game-min) before the hourly availability roll resumes, so they don't immediately get re-paged.
+
+### OSM Cache (Retained but Dormant)
+- The per-ESN OSM building cache (`esn.osmBuildingCache`) is still maintained and still ships in the save blob — but **no live system consumes it**. It's kept so future call-generation features (structure fires that spawn at a real commercial building, MVAs on a known intersection) can plug in cheaply. See docs/data-lifecycle.md §3.
+- The "Rebuild Building Cache" button remains in the ESN modal and Database Health panel.
+- Cache TTL stays at 30 real-life days; cooldown still 30 seconds per ESN.
 
 ### Direct-to-Scene
-- **Direct-to-scene response:** Volunteers do not always have to report to station first. Chiefs, EMS, fire police, LEOs, or nearby responders may respond directly to scene depending on policy and call type. Ambulances may respond to the scene driver only and pick up an EMT on the scene or another driver to complete a crew.
+- **Cert-based gate, no location:** `evaluateDirectToSceneEligibility(person, incident)` now decides direct-to-scene purely from certs + incident type. There's no physical distance check anymore — the abstract model assumes "near enough to plausibly self-respond."
+- **Eligible roles:** Chiefs (Fire Officer 1+), fire police, LEOs, EMS-certified responders, plus FF1+ holders with `hasPpeInVehicle:true` for fire calls. Ambulance driver-only response is still policy-gated per station.
 
 ### Availability
-- **Volunteer availability:** Volunteer availability uses both random chance and optional player-defined schedules.
+- **Hourly state roll:** `recomputeVolunteerAvailabilityHour()` re-rolls each idle volunteer's `availability.currentState` every game-hour. Outcomes (weights from config):
+  - `home` (`volunteerAvailableHomeChance`, default 0.70) — paged with normal delay.
+  - `roaming` (`volunteerAvailableRoamingChance`, default 0.05) — paged with `volunteerOutOfAreaMultiplier` delay.
+  - `at_station` (`volunteerAtStationHourlyChance`, default 0.02) — rare; zero assembly delay if paged this hour.
+  - `unavailable` — remainder; not pageable.
+- **Schedules:** Optional per-volunteer `availability.schedule[]` windows force `unavailable` outside any configured window. Super-responders and `forceAvailableUntil` overrides bypass the schedule.
+- **Pure read:** `isVolunteerAvailableNow(person)` is now side-effect-free — every UI surface reads the same value between hour ticks.
 
 ### Visualization
-- You can watch volunteers respond to the station.
-- **Volunteer visibility:** When watching volunteers respond, the player sees individual names/icons on the map.
-- **Volunteer privacy/visual clutter:** Individual volunteer map icons toggleable in the map layers like ESNs and station names.
+- **No volunteer map markers.** The "Volunteer Responders" / "Volunteer Homes" / "Volunteer Works" layer toggles were removed along with the marker pools. Volunteer status is surfaced numerically in the station window, Personnel tab, and Crew-Select picker (`station` / `home` / `roaming` chips with the assembly ETA in minutes).
+- Legacy `setVolunteerLayerVisible`, `refreshVolunteerLocationMarkers`, and the map-click home-pick flow remain as no-op stubs so external callers don't throw; new code should not call them.
 
 ### Chief Roles
 - **Volunteer chiefs** function like units for calls that need a "chief" unit — have a "Chief" tag. They can also respond to the station to crew apparatus if needed.
@@ -258,9 +273,11 @@ This decision keeps the personnel schema simpler (no permissions/visibility laye
 
 ## Clarifying Questions and Answers
 
-- **Volunteer home/work generation:** Allow fallback random points if no valid buildings exist inside an ESN.
-- **Volunteer home/work continuity:** Homes stay put under normal play. **On ESN edits, if a volunteer's home now falls outside their home station's coverage area, they auto-regenerate to a new valid building inside the new coverage.** Exceptions that never auto-migrate: (1) player-customized responders (any field manually edited by the player), and (2) super responders. Auto-migrated personnel should be flagged in some way so the player can see who moved and why.
-- **Work locations:** Some volunteers work outside the station's covered ESN and have poor daytime availability.
+> The bullets below were the original 5D design Q&A. Items struck through were superseded by the abstract-assembly refactor; they're retained here so the design history reads cleanly. Items without a strike-through are still live.
+
+- ~~**Volunteer home/work generation:** Allow fallback random points if no valid buildings exist inside an ESN.~~ *(Superseded — no home/work locations.)*
+- ~~**Volunteer home/work continuity:** Homes stay put under normal play. On ESN edits, if a volunteer's home now falls outside their home station's coverage area, they auto-regenerate to a new valid building inside the new coverage.~~ *(Superseded — no homes, no ESN-edit migration. `autoMigrateVolunteersForESN` is a no-op stub.)*
+- ~~**Work locations:** Some volunteers work outside the station's covered ESN and have poor daytime availability.~~ *(Superseded by the `roaming` availability state + out-of-area multiplier.)*
 - **Direct-to-scene logic:** Direct-to-scene volunteers count toward call manpower immediately in circumstances where they would realistically be able to contribute prior to apparatus arriving on the scene — e.g. in patient care, scene size-ups, etc.
 - **Direct-to-scene fire personnel:** Firefighters who arrive POV are allowed to perform interior/fireground tasks if two criteria are met: (1) actual fire apparatus is on scene, and (2) the personnel in question carry their PPE/Gear in their POVs (random, toggleable by player).
 - **PPE/equipment issue:** "If a firefighter goes direct to scene from home/work, do they have turnout gear with them, or do they need to respond to station for gear first?" — A mix depending on the volunteer in question. Editable by player.
@@ -270,20 +287,20 @@ This decision keeps the personnel schema simpler (no permissions/visibility laye
 - **Chiefs as units:** Chief units will be assigned to people in cases of volunteers, but paid stations can have "Battalion Chief" units. Example: "Chief 5" as a command vehicle versus "Fire Officer 2 Certification".
 - **Chief tag:** Chief tag on incidents that are more complex.
 - **Chief staffing flexibility:** If the chief responds to station to drive an engine, does the incident lose chief/command capability unless another chief responds? — Yes, although if that chief is running the pump of a truck for example, they can multitask, but with reduced efficiency.
-- **Volunteer visibility:** When watching volunteers respond, the player sees individual names/icons on the map.
-- **Volunteer privacy/visual clutter:** Individual volunteer map icons toggleable in the map layers like ESNs and station names.
+- ~~**Volunteer visibility:** When watching volunteers respond, the player sees individual names/icons on the map.~~ *(Superseded — visualization moved to numeric chips in the station/personnel/crew-select panels.)*
+- ~~**Volunteer privacy/visual clutter:** Individual volunteer map icons toggleable in the map layers like ESNs and station names.~~ *(Superseded — no map layer to toggle.)*
 - **Super responder status:** Purely for player customization purposes and only enablable by the player.
 - **Super responder limits:** Super responders are still subject to availability, but only as assigned by players. Basically it locks this person into whatever the player customizes them to be.
 - **Stat tracking:** Calls responded, fire calls, EMS calls, transports, saves, missed calls, training completed, driving time, command incidents, awards — all sound cool. There should be a player option to reset stats (e.g. for testing) with verification in place so it can't be done accidentally.
 - **Personnel history:** Each person has a career log showing major incidents, certifications earned, promotions, commendations, injuries, and days of service.
-- **Player customization:** Player can fully edit certs, home/work location, reliability, name, rank, and status for sandbox purposes. Certs are still locked behind money in normal play.
+- **Player customization:** Player can fully edit certs, reliability, name, rank, status, and (volunteer) per-station assembly delay window. Certs are still locked behind money in normal play. *(Home/work location fields were retired in the refactor.)*
 - **Ideal crew timer:** "Wait 10 minutes for ideal crew" is a global setting for a player, editable on a station/unit/call type level that diverts from the global setting. Needs a button to restore to default.
 - **Failed staffing:** If a unit waits too long and fails to crew, CAD should not automatically recommend the next-due unit, but there should be some type of notification.
 - **Partial crew response:** Unit should leave automatically after the ideal wait timer at minimum staffing, and the player should be notified.
 - **Fire/EMS priority:** By default, fire priority applies at all times (responders should also have their own preferences). Editable at the station level.
 - **Career shifts:** Career staffing is based on fixed shift templates like 24/48, 48/96, weekday daytime, and custom schedules.
 - **Combination stations:** Paid staff can be assigned to specific units, such as one paid ambulance crew and volunteer fire apparatus. Combination stations may randomly assign if a player does not specify.
-- **OSM dependency:** OSM-derived home/work generation is cached in the database to avoid repeated external lookups. See docs/data-lifecycle.md for the cache rules and lifecycle.
+- ~~**OSM dependency:** OSM-derived home/work generation is cached in the database to avoid repeated external lookups.~~ *(Superseded — no live consumer of the cache. The cache is retained for future POI-driven call-generation features; see docs/data-lifecycle.md §3.)*
 
 ---
 

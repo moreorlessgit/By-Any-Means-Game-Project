@@ -376,8 +376,12 @@ function _renderUnitDetails(){
 
   const conflict = hasStationDCConflict(station);
 
+  // Preserve column scroll positions across re-render (game tick fires this every second).
+  const prevLeftScroll  = document.getElementById('udm-col-left')?.scrollTop  ?? 0;
+  const prevRightScroll = document.getElementById('udm-col-right')?.scrollTop ?? 0;
+
   modal.innerHTML = `
-    <div class="modal-box gold-top" style="width:520px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-box gold-top" style="width:1000px;max-width:96vw;max-height:88vh;display:flex;flex-direction:column;">
       <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
         <div>
           <h2 class="gold">${ut.icon || ''} ${_escUnitHtml(dispName)}</h2>
@@ -385,65 +389,74 @@ function _renderUnitDetails(){
         </div>
         <button class="btn-sm danger" onclick="closeUnitDetails()">✕</button>
       </div>
-      <div class="modal-body" id="unit-details-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+      <div class="udm-2col">
+        <div class="udm-col" id="udm-col-left">
 
-        <div class="section-title">Status</div>
-        <div style="font-size:.85rem;margin-bottom:6px;">${_escUnitHtml(statusText)}</div>
-        ${etaRows.length ? etaRows.map(([k,v]) =>
-          `<div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted);">
-             <span>${_escUnitHtml(k)}</span><span style="font-family:var(--mono);color:var(--text);">${_escUnitHtml(v)}</span>
-           </div>`).join('') : ''}
-        ${inc ? `<div style="font-size:.78rem;color:var(--muted);margin-top:6px;">
-                   On call: <span style="color:var(--text);">${_escUnitHtml(inc.label)}</span>
-                 </div>` : ''}
+          <div class="section-title">Status</div>
+          <div style="font-size:.85rem;margin-bottom:6px;">${_escUnitHtml(statusText)}</div>
+          ${etaRows.length ? etaRows.map(([k,v]) =>
+            `<div style="display:flex;justify-content:space-between;font-size:.8rem;color:var(--muted);">
+               <span>${_escUnitHtml(k)}</span><span style="font-family:var(--mono);color:var(--text);">${_escUnitHtml(v)}</span>
+             </div>`).join('') : ''}
+          ${inc ? `<div style="font-size:.78rem;color:var(--muted);margin-top:6px;">
+                     On call: <span style="color:var(--text);">${_escUnitHtml(inc.label)}</span>
+                   </div>` : ''}
 
-        <div class="section-title" style="margin-top:14px;">Callsign</div>
-        <div style="display:flex;gap:8px;">
-          <input type="text" id="udm-rename-input" value="${_escUnitHtml(unit.name)}" style="flex:1;"/>
-          <button class="btn-sm" onclick="_unitDetailsRename()">Save</button>
+          <div class="section-title" style="margin-top:14px;">Callsign</div>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="udm-rename-input" value="${_escUnitHtml(unit.name)}" style="flex:1;"/>
+            <button class="btn-sm" onclick="_unitDetailsRename()">Save</button>
+          </div>
+          <div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
+            Display: <span style="color:var(--text);">${_escUnitHtml(dispName)}</span>
+            ${dc && dc.unitPrefix
+              ? `<span> — prefix from <span style="color:var(--gold);">${_escUnitHtml(dc.name)}</span></span>`
+              : '<span> — no DC prefix</span>'}
+          </div>
+
+          <div class="section-title" style="margin-top:14px;">Type &amp; Capability</div>
+          <div style="display:grid;grid-template-columns:120px 1fr;gap:4px 10px;font-size:.82rem;">
+            <div style="color:var(--muted);">Type</div><div>${_escUnitHtml(ut.label || unit.typeKey)}</div>
+            <div style="color:var(--muted);">Tags</div><div>${_escUnitHtml(tags)}</div>
+            <div style="color:var(--muted);">Provider</div><div>${_escUnitHtml(ut.providerLevel ? ut.providerLevel.toUpperCase() : '—')}</div>
+            <div style="color:var(--muted);">Transport</div><div>${_escUnitHtml(loadText)}</div>
+          </div>
+
+          <div class="section-title" style="margin-top:14px;">Dispatch Center</div>
+          <div style="font-size:.82rem;">
+            ${dc
+              ? `📡 ${_escUnitHtml(dc.name)}
+                 ${dc.unitPrefix
+                   ? ` · prefix <span style="color:var(--gold);font-family:var(--mono);">${_escUnitHtml(dc.unitPrefix)}</span>`
+                   : ' · <span style="color:var(--muted);">no prefix set</span>'}`
+              : '<span style="color:var(--muted);">No DC covers this station\'s ESNs.</span>'}
+            ${conflict ? `<div style="margin-top:6px;color:var(--gold);font-size:.78rem;">
+                ⚠ This station's ESNs are covered by multiple DCs. Pick a preferred DC from Manage Station.
+              </div>` : ''}
+          </div>
+
+          <div class="section-title" style="margin-top:14px;">Actions</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-sm" onclick="_unitDetailsToggleService()">
+              ${unit.inService === false ? 'Return to Service' : 'Place Out of Service'}
+            </button>
+            <button class="btn-sm" onclick="_unitDetailsOpenStation()">Open Manage Station</button>
+            ${unit.animMarker ? `<button class="btn-sm" onclick="_unitDetailsFocusOnMap()">Focus on Map</button>` : ''}
+          </div>
         </div>
-        <div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
-          Display: <span style="color:var(--text);">${_escUnitHtml(dispName)}</span>
-          ${dc && dc.unitPrefix
-            ? `<span> — prefix from <span style="color:var(--gold);">${_escUnitHtml(dc.name)}</span></span>`
-            : '<span> — no DC prefix</span>'}
-        </div>
 
-        <div class="section-title" style="margin-top:14px;">Type &amp; Capability</div>
-        <div style="display:grid;grid-template-columns:120px 1fr;gap:4px 10px;font-size:.82rem;">
-          <div style="color:var(--muted);">Type</div><div>${_escUnitHtml(ut.label || unit.typeKey)}</div>
-          <div style="color:var(--muted);">Tags</div><div>${_escUnitHtml(tags)}</div>
-          <div style="color:var(--muted);">Provider</div><div>${_escUnitHtml(ut.providerLevel ? ut.providerLevel.toUpperCase() : '—')}</div>
-          <div style="color:var(--muted);">Transport</div><div>${_escUnitHtml(loadText)}</div>
-        </div>
-
-        ${_renderUnitSeatingSection(unit)}
-
-        <div class="section-title" style="margin-top:14px;">Dispatch Center</div>
-        <div style="font-size:.82rem;">
-          ${dc
-            ? `📡 ${_escUnitHtml(dc.name)}
-               ${dc.unitPrefix
-                 ? ` · prefix <span style="color:var(--gold);font-family:var(--mono);">${_escUnitHtml(dc.unitPrefix)}</span>`
-                 : ' · <span style="color:var(--muted);">no prefix set</span>'}`
-            : '<span style="color:var(--muted);">No DC covers this station\'s ESNs.</span>'}
-          ${conflict ? `<div style="margin-top:6px;color:var(--gold);font-size:.78rem;">
-              ⚠ This station's ESNs are covered by multiple DCs. Pick a preferred DC from Manage Station.
-            </div>` : ''}
-        </div>
-
-        ${unit.status === 'awaiting_crew' ? _renderAwaitingCrewBlock(unit, station) : ''}
-
-        <div class="section-title" style="margin-top:14px;">Actions</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn-sm" onclick="_unitDetailsToggleService()">
-            ${unit.inService === false ? 'Return to Service' : 'Place Out of Service'}
-          </button>
-          <button class="btn-sm" onclick="_unitDetailsOpenStation()">Open Manage Station</button>
-          ${unit.animMarker ? `<button class="btn-sm" onclick="_unitDetailsFocusOnMap()">Focus on Map</button>` : ''}
+        <div class="udm-col" id="udm-col-right">
+          ${_renderUnitSeatingSection(unit)}
+          ${unit.status === 'awaiting_crew' ? _renderAwaitingCrewBlock(unit, station) : ''}
         </div>
       </div>
     </div>`;
+
+  // Restore scroll positions after the body has been replaced.
+  const newLeft  = document.getElementById('udm-col-left');
+  const newRight = document.getElementById('udm-col-right');
+  if(newLeft)  newLeft.scrollTop  = prevLeftScroll;
+  if(newRight) newRight.scrollTop = prevRightScroll;
 }
 
 // Saves a renamed callsign for the active Unit Details unit.
@@ -508,12 +521,12 @@ function _unitDetailsFocusOnMap(){
   map.setView(unit.animMarker.getLatLng(), 14);
 }
 
-// Called from the game tick so ETA rows stay live while the modal is open.
+// Called from the game tick so ETA rows + crew countdowns stay live while the modal is open.
+// Scroll-position preservation lives in _renderUnitDetails() so all entry points get it.
 function _updateUnitDetailsModal(){
   if(!_activeUnitDetailsId) return;
   const modal = document.getElementById('unit-details-modal');
   if(!modal?.classList.contains('open')) return;
-  // Cheap: full re-render. Modal is short, no dropdown state to preserve in the body.
   // Avoid clobbering the rename input mid-edit.
   const renameEl = document.getElementById('udm-rename-input');
   if(renameEl && document.activeElement === renameEl) return;
@@ -533,7 +546,7 @@ function _escUnitHtml(str){
 // SEATING LAYOUT + CREW  (merged — Unit Details modal)
 // =============================================================================
 // One unified per-seat section. Each seat row shows:
-//   • Seat label + isDriver tag + requiredCert/preferredCerts/niceToHave chips
+//   • Seat label + isDriver tag + requiredCert / interchangeableCerts / niceToHave chips
 //   • Patient/prisoner seats render as informational rows (no responder)
 //   • If a responder is assigned to that seatId, their name + status badge +
 //     cert chips render inside the row. Empty responder seats show the
@@ -620,12 +633,12 @@ function _renderUnitSeatingSection(unit){
     const reqCertChip = seat.requiredCert
       ? `<span class="cs-cert-chip driver" title="HARD-required for dispatch">⚠ ${_escUnitHtml(certDefs[seat.requiredCert]?.label || seat.requiredCert)}</span>`
       : '';
-    const prefChips = (seat.preferredCerts || [])
+    const interChips = (seat.interchangeableCerts || [])
       .filter(c => c !== seat.requiredCert)
-      .map(c => `<span class="cs-cert-chip" title="Preferred">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
+      .map(c => `<span class="cs-cert-chip" title="Also accepts (satisfies the requirement)">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
     const niceChips = (seat.niceToHaveCerts || [])
       .map(c => `<span class="cs-cert-chip" style="opacity:.6;" title="Nice to have">${_escUnitHtml(certDefs[c]?.label || c)}</span>`).join('');
-    const noPrefHint = (!reqCertChip && !prefChips && !niceChips)
+    const noPrefHint = (!reqCertChip && !interChips && !niceChips)
       ? '<span style="color:var(--muted);font-size:.72rem;font-style:italic;">No cert preference</span>'
       : '';
 
@@ -652,7 +665,7 @@ function _renderUnitSeatingSection(unit){
         <div class="cs-seat-label">
           ${idx + 1}. ${_escUnitHtml(seat.label)}${driverTag}
         </div>
-        <div style="margin-top:3px;">${reqCertChip}${prefChips}${niceChips}${noPrefHint}</div>
+        <div style="margin-top:3px;">${reqCertChip}${interChips}${niceChips}${noPrefHint}</div>
       </div>
       ${occupantHtml}
     </div>`;
@@ -735,27 +748,21 @@ function _renderUnitSeatingSection(unit){
 function _renderAwaitingCrewBlock(unit, station){
   const responders = unit._awaitingResponders || [];
   const total = unit._awaitingCrewCount || responders.length || 0;
-  // Volunteers who have made it to the station have status 'busy'.
-  const arrived = responders.filter(p => p.status === 'busy').length;
+  // Under the abstract-assembly model, a volunteer is at the station when
+  // their per-call status === 'at_station' (the timer elapsed).
+  const arrived = responders.filter(p => p.status === 'at_station').length;
 
-  // Determine driver-gate status. We need at least one person at the station
-  // with the apparatus's driver cert. Driver cert now lives on the driver seat.
+  // Determine driver-gate status. Need at least one driver-cert holder at the
+  // station: career on-duty here OR a volunteer in 'at_station' on this unit.
   const driverCert = (typeof getUnitDriverCert === 'function') ? getUnitDriverCert(unit) : null;
   let driverOk = true, driverLabel = '';
   if(driverCert){
     driverLabel = BAM_CONFIG.certifications?.[driverCert]?.label || driverCert;
-    const STATION_RADIUS_KM = 0.05;
     const atStation = (typeof personnel !== 'undefined' ? personnel : []).filter(p => {
       if(p.stationId !== station.id) return false;
       if(typeof personHasCert !== 'function' || !personHasCert(p, driverCert)) return false;
       if(p.type !== 'volunteer') return (typeof isOnDutyNow === 'function') ? isOnDutyNow(p) : true;
-      if(p.status !== 'busy') return false;
-      const loc = p.currentLocation;
-      if(!loc) return false;
-      const dx = (typeof haversineKm === 'function')
-        ? haversineKm(loc.lat, loc.lng, station.lat, station.lng)
-        : 999;
-      return dx <= STATION_RADIUS_KM;
+      return p.status === 'at_station';
     });
     driverOk = atStation.length > 0;
   }
@@ -785,15 +792,39 @@ function _renderAwaitingCrewBlock(unit, station){
       return `<span style="display:inline-block;font-size:.62rem;padding:0 5px;border-radius:8px;background:${bg};margin-right:3px;">${_escUnitHtml(label)}</span>`;
     }).join('');
   };
+  // Per-responder state badge. 'responding' shows a live game-minutes
+  // countdown to arrival; 'at_station' is the target; 'busy' = riding.
+  const nowSec = (typeof _absGameSec === 'function') ? _absGameSec()
+                : ((typeof gameDay !== 'undefined' ? gameDay : 1) * 86400 + (typeof gameSeconds !== 'undefined' ? gameSeconds : 0));
+  const _formatRem = (sec) => {
+    sec = Math.max(0, Math.round(sec));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2,'0')}`;
+  };
+  const _stateBadge = (p) => {
+    if(p.status === 'at_station'){
+      return '<span style="color:var(--green);font-weight:700;font-size:.66rem;">At Station</span>';
+    }
+    if(p.status === 'responding'){
+      const rem = (p._respondingArrivalGameSec != null)
+        ? _formatRem(p._respondingArrivalGameSec - nowSec) : '—';
+      return `<span style="color:var(--gold);font-size:.66rem;">Responding — ${rem}</span>`;
+    }
+    if(p.status === 'busy'){
+      return '<span style="color:var(--green);font-size:.66rem;">On Call</span>';
+    }
+    // Fall back to availability state label if no per-call status is set.
+    const cs = p.availability?.currentState;
+    if(cs === 'roaming')      return '<span style="color:var(--gold);font-size:.66rem;">Out of Area</span>';
+    if(cs === 'home')         return '<span style="color:var(--green);font-size:.66rem;">At Home</span>';
+    if(cs === 'unavailable')  return '<span style="color:var(--muted);font-size:.66rem;">Unavailable</span>';
+    return '<span style="color:var(--muted);font-size:.66rem;">' + _escUnitHtml(p.status || 'pending') + '</span>';
+  };
   const rosterList = responders.length ? responders.map(p => {
-    const stateBadge = p.status === 'busy'
-      ? '<span style="color:var(--green);font-weight:700;font-size:.66rem;">at station</span>'
-      : p.status === 'responding'
-        ? '<span style="color:var(--gold);font-size:.66rem;">responding</span>'
-        : '<span style="color:var(--muted);font-size:.66rem;">' + _escUnitHtml(p.status||'pending') + '</span>';
     return `<div style="padding:4px 2px;border-bottom:1px solid rgba(255,255,255,0.04);">
       <div style="display:flex;justify-content:space-between;align-items:center;font-size:.78rem;">
-        <span>${_escUnitHtml(p.name || p.id)}</span>${stateBadge}
+        <span>${_escUnitHtml(p.name || p.id)}</span>${_stateBadge(p)}
       </div>
       <div style="margin-top:2px;">${_certChips(p)}</div>
     </div>`;

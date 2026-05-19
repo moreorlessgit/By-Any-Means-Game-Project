@@ -74,15 +74,20 @@ function personHasCert(person, certId){
 // =============================================================================
 // Each unit type's `seats[]` defines:
 //   • Responder seats (default) — accept assigned crew. Optional flags:
-//       requiredCert    (HARD gate — seat must fill with this cert to roll)
-//       preferredCerts  (soft preference)
-//       niceToHaveCerts (additive scoring bonus)
-//       isDriver        (label-only; the seat's own requiredCert is the gate)
+//       requiredCert         (HARD gate — seat must fill with this cert to roll)
+//       interchangeableCerts (additional certs that also satisfy the hard gate)
+//       niceToHaveCerts      (additive scoring bonus)
+//       isDriver             (label-only; the seat's own requiredCert is the gate)
 //   • Patient seats (isPatientSeat:true)  — stretcher; counts toward patient
 //                                            transport capacity. Responder
 //                                            assignment skips these.
 //   • Prisoner seats (isPrisonerSeat:true) — cell/cage; counts toward prisoner
 //                                            transport capacity. Same skip rule.
+// Plus per-unit-type:
+//   autoFillOptionalSeats — true: default-dispatch fills every responder seat.
+//                            false: default-dispatch only fills required + driver
+//                                   (ambulance / police). Also drives ideal-crew
+//                                   semantics (see hasIdealCrew below).
 // =============================================================================
 
 // Returns true for seats that hold a responder (not patient/prisoner).
@@ -106,6 +111,26 @@ function getResponderSeats(unit){
 // label-only — explicit requiredCert is what marks a seat as required.
 function getRequiredSeats(unit){
   return getResponderSeats(unit).filter(s => !!s.requiredCert);
+}
+
+// Returns true if the given expanded cert set satisfies a seat's hard gate.
+// The hard gate is `requiredCert` OR any cert in `interchangeableCerts[]`.
+// A seat with no requiredCert is optional — anyone (including no one) satisfies.
+function _seatHardGateOk(personCertSet, seat){
+  if(!seat || !seat.requiredCert) return true;
+  if(personCertSet.has(seat.requiredCert)) return true;
+  const inter = seat.interchangeableCerts || [];
+  for(const c of inter){ if(personCertSet.has(c)) return true; }
+  return false;
+}
+
+// Returns true if the unit's typeKey opts into filling optional (non-requiredCert)
+// seats during default auto-dispatch. Fire apparatus default true; ambulance /
+// police default false so the auto path doesn't waste personnel on bench seats.
+function unitAutoFillsOptionalSeats(unit){
+  if(!unit) return false;
+  const ut = BAM_CONFIG.unitTypes?.[unit.typeKey];
+  return !!ut?.autoFillOptionalSeats;
 }
 
 // Returns the unit's driver-cert (the requiredCert on its first isDriver seat),
@@ -340,23 +365,19 @@ function _createPersonnelRecord(stationId, { name, type='career', rank, rankKey,
     // derived from rankKey at hire time; player can override later.
     shiftId:      null,
     salaryAnnual: (type === 'volunteer') ? 0 : _deriveSalaryAnnual(finalRankKey),
-    // Phase 5 bugfix — new availability state model.
+    // Volunteer availability state model (abstract-assembly refactor).
     //
-    //   currentState        — 'unavailable' | 'home' | 'roaming'
-    //   currentLocation     — only set when state is 'roaming' (otherwise null)
-    //   nextRollGameHour    — integer game-hour at which to re-roll (set on
-    //                         each tick; 0 forces a first roll on the next
-    //                         hourly tick after hire)
+    //   currentState        — 'unavailable' | 'home' | 'roaming' | 'at_station'
+    //   nextRollGameHour    — integer game-hour at which to re-roll (0 forces
+    //                         a first roll on the next hourly tick after hire)
     //   schedule            — optional player-defined availability windows
     //   forceAvailableUntil — optional player override; while gameSeconds is
     //                         below this value, volunteer is forced 'home'
-    //                         regardless of the roll (manual "they're here
-    //                         for the next hour" override)
+    //                         regardless of the roll
     //
     // Career personnel use shift gating instead; availability stays null.
     availability: (type === 'volunteer') ? {
       currentState:        'home',           // start available so first dispatch isn't blocked
-      currentLocation:     null,
       nextRollGameHour:    0,
       schedule:            [],
       forceAvailableUntil: null
@@ -487,15 +508,15 @@ function _resolveCrewSpec(unit){
 }
 
 // Sums the cert demand needed to fully crew every responder seat at the station
-// to its PRIMARY preferred cert. Used by auto-staff to size starter hires.
+// to its primary required cert. Used by auto-staff to size starter hires.
 // Strategy: each seat contributes one count of its primary cert candidate —
-// requiredCert if set, else preferredCerts[0], else null. nulls are skipped.
+// requiredCert if set, else niceToHaveCerts[0], else null. nulls are skipped.
 // Returns a map { certId: totalCountNeeded }.
 function _sumIdealCertDemand(station){
   const demand = {};
   (station.units || []).forEach(u => {
     getResponderSeats(u).forEach(s => {
-      const cert = s.requiredCert || (s.preferredCerts && s.preferredCerts[0]);
+      const cert = s.requiredCert || (s.niceToHaveCerts && s.niceToHaveCerts[0]);
       if(!cert) return;
       demand[cert] = (demand[cert] || 0) + 1;
     });
@@ -669,19 +690,9 @@ function rerollStationStarterRoster(stationId){
   return hired.length;
 }
 
-// Internal: kicks off async home/work generation for a batch of newly-created
-// volunteers. Fire-and-forget — failures fall back to road-snapped random
-// per volunteers.js. Triggers a marker refresh + personnel-tab redraw on
-// completion so the dots/badges appear without a manual reload.
-function _seedVolunteerLocations(people){
-  if(!Array.isArray(people) || !people.length) return;
-  if(typeof generateVolunteerHome !== 'function') return;
-  // Phase 5 bugfix — only homes are seeded now. Work locations were removed.
-  Promise.all(people.map(p => generateVolunteerHome(p))).then(() => {
-    if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-    if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
-  });
-}
+// _seedVolunteerLocations — removed. Volunteers no longer have physical
+// home/work locations; the abstract-assembly refactor dropped them. Callers
+// that referenced this now do nothing.
 
 // =============================================================================
 // CASCADE HOOK (called from station delete in stations.js)
@@ -745,8 +756,8 @@ function getCrewForUnit(unitId){
 //
 // _matchCrewToSeats(crew, unit, opts):
 //   Greedy seat-by-seat assignment that respects:
-//     • requiredCert (HARD filter — only candidates holding the cert eligible)
-//     • preferredCerts (additive score)
+//     • requiredCert + interchangeableCerts (HARD filter — candidate must
+//       satisfy at least one of these for the seat to be eligible)
 //     • niceToHaveCerts (additive score, stacks per cert held)
 //     • Volunteer ETA penalty + at-station bonus (uses person._pickerMeta if set)
 //   Seat priority: required seats first (so the rarest cert demand gets first
@@ -763,9 +774,14 @@ function getCrewForUnit(unitId){
 //     }
 function _scoreCandidateForSeat(person, seat, certSet){
   let score = 0;
-  if((seat.preferredCerts || []).some(c => certSet.has(c))){
+  // Hard-gate matches contribute a baseline so a properly-credentialed pick
+  // (requiredCert OR an interchangeable equivalent) outranks an empty-gate fit.
+  if(seat.requiredCert && certSet.has(seat.requiredCert)){
+    score += (BAM_CONFIG.crewScorePreferredHit || 100);
+  } else if((seat.interchangeableCerts || []).some(c => certSet.has(c))){
     score += (BAM_CONFIG.crewScorePreferredHit || 100);
   }
+  // Nice-to-have certs each contribute a stacking bonus.
   (seat.niceToHaveCerts || []).forEach(c => {
     if(certSet.has(c)) score += (BAM_CONFIG.crewScoreNiceToHaveHit || 25);
   });
@@ -782,7 +798,11 @@ function _scoreCandidateForSeat(person, seat, certSet){
   return score;
 }
 
-function _matchCrewToSeats(crew, unit){
+// opts: { skipOptional: bool } — when true, the second (optional) pass is
+// skipped entirely. Used by default-dispatch auto-fill when the unit type
+// has autoFillOptionalSeats === false (ambulance / police).
+function _matchCrewToSeats(crew, unit, opts){
+  const skipOptional = !!(opts && opts.skipOptional);
   const responderSeats = getResponderSeats(unit);
   const personCerts = new Map();
   (crew || []).forEach(p => personCerts.set(p.id, expandCertSet(p.certs)));
@@ -803,12 +823,7 @@ function _matchCrewToSeats(crew, unit){
       const scored = pool.map(seat => {
         const eligible = (crew || [])
           .filter(p => !usedIds.has(p.id))
-          .filter(p => {
-            if(seat.requiredCert){
-              return personCerts.get(p.id).has(seat.requiredCert);
-            }
-            return true;
-          })
+          .filter(p => _seatHardGateOk(personCerts.get(p.id), seat))
           .map(p => ({ p, score: _scoreCandidateForSeat(p, seat, personCerts.get(p.id)) }))
           .sort((a, b) => b.score - a.score);
         return { seat, eligible };
@@ -839,7 +854,14 @@ function _matchCrewToSeats(crew, unit){
   const requiredSeats = responderSeats.filter(s => !!s.requiredCert);
   const optionalSeats = responderSeats.filter(s => !s.requiredCert);
   passOver(requiredSeats);
-  passOver(optionalSeats);
+  if(skipOptional){
+    // Report optional seats as unfilled but don't try to fill them. The "ideal
+    // crew" gate uses the unit type's autoFillOptionalSeats flag to decide
+    // whether these count against the ideal status.
+    optionalSeats.forEach(s => unfilledOptional.push({ seatId: s.id, label: s.label }));
+  } else {
+    passOver(optionalSeats);
+  }
 
   return { assignments, seatAssignments, unfilledRequired, unfilledOptional };
 }
@@ -919,22 +941,32 @@ function hasMinimumCrew(unitId){
   };
 }
 
-// Backward-compat wrapper for "ideal crew met" — now "every responder seat
-// filled". Falling short still does NOT block dispatch; the apparatus rolls
-// once required seats are filled.
+// "Ideal crew" semantics — unit-type aware:
+//   • For unit types with autoFillOptionalSeats === false (ambulance, police):
+//     ideal = every requiredCert seat filled + driver present. Optional seats
+//     don't count against ideal (ambulance can ride with empty bench seats).
+//   • For unit types with autoFillOptionalSeats === true (fire apparatus):
+//     ideal = every responder seat filled (required + optional + driver).
+// Falling short of ideal does NOT block dispatch — the dispatch gate is
+// `hasRequiredSeatsFilled` (required + driver).
 function hasIdealCrew(unitId){
   const r = hasRequiredSeatsFilled(unitId);
+  const { unit } = _findUnitAndStation(unitId);
+  const fillsOptional = unitAutoFillsOptionalSeats(unit);
   const missing = {};
-  r.unfilledOptional.forEach(s => {
-    const key = s.label || s.seatId;
-    missing[key] = (missing[key] || 0) + 1;
-  });
-  // ALSO include required-seats missing — "ideal" implies the floor is met.
+  // Required shortfalls always count (ideal implies floor is met).
   r.unfilledRequired.forEach(s => {
     const key = s.label || s.requiredCert || s.seatId;
     missing[key] = (missing[key] || 0) + 1;
   });
-  const ok = r.ok && r.unfilledOptional.length === 0;
+  // Optional shortfalls only count for unit types that want them filled.
+  if(fillsOptional){
+    r.unfilledOptional.forEach(s => {
+      const key = s.label || s.seatId;
+      missing[key] = (missing[key] || 0) + 1;
+    });
+  }
+  const ok = r.ok && (!fillsOptional || r.unfilledOptional.length === 0);
   return {
     ok,
     missing,
@@ -1027,7 +1059,12 @@ function assignPersonnelToUnit(unitId, callId){
   // (They already flow through getCrewCandidatesForUnit because that path
   // honors p.pinnedUnitId === unitId. So no extra step here.)
 
-  const m = _matchCrewToSeats(candidatesWithMeta, unit);
+  // Honor the unit type's autoFillOptionalSeats flag — ambulances and police
+  // skip filling optional seats during default auto-dispatch (driver + EMT/
+  // medic only); fire apparatus fills everything if staff are available.
+  const m = _matchCrewToSeats(candidatesWithMeta, unit, {
+    skipOptional: !unitAutoFillsOptionalSeats(unit)
+  });
   const assigned = [];
   Object.entries(m.assignments).forEach(([seatId, personId]) => {
     const p = personnel.find(x => x.id === personId);
@@ -1082,33 +1119,25 @@ function getSeatingLayoutForUnit(unit){
   return {
     label: utCfg?.label || 'Apparatus',
     seats: [{ id:'driver', label:'Driver/Operator', isDriver:true,
-              requiredCert:null, preferredCerts:[], niceToHaveCerts:[] }]
+              requiredCert:null, interchangeableCerts:[], niceToHaveCerts:[] }]
   };
 }
 
-// Estimates a volunteer's distance + ETA from their current location to the
-// given station. Used by the crew picker to surface "Home (1.2 mi · 2m)" or
-// "Roaming (3.4 mi · 5m)" so the dispatcher sees the wait cost of picking a
-// volunteer vs. someone already at the station.
+// Estimates a volunteer's expected assembly time. Under the abstract model
+// this is no longer distance-based — it's the station's mean delay (multiplied
+// by the out-of-area factor when applicable). Returns { distanceMi, etaMin }
+// for back-compat with the crew picker UI, distanceMi always 0.
 //
-// Returns { distanceMi, etaMin } or null if the person has no usable location
-// (e.g., career personnel — they're at the station, not in transit).
+// Returns null for career personnel (they're at the station) or non-volunteers.
 function _estimateResponderTravel(person, station){
   if(!person || !station) return null;
   if(person.type !== 'volunteer') return null;
-  // Pick the location to measure from. Roaming volunteers may have a
-  // currentLocation in their availability block; otherwise we use their home.
-  const loc = person.availability?.currentLocation || person.home;
-  if(!loc || loc.lat == null || loc.lng == null) return null;
-  if(typeof haversineKm !== 'function') return null;
-  const distKm   = haversineKm(loc.lat, loc.lng, station.lat, station.lng);
-  const speedMph = BAM_CONFIG.volunteerResponseSpeedMph || 50;
-  const distMi   = distKm * 0.621371;
-  const etaMin   = (distKm / (speedMph * 1.60934)) * 60;
-  return {
-    distanceMi: distMi,
-    etaMin:     etaMin
-  };
+  if(typeof estimateVolunteerAssemblyMin === 'function'){
+    return estimateVolunteerAssemblyMin(person, station);
+  }
+  // Fallback if volunteers.js isn't loaded yet — use config defaults.
+  const meanMin = BAM_CONFIG.volunteerAssemblyMeanGameMin ?? 5;
+  return { distanceMi: 0, etaMin: meanMin };
 }
 
 // Returns every responder who could ride on this unit RIGHT NOW. Includes:
@@ -1141,34 +1170,23 @@ function getCrewCandidatesForUnit(unitId){
     if(p.stationId !== station.id) return;
     if(p.status !== 'available') return;
     if(p.pinnedUnitId != null && p.pinnedUnitId !== unitId) return;
-    let state, distanceMi = 0, etaMin = 0;
     if(p.type === 'volunteer'){
-      // Honor the same availability gate the auto-matcher uses so we don't
-      // surface a volunteer who'll fail the dispatch gate downstream.
+      // Availability gate (state-driven; no physical locations anymore).
       if(typeof isVolunteerAvailableNow === 'function' && !isVolunteerAvailableNow(p)) return;
-      const a = p.availability;
-      // Super-responder + forceAvailableUntil short-circuit to 'home' for UX —
-      // they'll respond regardless of state.
-      if(p.isSuperResponder){
-        state = 'home';
-      } else if(a?.currentState === 'roaming'){
-        state = 'roaming';
-      } else {
-        state = 'home';
-      }
-      const travel = _estimateResponderTravel(p, station);
-      if(travel){ distanceMi = travel.distanceMi; etaMin = travel.etaMin; }
+      // Picker metadata: state ('station' / 'home' / 'roaming') + the mean
+      // assembly delay for this station applied to this volunteer.
+      p._pickerMeta = (typeof decorateVolunteerCandidate === 'function')
+        ? decorateVolunteerCandidate(p, station)
+        : { state: 'home', distanceMi: 0, etaMin: 0, fitsSeats: null };
     } else {
       // Career personnel — must be on-duty per their shift schedule.
       if(typeof isOnDutyNow === 'function' && !isOnDutyNow(p)) return;
-      state = 'station';
+      p._pickerMeta = { state: 'station', distanceMi: 0, etaMin: 0, fitsSeats: null };
     }
-    // Shallow-attach picker metadata so the modal can render without
-    // re-querying. fitsSeats is left for the picker to populate per layout.
-    p._pickerMeta = { state, distanceMi, etaMin, fitsSeats: null };
     out.push(p);
   });
-  // Career-at-station first (zero wait), then home (closer first), then roaming.
+  // Career-at-station + already-at-station volunteers first (zero wait),
+  // then home, then roaming. Within tied states, lower ETA wins.
   out.sort((a, b) => {
     const order = { station:0, home:1, roaming:2 };
     const oa = order[a._pickerMeta.state] ?? 9;
@@ -1231,9 +1249,13 @@ function evaluateCrewSelection(unitId, personIdsOrMap){
         else                  unfilledOptional.push({ seatId:seat.id, label:seat.label });
         return;
       }
-      if(seat.requiredCert && !personHasCert(p, seat.requiredCert)){
-        unfilledRequired.push({ seatId:seat.id, requiredCert:seat.requiredCert, label:seat.label });
-        return;
+      if(seat.requiredCert){
+        // Hard gate satisfied by requiredCert OR any interchangeableCerts.
+        const certSet = expandCertSet(p.certs || []);
+        if(!_seatHardGateOk(certSet, seat)){
+          unfilledRequired.push({ seatId:seat.id, requiredCert:seat.requiredCert, label:seat.label });
+          return;
+        }
       }
       assignments[seat.id] = p.id;
     });
@@ -1245,7 +1267,10 @@ function evaluateCrewSelection(unitId, personIdsOrMap){
   }
 
   const minMet   = unfilledRequired.length === 0;
-  const idealMet = minMet && unfilledOptional.length === 0;
+  // idealMet semantics are unit-type-aware: ambulance / police only need
+  // required seats; fire apparatus need every seat filled.
+  const fillsOptional = unitAutoFillsOptionalSeats(unit);
+  const idealMet = minMet && (!fillsOptional || unfilledOptional.length === 0);
   const missingMap = {};
   unfilledRequired.forEach(s => {
     const k = s.label || s.requiredCert || s.seatId;
@@ -1425,6 +1450,36 @@ function renderStationPersonnelSummaryHTML(s){
     </div>`;
   }
 
+  // Volunteer assembly delay block — visible only for stations that have
+  // (or could have) volunteers. The window is editable as mean ± spread game
+  // minutes; "Reset" returns to config defaults.
+  let assemblyBlock = '';
+  if(stType === 'volunteer' || stType === 'combination'){
+    if(typeof ensureStationAssemblyDefaults === 'function') ensureStationAssemblyDefaults(s);
+    const win = (typeof getStationAssemblyDelay === 'function')
+      ? getStationAssemblyDelay(s)
+      : { meanGameMin: 5, spreadGameMin: 2 };
+    assemblyBlock = `
+      <div style="margin-top:8px;padding:7px 9px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:4px;">
+        <div style="font-size:.72rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Volunteer Assembly Delay</div>
+        <div style="display:flex;gap:8px;align-items:center;font-size:.78rem;flex-wrap:wrap;">
+          <span>Mean</span>
+          <input type="number" min="0.5" max="60" step="0.5" value="${win.meanGameMin}"
+            onchange="setStationVolunteerAssembly('${s.id}', 'meanGameMin', this.value)"
+            style="width:64px;"/>
+          <span>±</span>
+          <input type="number" min="0" max="30" step="0.5" value="${win.spreadGameMin}"
+            onchange="setStationVolunteerAssembly('${s.id}', 'spreadGameMin', this.value)"
+            style="width:64px;"/>
+          <span>game min</span>
+          <button class="btn-sm" onclick="resetStationVolunteerAssembly('${s.id}')" title="Reset to config defaults">Reset</button>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:3px;">
+          Each paged volunteer rolls a personal delay from this window. Out-of-area responders take ${BAM_CONFIG.volunteerOutOfAreaMultiplier ?? 1.5}× longer.
+        </div>
+      </div>`;
+  }
+
   return `<div class="section-title" style="margin-top:0;">Personnel</div>
     <div style="display:grid;grid-template-columns:max-content 1fr;gap:4px 10px;font-size:.82rem;align-items:center;">
       <label class="field-label" style="margin:0;">Staffing Type</label>
@@ -1448,8 +1503,34 @@ function renderStationPersonnelSummaryHTML(s){
         ${stationDaily > 0 ? `<span style="color:var(--muted);font-size:.7rem;"> · $${(stationDaily * 365).toLocaleString()}/yr</span>` : ''}
       </div>
     </div>
+    ${assemblyBlock}
     ${mismatchBanner}
     ${renderStationCertBreakdownHTML(s.id)}`;
+}
+
+// Public — wired to the station-modal Assembly Delay inputs. Clamps to a sane
+// range and re-renders the station modal so the new value is reflected.
+function setStationVolunteerAssembly(stationId, field, rawValue){
+  const s = (typeof stations !== 'undefined' ? stations : []).find(x => x.id === stationId);
+  if(!s) return;
+  if(typeof ensureStationAssemblyDefaults === 'function') ensureStationAssemblyDefaults(s);
+  if(!s.volunteerAssembly) s.volunteerAssembly = {};
+  let v = parseFloat(rawValue);
+  if(!isFinite(v) || v < 0) v = 0;
+  if(field === 'meanGameMin')   s.volunteerAssembly.meanGameMin   = Math.min(60, Math.max(0.5, v));
+  if(field === 'spreadGameMin') s.volunteerAssembly.spreadGameMin = Math.min(30, Math.max(0,   v));
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+
+// Resets the station's assembly window to the global config defaults.
+function resetStationVolunteerAssembly(stationId){
+  const s = (typeof stations !== 'undefined' ? stations : []).find(x => x.id === stationId);
+  if(!s) return;
+  s.volunteerAssembly = {
+    meanGameMin:   BAM_CONFIG.volunteerAssemblyMeanGameMin   ?? 5,
+    spreadGameMin: BAM_CONFIG.volunteerAssemblySpreadGameMin ?? 2,
+  };
+  if(typeof _renderManageBody === 'function') _renderManageBody();
 }
 
 // Phase 5 bugfix — easy-to-read summary of the certifications held at this
@@ -1799,12 +1880,8 @@ function _convertStationRosterToType(stationId, newType){
     p.playerEdited = true;
     justConverted.push(p);
   });
-  // Seed home for any newly-minted volunteers that don't have one yet.
-  // Phase 5 bugfix — work locations removed; home is the only persistent loc.
-  const needLocations = justConverted.filter(p => p.type === 'volunteer' && !p.home);
-  if(needLocations.length && typeof _seedVolunteerLocations === 'function'){
-    _seedVolunteerLocations(needLocations);
-  }
+  // Volunteer locations are no longer tracked (abstract assembly refactor).
+  // Nothing to seed — the conversion is complete.
   return justConverted.length;
 }
 
@@ -2013,19 +2090,18 @@ function _renderPersonnelDetails(){
       </select>`
     : '';
 
-  // Volunteer block: home, PPE, super, availability state, auto-migrated banner.
-  // Phase 5 bugfix — work-location row removed; volunteers only have a home now.
-  // The legacy reliability slider was replaced by the new hourly-state model.
+  // Volunteer block: PPE, super-responder, availability state.
+  // Volunteers no longer have physical home locations (abstract assembly refactor).
   let volBlock = '';
   if(p.type === 'volunteer'){
-    const homeStr = p.home ? `${p.home.lat.toFixed(5)}, ${p.home.lng.toFixed(5)}${p.home.isFallback ? ' <span style="color:var(--gold);font-size:.7rem;">(road-snap fallback)</span>' : ''}` : '<span style="color:var(--muted);">— not set —</span>';
     const ppeShow    = (p.certs || []).some(c => c === 'ff1' || c === 'ff2' || c === 'fire_exterior' || c === 'fire_support');
     // Current availability state — rolled hourly. Player can force-available
     // for the next 1/4/8 hours; clearing the override lets the next hourly
     // roll decide again.
     const a = p.availability || {};
-    const stateText = a.currentState === 'home'      ? '<span style="color:var(--green);">Available — at home</span>'
-                    : a.currentState === 'roaming'   ? '<span style="color:var(--green);">Available — in coverage</span>'
+    const stateText = a.currentState === 'home'       ? '<span style="color:var(--green);">At Home — available</span>'
+                    : a.currentState === 'roaming'    ? '<span style="color:var(--gold);">Out of Area — available</span>'
+                    : a.currentState === 'at_station' ? '<span style="color:var(--green);">At Station — already on site</span>'
                     : a.currentState === 'unavailable' ? '<span style="color:var(--muted);">Unavailable</span>'
                     : '<span style="color:var(--muted);">—</span>';
     const nowAbs = (typeof gameDay !== 'undefined' && typeof gameSeconds !== 'undefined')
@@ -2034,22 +2110,9 @@ function _renderPersonnelDetails(){
     const overrideRemHr = overrideActive
       ? Math.max(0, (a.forceAvailableUntil - nowAbs) / 3600).toFixed(1) : null;
 
-    const ackBanner = p.autoMigratedFlag
-      ? `<div style="margin-top:6px;padding:7px 10px;background:rgba(251,191,36,0.12);border:1px solid var(--gold);border-radius:4px;font-size:.78rem;">
-          ⚠ Home auto-migrated after an ESN polygon change.
-          <button class="btn-sm" style="margin-left:8px;" onclick="_acknowledgeAutoMigration('${p.id}')">Acknowledge</button>
-        </div>`
-      : '';
-
     volBlock = `
       <div class="section-title" style="margin-top:14px;">Volunteer Settings</div>
-      ${ackBanner}
       <div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;font-size:.82rem;align-items:center;">
-        <div style="color:var(--muted);">Home</div>
-        <div>${homeStr}
-          <button class="btn-sm" style="margin-left:6px;" onclick="_volunteerRegenHome('${p.id}')">Regenerate</button>
-          <button class="btn-sm" onclick="beginVolunteerLocationPick('${p.id}','home'); closePersonnelDetails();" title="Click map to set home">Set via map click</button>
-        </div>
         ${ppeShow ? `
         <div style="color:var(--muted);">PPE in vehicle</div>
         <div>
@@ -2219,7 +2282,7 @@ function _personDetailsForceAvailable(id, hours){
   const p = getPersonnelById(id);
   if(!p) return;
   if(!p.availability) p.availability = {
-    currentState: 'home', currentLocation: null, nextRollGameHour: 0,
+    currentState: 'home', nextRollGameHour: 0,
     schedule: [], forceAvailableUntil: null
   };
   const nowAbs = (typeof gameDay !== 'undefined' && typeof gameSeconds !== 'undefined')
@@ -2228,8 +2291,7 @@ function _personDetailsForceAvailable(id, hours){
   // Immediately apply the forced state so the player doesn't have to wait for
   // the next hourly tick to see the change reflected in the UI.
   p.availability.currentState = 'home';
-  p.availability.currentLocation = null;
-  p.isCustomized = true; p.playerEdited = true;
+  p.playerEdited = true;
   if(typeof _renderPersonnelDetails === 'function') _renderPersonnelDetails();
   if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
 }
@@ -2244,25 +2306,12 @@ function _personDetailsClearForceAvailable(id){
   if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
 }
 
-async function _volunteerRegenHome(id){
-  const p = getPersonnelById(id);
-  if(!p) return;
-  setStatus('Regenerating home…');
-  await generateVolunteerHome(p);
-  if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-  _renderPersonnelDetails();
-}
-// Phase 5 bugfix — work-location regenerator removed; kept as deprecated no-op
-// so any lingering UI handler doesn't throw if invoked from an old screen.
-async function _volunteerRegenWork(){ /* removed in Phase 5 bugfix */ }
-
-function _acknowledgeAutoMigration(id){
-  const p = getPersonnelById(id);
-  if(!p) return;
-  p.autoMigratedFlag = false; p.playerEdited = true;
-  _renderPersonnelDetails();
-  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
-}
+// Volunteer home regeneration removed — volunteers no longer have physical
+// home locations under the abstract-assembly refactor. Stubs kept so any
+// lingering UI handler from an old layout doesn't throw on call.
+async function _volunteerRegenHome(){ /* removed — see volunteers.js refactor */ }
+async function _volunteerRegenWork(){ /* removed in earlier Phase 5 bugfix */ }
+function _acknowledgeAutoMigration(){ /* removed — auto-migration is gone */ }
 
 function _personDetailsResetStats(id){
   const p = getPersonnelById(id);
@@ -2670,15 +2719,8 @@ function _confirmAddPersonnel(){
     if(!rec) return;
     hired = [rec];
   }
-  // Phase 5 bugfix — auto-generate home for every volunteer hire. Async,
-  // best-effort — failures fall back to road-snapped random per volunteers.js.
-  // Work locations were removed; only home is seeded now.
-  if(type === 'volunteer' && typeof generateVolunteerHome === 'function'){
-    Promise.all(hired.map(p => generateVolunteerHome(p))).then(() => {
-      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
-    });
-  }
+  // Volunteer home seeding removed — abstract-assembly refactor dropped
+  // physical home locations.
   closeAddPersonnelModal();
   if(typeof _renderManageBody === 'function')   _renderManageBody();
   if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();

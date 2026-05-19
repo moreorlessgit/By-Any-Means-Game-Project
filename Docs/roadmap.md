@@ -104,10 +104,10 @@ Phase 5 introduces individual named personnel, certifications, crew composition 
 - **5A** — Unit List + Unit Details modals + dispatch center unit prefixes (pure UI) ✅
 - **5B** — Career personnel + cert taxonomy + crew slot rules + min/ideal crew dispatch gating ✅
 - **5C** — Training system + career shifts + ranks + cashflow integration ✅
-- **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits ✅
+- **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits ✅ *(later replaced by an abstract-assembly model — per-station mean ± spread delay window, no map travel. OSM cache retained dormant. See history.md.)*
 - **5E** — Stats, career history, NIMS/ICS officer ratios, Database Health panel, polish ✅
 
-**Phase 5 complete.** Personnel substrate ready for the post-Phase-5 call resolution overhaul.
+**Phase 5 complete.** Personnel substrate ready for the post-Phase-5 call resolution overhaul. The volunteer subsystem was subsequently simplified to abstract assembly (no map locations / OSRM routing) — see history.md "Phase 5+ Volunteer Abstract-Assembly Refactor + Seat Schema Rework."
 
 **Multiplayer integration:** Personnel records stay private to the owning player. On shared calls (Phase 4C), only aggregated crew composition is broadcast (e.g. "Engine 5 with 4 crew: 1 D/O, 2 FF1, 1 FF1/EMT").
 

@@ -280,9 +280,11 @@ function confirmStation(){
     units:[firstUnit], marker, upgrades:[], inService:true,
     preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
     stationType,                    // Phase 5D — picked at creation time
-    // station-level idealCrewWaitMs retired — replaced by the global
-    // BAM_CONFIG.volunteerAssemblyMaxGameMin tunable for the new seat-based gate.
-    shifts: []                      // Phase 5C — custom shift templates owned by this station
+    shifts: [],                     // Phase 5C — custom shift templates
+    // Per-station volunteer assembly delay (game minutes). Only meaningful
+    // for volunteer/combination stations; null until first opened. Seeded
+    // from config defaults in the station modal.
+    volunteerAssembly: null
   };
 
   stations.push(station);
@@ -765,6 +767,10 @@ function recreateStation(s){
     preferredDCId:   s.preferredDCId   || null,       // Phase 5A
     stationType:     s.stationType     || 'career',   // Phase 5B — defaults career on legacy saves
     shifts:          s.shifts          || [],         // Phase 5C — custom shift templates
+    // Per-station volunteer assembly delay window (game minutes). Seeded from
+    // config defaults the first time a station is loaded; player-editable in
+    // the station modal. Carries through saves verbatim once set.
+    volunteerAssembly: s.volunteerAssembly || null,
     _holdingCells: s._holdingCells || undefined,
     units: s.units.map(u => {
       // Strip retired fields from legacy saves: crewMin, crewIdeal,

@@ -388,7 +388,10 @@ personnel_certifications (
   PRIMARY KEY (personnel_id, certification_id)
 )
 
--- OSM building cache: per-ESN cached candidate buildings for volunteer home/work placement
+-- OSM building cache: per-ESN cached candidate buildings.
+-- Originally built for volunteer home/work placement (pre-refactor 5D); current
+-- design has no live consumer but retains the schema for future POI/call-generation
+-- features (POI-driven incident spawning).
 -- TTL 30 days, invalidated on ESN polygon edit; see docs/data-lifecycle.md
 osm_building_cache (
   id              SERIAL PRIMARY KEY,

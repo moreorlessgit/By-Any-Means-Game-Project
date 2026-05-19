@@ -348,3 +348,47 @@ Heaviest sub-phase. Volunteers respond from OSM-derived home/work locations, wit
 - **Call spawn rate** — `spawn.intervalMinMs` / `intervalMaxMs` retuned from 90s–180s to 240s–360s (~1 call every 5 minutes on average).
 
 *Last updated: 2026-05-18. Crew-Select Dispatch, seating layouts moved into unit configs, Unit Details seating section, two crew-continuity bug fixes on mid-cycle redispatch, call spawn rate retuned.*
+
+---
+
+## Phase 5+ Volunteer Abstract-Assembly Refactor + Seat Schema Rework ✅
+
+Post-Phase-5 cleanup. The 5D volunteer system shipped with OSM-derived home/work locations, OSRM-routed map travel, and live response markers. In practice it produced too many failure modes (OSRM stalls, marker churn, awkward map clutter, save bloat from per-person lat/lons) for the modest gameplay payoff. This batch tears that out and replaces it with an **abstract assembly** model, and simultaneously reworks the seat schema so the dispatch gate is easier to reason about.
+
+### Volunteer abstract-assembly model (`volunteers.js` ~halved in size)
+
+- **Removed entirely.** `person.home`, `person.work`, `person.currentLocation`, `person.isCustomized`. Functions: `generateVolunteerHome`, `generateVolunteerWork`, `_pickRoamingLocationFor`, `dispatchVolunteer` (the OSRM-routed responder animation), `_snapToNearestRoad`, `autoMigrateVolunteersForESN`, `refreshVolunteerLocationMarkers`, `_volunteerHomeMarkers`, `_volunteerLiveMarkers`, `setVolunteerLayerVisible`, `beginVolunteerLocationPick` and the entire map-click home-pick toolbar flow. Map layer toggles for Volunteer Responders / Homes / Works are gone.
+- **No-op stubs retained.** `generateVolunteerHome`, `generateVolunteerWork`, `autoMigrateVolunteersForESN`, `refreshVolunteerLocationMarkers`, `setVolunteerLayerVisible`, `beginVolunteerLocationPick`, `cancelVolunteerLocationPick` all return safely so any lingering external caller doesn't throw. Will be deleted once every call site is cleaned.
+- **Per-station assembly window.** Each volunteer station carries `station.volunteerAssembly = { meanGameMin, spreadGameMin }`. Defaults from `BAM_CONFIG.volunteerAssemblyMeanGameMin` (5) and `volunteerAssemblySpreadGameMin` (2). `ensureStationAssemblyDefaults(station)` seeds when the station is first volunteer-flagged; player edits the window from the station modal.
+- **Personal assembly timer.** `rollVolunteerAssemblyDelaySec(person, station)` draws a uniform delay in `[mean-spread, mean+spread]` minutes (floor 30 game-sec). Roaming responders multiply by `BAM_CONFIG.volunteerOutOfAreaMultiplier` (default 1.5). `at_station` responders skip the timer entirely.
+- **New hourly availability state — `at_station`.** Hourly roll (`recomputeVolunteerAvailabilityHour`) adds a rare outcome (`volunteerAtStationHourlyChance`, default 0.02) where the volunteer is already at the station for the whole hour. Plus the existing `home`, `roaming`, `unavailable` outcomes.
+- **Per-call status flow.** `available → responding` (paged, personal timer running) → `at_station` (timer elapsed, counted toward the crew gate). The apparatus rolls when every required seat has an `at_station` responder.
+- **`triggerVolunteerStationResponse()` rewritten.** Now drives per-volunteer timers via a single 250ms poller. Resolution shape gains `leftBehind` (responders whose timer hadn't elapsed when the apparatus rolled at the timeout cap — they continue running their timer and enter linger when it elapses, rather than being counted as no-shows). `tickVolunteerStationLinger()` runs every game-tick to handle late arrivals + clear expired linger stamps.
+- **Force-out simplified.** `forceVolunteerCrewDeparture` no longer does a positional radius check. "At station" means: career on-duty here, OR a volunteer in per-call status `at_station`.
+- **Direct-to-scene is cert-based.** `evaluateDirectToSceneEligibility` no longer uses location at all — eligibility is purely cert + incident type + PPE-in-vehicle flag.
+- **Save-load migration.** `purgeLegacyVolunteerFields(person)` strips `home`, `work`, `currentLocation`, `isCustomized`, `wayId`, `isFallback`, `availability.currentLocation` from pre-refactor saves so they rehydrate cleanly.
+- **Config additions.** `volunteerAssemblyMeanGameMin`, `volunteerAssemblySpreadGameMin`, `volunteerOutOfAreaMultiplier`, `volunteerAssemblyFailGameMin`, `volunteerFailedAssemblyLingerGameMin`, `volunteerAtStationHourlyChance`. Legacy aliases `volunteerAssemblyMaxGameMin` (10) and `volunteerStationLingerGameMin` (30) retained so saves predating the rename still load.
+- **Config removed.** `osrmNearestEndpoint`, `volunteerDefaultReliability`, `volunteerResponseSpeedMph`, `volunteerOriginFreezeWatchdogGameSec`.
+
+### OSM building cache — retained dormant
+- The per-ESN `osmBuildingCache` is still built and persisted in the save blob. It has no live consumer under the abstract-assembly model. Kept because future POI-driven call generation (structure fires at real commercial buildings, MVAs at known intersections) is the cheapest plug-in point. "Rebuild Building Cache" buttons in the ESN modal + Database Health panel still work. 30-real-day TTL + 30-sec per-ESN rebuild cooldown unchanged.
+
+### Seat schema rework (`config.js`)
+
+- **`preferredCerts` retired.** Replaced by **`interchangeableCerts: string[]`** — an array of certs that ALSO satisfy a seat's `requiredCert` hard gate. Use when several certs are equally acceptable (e.g., a fire cab seat that accepts `fire_support` OR `fire_exterior` OR `ff1` OR `ff2`). Eliminates the prior soft/hard distinction confusion — every gate-relevant cert now lives on `requiredCert + interchangeableCerts`, and `niceToHaveCerts` is pure scoring bonus.
+- **New per-unit-type flag — `autoFillOptionalSeats`.** `true` (fire apparatus) means default-dispatch auto-fill should fill EVERY responder seat, and ideal-crew status requires every seat filled. `false` (ambulances, patrol cars, K9, fly cars, paddy wagons, helicopters) means default-dispatch fills only required seats + driver; optional seats stay empty. Ambulances ride 2-person, single-officer patrol is normal, etc.
+- **Most fire seats gained a hard gate.** Officer / Cab Seat 1 / Cab Seat 2 on engines, ladders, tankers, brush trucks, rescues, and rescue-engines now carry `requiredCert: 'fire_support'` with `interchangeableCerts` covering FF1/FF2/Exterior/Wildland/Fire Officer/Rescue Tech etc. as appropriate. Pure spectator fire seats are gone — every fire seat that's expected to do work has at least the fireground-support floor.
+- **Driver seats unchanged.** Driver hard gate is still `evoc_small` or `evoc_large`. `niceToHaveCerts` on driver seats reorganized — `pump_ops_1`, `aerial_operator`, fire support certs all moved off `preferredCerts` and onto `niceToHaveCerts`.
+- **Air medical seat — `medic_2` is optional.** `medic_1` keeps its `paramedic` hard gate with `interchangeableCerts` `[ccp, phrn]`. `medic_2` is now a pure-bonus seat. Combined with `autoFillOptionalSeats: false`, flight ops launch with a pilot + one medic + stretcher; second medic is optional.
+- **Police seats restructured.** Driver hard-gate cert is EVOC; `interchangeableCerts` carries `patrol_officer` / `patrol_supervisor` / `k9_handler` so the EVOC requirement doesn't accidentally exclude a tenured officer. Front-passenger seats are pure-bonus (single-officer patrol is the default).
+- **Dispatch gate semantics unchanged.** Apparatus rolls when every seat with `requiredCert` is filled by someone whose certs satisfy it (direct hit, `interchangeableCerts` hit, or `satisfies` chain). Optional seats do NOT block dispatch.
+
+### Crew-Select modal — seats start empty
+- `openCrewSelectModal()` no longer auto-seeds seats with best-fit candidates. The player picks every seat manually. `_csAutoSeedAssignments()` is retained in case a future "Auto-fill" button wants it, but is no longer wired into modal open.
+- New helper `_csCollectAllUsedIds()` ensures a responder placed on apparatus A disappears from apparatus B's pool — the same person can't ride two trucks at once.
+- Picker's `_pickerMeta` shape changed: `distanceMi` is always 0 (no physical position); `etaMin` carries the per-station assembly delay with the out-of-area multiplier applied for roaming responders.
+
+### Adjacent fixes bundled in this batch
+- **Crew scoring tunable.** `crewScorePreferredHit` is now the points awarded for satisfying the hard gate (was for any `preferredCerts` hit). Other scoring tunables unchanged.
+
+*Last updated: 2026-05-19. Volunteer system collapsed to abstract assembly; seat schema reworked to `requiredCert + interchangeableCerts + niceToHaveCerts`; per-unit-type `autoFillOptionalSeats` flag added; OSM cache retained dormant for future POI/call-generation features.*

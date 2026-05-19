@@ -42,7 +42,11 @@
       "Bash(node --check /d/By-Any-Means-Game-Project/units.js)",
       "Bash(node --check d:/By-Any-Means-Game-Project/config.js)",
       "Bash(node --check d:/By-Any-Means-Game-Project/personnel.js)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(cd /d)",
+      "Read(//d//**)",
+      "Bash(Get-ChildItem -Path 'd:\\\\By-Any-Means-Game-Project' -Recurse -Filter '*.js' -Exclude 'node_modules')",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

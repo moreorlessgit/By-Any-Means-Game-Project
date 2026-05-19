@@ -70,7 +70,8 @@ These will be created only when a system grows too large to logically live in an
 
 ```
   units.js            — ✅ LIVE (5A) — display layer + Unit List + Unit Details modal
-  personnel.js        — ✅ LIVE (5B) — career personnel, cert taxonomy, crew matcher, Personnel tab; volunteers join in 5D
+  personnel.js        — ✅ LIVE — career personnel, cert taxonomy, crew matcher, Personnel tab, volunteer-aware crew helpers (post-refactor: assembly-delay aware, no location)
+  volunteers.js       — ✅ LIVE — OSM building cache (dormant; retained for future POI features), volunteer hourly availability state, abstract assembly orchestration, direct-to-scene eligibility, force-out
 ```
 
 ### Phase 6 — CAD

@@ -270,6 +270,13 @@
     .modal-header .modal-sub{font-size:.8rem;color:var(--muted);margin-top:2px;}
     .modal-body{flex:1;overflow-y:auto;padding:12px 16px;}
     .modal-footer{padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:10px;}
+    /* Unit Details modal: two-column body. Columns scroll independently. */
+    .udm-2col{display:grid;grid-template-columns:1fr 1fr;gap:14px;flex:1;min-height:0;padding:14px 16px;}
+    .udm-2col > .udm-col{overflow-y:auto;min-height:0;padding-right:4px;}
+    @media (max-width: 720px){
+      .udm-2col{grid-template-columns:1fr;overflow-y:auto;}
+      .udm-2col > .udm-col{overflow-y:visible;}
+    }
     label.field-label{display:block;font-size:.8rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:3px;margin-top:10px;}
     input,select{
       width:100%;background:var(--bg);border:1px solid var(--border);
@@ -2396,12 +2403,13 @@ function openCrewSelectModal(){
   _csAssignments = Object.create(null);
   _csOverrides   = new Set();
   _csCandidates  = Object.create(null);
-  // Pre-fetch candidate list and seed each unit with auto-best-fit assignments
-  // as a starting point. The player can swap freely from there.
+  // Pre-fetch candidate list. Seats start EMPTY so the player picks manually.
+  // _csAutoSeedAssignments() is retained in case a future "Auto-fill" button
+  // wants it but is no longer wired on modal open.
   _csUnitIds.forEach(uid => {
     _csCandidates[uid] = (typeof getCrewCandidatesForUnit === 'function')
       ? getCrewCandidatesForUnit(uid) : [];
-    _csAssignments[uid] = _csAutoSeedAssignments(uid, _csCandidates[uid]);
+    _csAssignments[uid] = {};
   });
   document.getElementById('cs-sub').textContent =
     `${inc.label} — ${_csUnitIds.length} apparatus to staff`;
@@ -2432,28 +2440,33 @@ function _csAutoSeedAssignments(unitId, candidates){
   if(!unit) return {};
   const layout = getSeatingLayoutForUnit(unit);
   // Seat-based auto-seed: required seats first (driver + any seat with
-  // requiredCert), then optional seats. Within each, the picker prefers a
-  // candidate matching the seat's preferredCerts. Patient/prisoner seats are
-  // skipped — responders cannot occupy them.
+  // requiredCert), then optional seats. Required seats accept a candidate
+  // satisfying requiredCert OR any interchangeableCerts. Optional seats are
+  // scored by niceToHaveCerts hits, falling back to any free candidate.
+  // Retained for future use; no longer called on modal open.
   const responderSeats = (layout.seats || []).filter(s =>
     !s.isPatientSeat && !s.isPrisonerSeat);
   const used = new Set();
   const out  = {};
+  const _gateOk = (person, seat) => {
+    if(!seat.requiredCert) return true;
+    if(personHasCert(person, seat.requiredCert)) return true;
+    return (seat.interchangeableCerts || []).some(c => personHasCert(person, c));
+  };
   const seatsByPriority = responderSeats.slice().sort((a, b) => {
-    // requiredCert seats first, then preferredCerts-bearing, then bare
-    const score = (s) => (s.requiredCert ? 2 : 0) + ((s.preferredCerts || []).length ? 1 : 0);
+    const score = (s) => (s.requiredCert ? 2 : 0) + ((s.niceToHaveCerts || []).length ? 1 : 0);
     return score(b) - score(a);
   });
   seatsByPriority.forEach(seat => {
     let pick = null;
     if(seat.requiredCert){
-      pick = candidates.find(p => !used.has(p.id) && personHasCert(p, seat.requiredCert));
+      pick = candidates.find(p => !used.has(p.id) && _gateOk(p, seat));
       if(!pick) return;  // can't fill required seat — leave empty so banner flags it
     } else {
-      const needs = seat.preferredCerts || [];
-      if(needs.length){
+      const nice = seat.niceToHaveCerts || [];
+      if(nice.length){
         pick = candidates.find(p => !used.has(p.id) &&
-          needs.some(c => personHasCert(p, c)));
+          nice.some(c => personHasCert(p, c)));
       }
       if(!pick) pick = candidates.find(p => !used.has(p.id));
     }
@@ -2463,6 +2476,20 @@ function _csAutoSeedAssignments(unitId, candidates){
     }
   });
   return out;
+}
+
+// Returns the Set of every personId currently assigned to any seat on any
+// apparatus in the modal. Used so a responder placed on unit A disappears
+// from unit B's pool — the same person can't ride two trucks at once.
+function _csCollectAllUsedIds(){
+  const used = new Set();
+  for(const uid of _csUnitIds){
+    const a = _csAssignments[uid] || {};
+    for(const pid of Object.values(a)){
+      if(pid) used.add(pid);
+    }
+  }
+  return used;
 }
 
 function _renderCrewSelectBody(){
@@ -2483,8 +2510,8 @@ function _renderCrewSelectUnitCard(unitId){
   const assignments = _csAssignments[unitId] || {};
   const candidates  = _csCandidates[unitId]  || [];
   // Evaluate as a seat map so the picker scores each seat assignment against
-  // its requiredCert/preferredCerts. The evaluator returns a banner-friendly
-  // shape: hasDriver / minMet / idealMet / missing / idealMissing.
+  // its requiredCert + interchangeableCerts. The evaluator returns a banner-
+  // friendly shape: hasDriver / minMet / idealMet / missing / idealMissing.
   const evalRes = (typeof evaluateCrewSelection === 'function')
     ? evaluateCrewSelection(unitId, assignments)
     : { ok:true, hasDriver:true, minMet:true, idealMet:true, missing:{}, idealMissing:{} };
@@ -2543,18 +2570,27 @@ function _renderCrewSelectUnitCard(unitId){
     const occupantId = assignments[seat.id] || null;
     const occupant   = occupantId ? personnel.find(p => p.id === occupantId) : null;
     const reqCert    = seat.requiredCert || null;
-    // Per-seat dropdown — only candidates who satisfy requiredCert (if any).
+    // Per-seat dropdown. A candidate is hidden if they're already seated on
+    // ANY apparatus in this modal (other than the current seat).
     const optHtml = [
       `<option value="">— empty —</option>`,
       ...candidates.map(p => {
-        const isUsedElsewhere = Object.entries(assignments).some(
+        const isUsedHereOtherSeat = Object.entries(assignments).some(
           ([sid, pid]) => pid === p.id && sid !== seat.id);
-        if(isUsedElsewhere) return '';
+        const isUsedOnOtherUnit = (function(){
+          for(const otherUid of _csUnitIds){
+            if(otherUid === unitId) continue;
+            const other = _csAssignments[otherUid] || {};
+            if(Object.values(other).includes(p.id)) return true;
+          }
+          return false;
+        })();
+        if(isUsedHereOtherSeat || isUsedOnOtherUnit) return '';
         const sel = occupantId === p.id ? ' selected' : '';
         const meta = p._pickerMeta || {};
-        const locTxt = meta.state === 'station' ? 'Station'
-          : meta.state === 'home'    ? `Home ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
-          : meta.state === 'roaming' ? `Roaming ${meta.distanceMi ? '· ' + meta.distanceMi.toFixed(1)+'mi' : ''}`
+        const locTxt = meta.state === 'station' ? 'At Station'
+          : meta.state === 'home'    ? `At Home · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m`
+          : meta.state === 'roaming' ? `Out of Area · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m`
           : '';
         // Mark candidates that fail the requiredCert — still selectable so
         // the player can see the gap but the banner will flag it.
@@ -2570,16 +2606,16 @@ function _renderCrewSelectUnitCard(unitId){
       const reqOk = !reqCert || occCertSet.has(reqCert);
       const certBadges = (occupant.certs || []).slice(0, 5).map(c => {
         const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
-        const isReq  = reqCert && c === reqCert;
-        const isPref = (seat.preferredCerts || []).includes(c);
-        const isNice = (seat.niceToHaveCerts || []).includes(c);
-        const cls = isReq ? 'driver' : (isPref ? 'fits' : (isNice ? 'fits' : ''));
+        const isReq   = reqCert && c === reqCert;
+        const isInter = (seat.interchangeableCerts || []).includes(c);
+        const isNice  = (seat.niceToHaveCerts || []).includes(c);
+        const cls = isReq ? 'driver' : (isInter ? 'fits' : (isNice ? 'fits' : ''));
         return `<span class="cs-cert-chip ${cls}">${_escCsHtml(lbl)}</span>`;
       }).join('');
       const meta   = occupant._pickerMeta || {};
-      const locTxt = meta.state === 'station' ? 'Station'
-        : meta.state === 'home'    ? `Home · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m`
-        : meta.state === 'roaming' ? `Roaming · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m`
+      const locTxt = meta.state === 'station' ? 'At Station'
+        : meta.state === 'home'    ? `At Home · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m`
+        : meta.state === 'roaming' ? `Out of Area · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m`
         : '';
       occupantHtml = `<div>
         <div class="cs-seat-occupant">
@@ -2594,17 +2630,22 @@ function _renderCrewSelectUnitCard(unitId){
     const filledCls = occupant ? ' filled' : '';
     const driverCls = isDriverSeat ? ' driver' : '';
     const reqLabel  = reqCert ? (BAM_CONFIG.certifications?.[reqCert]?.label || reqCert) : null;
-    const prefLbl   = (seat.preferredCerts || []).map(c =>
+    const interLbl  = (seat.interchangeableCerts || []).map(c =>
       BAM_CONFIG.certifications?.[c]?.label || c).join(', ');
     const niceLbl   = (seat.niceToHaveCerts || []).map(c =>
       BAM_CONFIG.certifications?.[c]?.label || c).join(', ');
     const seatHints = [
       reqLabel ? `<span class="seat-hint" style="color:var(--accent);"><b>Required:</b> ${_escCsHtml(reqLabel)}</span>` : '',
-      prefLbl  ? `<span class="seat-hint">Prefers: ${_escCsHtml(prefLbl)}</span>` : '',
-      niceLbl  ? `<span class="seat-hint" style="color:var(--muted);">Nice: ${_escCsHtml(niceLbl)}</span>` : ''
+      interLbl ? `<span class="seat-hint">Also accepts: ${_escCsHtml(interLbl)}</span>` : '',
+      niceLbl  ? `<span class="seat-hint" style="color:var(--muted);">Nice to have: ${_escCsHtml(niceLbl)}</span>` : ''
     ].filter(Boolean).join(' · ');
+    // When the seat is occupied, the info area becomes clickable and unassigns
+    // the responder back to the pool. The dropdown still works for swap-pick.
+    const infoClick = occupant
+      ? ` onclick="_csUnassignSeat('${unitId}','${seat.id}')" style="flex:1;min-width:0;cursor:pointer;" title="Click to send back to pool"`
+      : ` style="flex:1;min-width:0;"`;
     return `<div class="cs-seat-row${filledCls}${driverCls}">
-      <div style="flex:1;min-width:0;">
+      <div${infoClick}>
         <div class="cs-seat-label">${_escCsHtml(seat.label)}${isDriverSeat ? ' <span style="color:var(--gold);font-size:.65rem;">★ DRIVER</span>' : ''}
           ${seatHints ? `<div style="font-size:.7rem;margin-top:1px;">${seatHints}</div>` : ''}
         </div>
@@ -2612,28 +2653,30 @@ function _renderCrewSelectUnitCard(unitId){
       </div>
       <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;">
         <select class="cs-seat-picker" onchange="_csAssignFromSeatPicker('${unitId}','${seat.id}', this.value)">${optHtml}</select>
-        ${occupant ? `<button class="cs-clear-btn" onclick="_csUnassignSeat('${unitId}','${seat.id}')">✕ Clear</button>` : ''}
       </div>
     </div>`;
   }).join('');
 
   // Roster column — every available responder; clicking jumps them into the
   // next empty seat (or shows assigned). Cert chips highlight seat-fit.
-  const usedIds = new Set(Object.values(assignments).filter(Boolean));
+  // usedIds is GLOBAL: a person seated on any apparatus in this modal counts
+  // as used, so they show "ASSIGNED" in every unit's pool.
+  const usedIds = _csCollectAllUsedIds();
   const rosterRows = candidates.length ? candidates.map(p => {
     const used = usedIds.has(p.id);
     const meta = p._pickerMeta || {};
-    const locTxt = meta.state === 'station' ? 'Station — on duty'
-      : meta.state === 'home'    ? `At Home · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m to stn`
-      : meta.state === 'roaming' ? `Roaming · ${meta.distanceMi.toFixed(1)}mi · ~${Math.max(1, Math.ceil(meta.etaMin))}m to stn`
+    const locTxt = meta.state === 'station' ? 'At Station — on duty'
+      : meta.state === 'home'    ? `At Home · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m to stn`
+      : meta.state === 'roaming' ? `Out of Area · ~${Math.max(1, Math.ceil(meta.etaMin || 0))}m to stn`
       : '';
     const certChips = (p.certs || []).slice(0, 6).map(c => {
       const lbl = BAM_CONFIG.certifications?.[c]?.label || c;
-      // "fits" if any responder seat's preferredCerts/niceToHaves/requiredCert include this cert
+      // "fits" if any responder seat lists this cert as requiredCert, an
+      // interchangeable hard-gate alternative, or a niceToHave.
       const fits = (layout.seats || []).some(s => {
         if(s.isPatientSeat || s.isPrisonerSeat) return false;
         return s.requiredCert === c
-          || (s.preferredCerts  || []).includes(c)
+          || (s.interchangeableCerts || []).includes(c)
           || (s.niceToHaveCerts || []).includes(c);
       });
       const drv  = driverCert && c === driverCert;
@@ -2682,12 +2725,20 @@ function _renderCrewSelectUnitCard(unitId){
 // Picker handlers — re-render after each mutation so banners stay live.
 function _csAssignFromSeatPicker(unitId, seatId, personId){
   if(!_csAssignments[unitId]) _csAssignments[unitId] = {};
-  // Free up the person from any other seat first (drag-from-one-seat-to-another)
-  Object.keys(_csAssignments[unitId]).forEach(sid => {
-    if(_csAssignments[unitId][sid] === personId) delete _csAssignments[unitId][sid];
-  });
-  if(personId) _csAssignments[unitId][seatId] = personId;
-  else         delete _csAssignments[unitId][seatId];
+  if(personId){
+    // Free up the person from any seat on any apparatus in this modal
+    // before re-seating them (drag-across-units or drag-across-seats).
+    for(const otherUid of _csUnitIds){
+      const a = _csAssignments[otherUid];
+      if(!a) continue;
+      for(const sid of Object.keys(a)){
+        if(a[sid] === personId) delete a[sid];
+      }
+    }
+    _csAssignments[unitId][seatId] = personId;
+  } else {
+    delete _csAssignments[unitId][seatId];
+  }
   _renderCrewSelectBody();
 }
 
@@ -2697,8 +2748,9 @@ function _csUnassignSeat(unitId, seatId){
 }
 
 // Click a roster row → place them in the next empty seat.
-//   Priority: required seats they're qualified for → preferredCerts-matching
-//   seats → niceToHaveCerts-matching → any empty responder seat.
+//   Priority: empty seat satisfying requiredCert directly → empty seat
+//   satisfying any interchangeableCert → empty optional seat where they
+//   match niceToHaveCerts → any empty responder seat.
 // Patient/prisoner seats are excluded — responders cannot occupy them.
 function _csQuickAssign(unitId, personId){
   const found = getAllUnits().find(x => x.unit.id === unitId);
@@ -2708,17 +2760,25 @@ function _csQuickAssign(unitId, personId){
   const person = personnel.find(p => p.id === personId);
   if(!person) return;
   if(!_csAssignments[unitId]) _csAssignments[unitId] = {};
+  // Clear this person from any seat on any apparatus in the modal first.
+  for(const otherUid of _csUnitIds){
+    const aa = _csAssignments[otherUid];
+    if(!aa) continue;
+    for(const sid of Object.keys(aa)){
+      if(aa[sid] === personId) delete aa[sid];
+    }
+  }
   const a = _csAssignments[unitId];
-  Object.keys(a).forEach(sid => { if(a[sid] === personId) delete a[sid]; });
   const responderSeats = (layout.seats || []).filter(s => !s.isPatientSeat && !s.isPrisonerSeat);
-  // 1) Empty required seat the person is qualified for.
-  const reqSeat = responderSeats.find(s => s.requiredCert && !a[s.id] && personHasCert(person, s.requiredCert));
+  // 1) Empty required seat where their cert matches requiredCert directly.
+  const reqSeat = responderSeats.find(s => s.requiredCert && !a[s.id] &&
+    personHasCert(person, s.requiredCert));
   if(reqSeat){ a[reqSeat.id] = personId; _renderCrewSelectBody(); return; }
-  // 2) Empty preferredCerts-matching seat (skip required seats they can't fill).
-  const prefSeat = responderSeats.find(s => !s.requiredCert && !a[s.id] &&
-    (s.preferredCerts || []).some(c => personHasCert(person, c)));
-  if(prefSeat){ a[prefSeat.id] = personId; _renderCrewSelectBody(); return; }
-  // 3) Empty niceToHave-matching seat.
+  // 2) Empty required seat where one of the interchangeableCerts matches.
+  const interSeat = responderSeats.find(s => s.requiredCert && !a[s.id] &&
+    (s.interchangeableCerts || []).some(c => personHasCert(person, c)));
+  if(interSeat){ a[interSeat.id] = personId; _renderCrewSelectBody(); return; }
+  // 3) Empty optional seat where they hit a niceToHave.
   const niceSeat = responderSeats.find(s => !s.requiredCert && !a[s.id] &&
     (s.niceToHaveCerts || []).some(c => personHasCert(person, c)));
   if(niceSeat){ a[niceSeat.id] = personId; _renderCrewSelectBody(); return; }
@@ -2931,47 +2991,46 @@ function executeDispatch(opts = {}){
       inc.units.push(uid);
       unit.incidentId=inc.id;
 
-      // Phase 5D bug-fix — gate apparatus departure on volunteer station response.
-      // Career-only crew: depart immediately. Mixed/volunteer crew: hold the
-      // apparatus 'awaiting_crew', animate volunteers from home/work to the
-      // station, then route to scene once they've assembled. The watchdog in
-      // triggerVolunteerStationResponse guarantees the apparatus never stalls
-      // forever — no-shows simply don't ride along.
+      // Gate apparatus departure on volunteer station assembly. Career-only
+      // crew departs immediately. Mixed/volunteer crew: hold the apparatus
+      // 'awaiting_crew', run the abstract assembly delays, then route to scene
+      // once required seats are filled (or the 10-min cap fires).
       if(respondingVolunteers.length && typeof triggerVolunteerStationResponse === 'function'){
         unit.status = 'awaiting_crew';
         unit._awaitingCrewCount = respondingVolunteers.length;
-        // Force-out support — Send Anyway button toggles this signal.
         unit._awaitingAbortSignal = { aborted: false };
         unit._awaitingResponders  = respondingVolunteers.slice();
         renderStationList();
         _refreshDispatchModalIfOpen(inc.id);
         setStatus(`⏳ ${respondingVolunteers.length} volunteer${respondingVolunteers.length===1?'':'s'} responding to ${station.name}…`);
-        // requiredCheck: at watchdog-fire time, decide whether to roll-with-
-        // what-arrived (required seats filled) or ABORT.
+        // requiredCheck: at cap, decide whether to roll with current crew or
+        // resolve as fail. "At station" now means status === 'at_station'
+        // (the abstract assembly state) plus career personnel on duty here.
         const requiredCheck = (arrivedSet) => {
           const crewArrived = personnel.filter(p =>
             p.currentAssignment?.unitId === unit.id &&
-            p.status === 'busy' &&     // 'busy' means at-station after onArrive
+            p.status === 'at_station' &&
             arrivedSet.has(p.id));
-          // Also consider career personnel who were already busy at the
-          // station (they didn't need to respond — they're on shift).
           const careerOnUnit = personnel.filter(p =>
             p.currentAssignment?.unitId === unit.id &&
             p.type !== 'volunteer' &&
             p.status === 'busy');
           const crewNow = Array.from(new Set([...crewArrived, ...careerOnUnit]));
-          // Driver gate
           if(typeof hasQualifiedDriver === 'function' && !hasQualifiedDriver(unit.id, crewNow)) return false;
-          // Required-seat gate — every requiredCert seat must have a holder.
           const reqSeats = (typeof getRequiredSeats === 'function') ? getRequiredSeats(unit) : [];
           for(const seat of reqSeats){
-            const hit = crewNow.some(p => typeof personHasCert === 'function' && personHasCert(p, seat.requiredCert));
+            const hit = crewNow.some(p =>
+              typeof personHasCert === 'function' && (
+                personHasCert(p, seat.requiredCert) ||
+                (seat.interchangeableCerts || []).some(c => personHasCert(p, c))
+              ));
             if(!hit) return false;
           }
           return true;
         };
         triggerVolunteerStationResponse({ lat: station.lat, lng: station.lng }, respondingVolunteers, {
           abortSignal: unit._awaitingAbortSignal,
+          station,
           requiredCheck
         }).then((res) => {
           // Re-check unit state — player may have cancelled mid-assembly.
@@ -3030,9 +3089,35 @@ function executeDispatch(opts = {}){
             _refreshDispatchModalIfOpen(inc.id);
             return;
           }
+          // Transition arrived volunteers (status === 'at_station') to 'busy'
+          // for the ride. Volunteers still in 'responding' at this point were
+          // "left behind" — keep their personal timer running so they linger
+          // on arrival rather than snapping back to available.
+          const unitDisp = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(unit, station) : unit.name;
+          let leftBehindCount = 0;
+          personnel.forEach(p => {
+            if(p.currentAssignment?.unitId !== unit.id) return;
+            if(p.status === 'at_station'){
+              p.status = 'busy';
+            } else if(p.status === 'responding'){
+              leftBehindCount++;
+              // Detach from the call so the unit's crew roster is accurate.
+              p.currentAssignment = null;
+              // Set linger marker so when their personal timer elapses, they
+              // park at the station instead of resuming normal availability.
+              const lingerSec = (BAM_CONFIG.volunteerFailedAssemblyLingerGameMin
+                              ?? BAM_CONFIG.volunteerStationLingerGameMin
+                              ?? 30) * 60;
+              p._respondingLingerUntilGameSec = (typeof _absGameSec === 'function')
+                ? _absGameSec() + lingerSec
+                : ((gameDay || 1) * 86400 + (gameSeconds || 0)) + lingerSec;
+            }
+          });
           unit.status='dispatched';
-          if(res?.forced && typeof setStatus === 'function'){
-            setStatus(`🚒 ${unit.name} forced out — departing with on-station crew.`);
+          if(res?.forced){
+            setStatus(`🚒 ${unitDisp} forced out — departing with on-station crew.`);
+          } else if(leftBehindCount > 0){
+            setStatus(`🚒 ${unitDisp} rolled — ${leftBehindCount} responder${leftBehindCount===1?'':'s'} left behind at ${station.name}.`);
           }
           routeAndAnimate(unit, station, inc, fromLatLng);
           renderStationList();
@@ -5044,17 +5129,8 @@ async function loadSettings(){
     if(s.avlColors) avlColors={...avlColors,...s.avlColors};
     if(s.avlStyle)  avlStyle ={...avlStyle, ...s.avlStyle};
     if(s.unitTypeColors) unitTypeColors={...unitTypeColors,...s.unitTypeColors};
-    // Phase 5D — restore volunteer layer toggle state.
-    if(s.volunteerLayerVisibility && typeof volunteerLayerVisibility !== 'undefined'){
-      // Phase 5 bugfix — strip legacy `works` flag on load so old settings
-      // don't reintroduce removed state.
-      const { works: _ignoredWorks, ...cleanLayer } = s.volunteerLayerVisibility;
-      Object.assign(volunteerLayerVisibility, cleanLayer);
-      // Sync the checkboxes in the layer panel (defensive — panel may not be in DOM yet).
-      const rChk = document.getElementById('vol-resp-chk'); if(rChk) rChk.checked = !!volunteerLayerVisibility.responders;
-      const hChk = document.getElementById('vol-home-chk'); if(hChk) hChk.checked = !!volunteerLayerVisibility.homes;
-      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-    }
+    // Volunteer layer toggles removed (abstract-assembly refactor). Any
+    // s.volunteerLayerVisibility from old saves is silently ignored.
   }catch(e){
     console.error('Failed to load settings:', e.message);
   }
@@ -5829,25 +5905,32 @@ async function loadFromSlot(name){
         || (typeof _defaultRankKeyFromCerts === 'function'
               ? _defaultRankKeyFromCerts(certs, p.preference)
               : null);
-      // Phase 5 bugfix — silent migration: strip removed fields. Work locations
-      // and the legacy `availability.defaultAvailable` flag are no longer used;
-      // the spread copies everything else verbatim. Legacy volunteers also
-      // need the new state-model fields backfilled so they aren't stuck in an
-      // implicit-unavailable state until the next hourly tick.
-      const { work: _stripWork, ...pSansWork } = p;
+      // Silent migration: strip legacy physical-location fields. The abstract-
+      // assembly refactor removed home/work, currentLocation, isCustomized,
+      // wayId, isFallback, and the older defaultAvailable flag. The OSM
+      // building cache on each ESN is preserved separately for future POI use.
+      const {
+        work: _stripWork, home: _stripHome,
+        currentLocation: _stripLoc,
+        isCustomized: _stripCust,
+        wayId: _stripWay,
+        isFallback: _stripFb,
+        autoMigratedFlag: _stripMig,
+        ...pSansLegacy
+      } = p;
       let availability;
       if(p.availability && typeof p.availability === 'object'){
-        const { defaultAvailable: _ignored, ...rest } = p.availability;
+        const { defaultAvailable: _ignored, currentLocation: _ignoredLoc, ...rest } = p.availability;
         availability = {
           currentState:        rest.currentState        || 'home',
-          currentLocation:     rest.currentLocation     || null,
           nextRollGameHour:    rest.nextRollGameHour    || 0,
           schedule:            Array.isArray(rest.schedule) ? rest.schedule : [],
-          forceAvailableUntil: rest.forceAvailableUntil || null
+          forceAvailableUntil: rest.forceAvailableUntil || null,
+          lingerAtStationUntilGameSec: rest.lingerAtStationUntilGameSec ?? null
         };
       }
       return {
-        ...pSansWork,
+        ...pSansLegacy,
         ...(availability !== undefined ? { availability } : {}),
         status:            p.status || 'available',
         currentAssignment: null,
@@ -6300,10 +6383,8 @@ const LayerControl=L.Control.extend({
       <label><input type="checkbox" checked onchange="setDCLayerVisible(this.checked)"/> Dispatch Centers</label>
       <label><input type="checkbox" checked onchange="setUnitLabelsVisible(this.checked)"/> Unit Labels</label>
       <label><input type="checkbox" id="station-labels-chk" onchange="setStationLabelsVisible(this.checked)"/> Station Labels</label>
-      <!-- Phase 5D — three independent volunteer layer toggles. Defaults from
-           volunteers.js (responders ON, homes OFF, works OFF). -->
-      <label><input type="checkbox" id="vol-resp-chk" checked onchange="setVolunteerLayerVisible('responders', this.checked)"/> Volunteer Responders</label>
-      <label><input type="checkbox" id="vol-home-chk" onchange="setVolunteerLayerVisible('homes', this.checked)"/> Volunteer Home Locations</label>
+      <!-- Volunteer map layer toggles removed (abstract-assembly refactor) —
+           volunteers no longer have physical homes or live responder dots. -->
     </div>`;
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.disableScrollPropagation(div);

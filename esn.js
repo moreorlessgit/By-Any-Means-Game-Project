@@ -207,17 +207,11 @@ function _finishDrawESN() {
       _applyTooltipStyle(polygon, esn.color, esn.labelSize);
       polygon.on('click', () => openESNModal(esn.id));
       esn.polygon = polygon;
-      // Phase 5D — polygon changed, so the per-ESN OSM building cache is now
-      // stale (its candidates may no longer fall inside the new shape). Purge
-      // and let the next read lazy-refetch. Then auto-migrate volunteers
-      // whose homes now fall outside coverage.
+      // Polygon changed, so the per-ESN OSM building cache is stale (candidates
+      // may no longer fall inside the new shape). Purge; the next read lazy-
+      // refetches. Volunteer auto-migration was removed in the abstract-
+      // assembly refactor — volunteers no longer have physical home locations.
       if(typeof purgeBuildingCacheForESN === 'function') purgeBuildingCacheForESN(esn.id);
-      if(typeof autoMigrateVolunteersForESN === 'function'){
-        autoMigrateVolunteersForESN(esn.id).then(() => {
-          if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-          if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
-        });
-      }
       setStatus(`✅ ESN "${esn.name}" shape updated.`);
       openESNModal(editId);
     }
@@ -619,15 +613,8 @@ function confirmESNModal() {
   // Phase 5E bug-fix — keep the Database Health panel in sync with the live
   // ESN list (its OSM cache rows are keyed on esn.id).
   if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
-  // Phase 5D — assignment changes can also strand volunteers (e.g. a station
-  // dropped from coverage means its volunteers' homes may no longer be valid).
-  // Coords didn't change so we don't purge the OSM cache; just trigger migration.
-  if(editId && typeof autoMigrateVolunteersForESN === 'function'){
-    autoMigrateVolunteersForESN(editId).then(() => {
-      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
-      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
-    });
-  }
+  // Volunteer auto-migration on ESN edit was removed (abstract-assembly
+  // refactor — volunteers no longer have physical home locations).
   setStatus(`✅ ESN "${name}" saved.`);
 }
 
