@@ -1,4 +1,7 @@
 {
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  },
   "permissions": {
     "allow": [
       "Bash(Get-Content \"d:\\\\By Any Means Game Project\\\\index.html\")",
@@ -23,7 +26,27 @@
       "Bash(curl -s -H \"Origin: http://192.168.1.50:5500\" -i -X OPTIONS http://localhost:3001/api/auth/login)",
       "Bash(python -c ' *)",
       "Bash(node --check _tmp_check.js)",
-      "Bash(rm _tmp_check.js)"
+      "Bash(rm _tmp_check.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/units.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/stations.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/esn.js)",
+      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/personnel.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('personnel.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/config.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('config.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/stations.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('stations.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const p='d:/By-Any-Means-Game-Project/units.js'; try { new Function\\(fs.readFileSync\\(p,'utf8'\\)\\); console.log\\('units.js: SYNTAX OK'\\); } catch\\(e\\){ console.error\\('SYNTAX ERROR:', e.message\\); }\")",
+      "Bash(dir *.js)",
+      "Bash(node --check /d/By-Any-Means-Game-Project/personnel.js)",
+      "Bash(node --check /d/By-Any-Means-Game-Project/volunteers.js)",
+      "Bash(node --check /d/By-Any-Means-Game-Project/stations.js)",
+      "Bash(node --check /d/By-Any-Means-Game-Project/esn.js)",
+      "Bash(node --check /d/By-Any-Means-Game-Project/units.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/config.js)",
+      "Bash(node --check d:/By-Any-Means-Game-Project/personnel.js)",
+      "Bash(node -e ' *)",
+      "Bash(cd /d)",
+      "Read(//d//**)",
+      "Bash(Get-ChildItem -Path 'd:\\\\By-Any-Means-Game-Project' -Recurse -Filter '*.js' -Exclude 'node_modules')",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

@@ -50,6 +50,10 @@
 
 **Certifications** — Qualifications held by personnel (e.g., FF1, FF2, Paramedic, EMT, AEMT, LEO, Driver/Operator). In Phase 4, units will require minimum certified personnel to respond (e.g., an ALS ambulance needs at least one Paramedic).
 
+**Crew Continuity** — Design rule that an apparatus' assigned crew stays attached through the full call cycle and into post-arrival idle. A `returning` unit's crew remains on the unit so it can be redispatched mid-return without re-staffing; an `available` unit retains its crew for a grace window (`volunteerPostCallReleaseGameSec`) after arrival. Mid-cycle redispatch re-points each crew member's `currentAssignment.callId` to the new incident and cancels the post-call release timer.
+
+**Crew-Select Dispatch** — Optional manual-crew flow opened by the `👥 Dispatch w/ Crew…` button on the call modal. Per-apparatus picker showing seats (left) + available responders at station/home/roaming (right). Player picks who rides where; the modal validates driver-cert + min-crew live, then dispatches with the chosen crew instead of running the auto-matcher. Separate from the existing `Dispatch Selected` button, which still auto-fills crew greedily.
+
 **Dispatch Stagger** — In a multi-unit dispatch, units are staggered in departure time by 3 game-seconds per unit in the batch. This prevents all units from being routed simultaneously and creates realistic staged response.
 
 **Enroute** — A unit status indicating the unit is actively traveling toward an incident. Enroute units display a bright green AVL label on the map and can be rerouted mid-travel from their current position.
@@ -68,6 +72,8 @@
 
 **Returning** — A unit status indicating the unit is traveling back to its home station after call resolution. Displayed as a yellow AVL label. Units show remaining ETA to station in the station list and dispatch modal.
 
+**Seating Layout** — Per-apparatus cab seat map living on `BAM_CONFIG.unitTypes[typeKey].seats`. SEATS ARE THE SINGLE SOURCE OF TRUTH for apparatus capacity, crew requirements, and patient/prisoner transport capacity — the legacy `crewDefaults` block is retired. Each seat is one of three mutually-exclusive types: responder seat (with optional `requiredCert` [HARD cert gate + required-to-roll], `interchangeableCerts[]` [alternate certs that also satisfy the hard gate], `niceToHaveCerts[]` [scoring bonus only], `isDriver:true` label), `isPatientSeat:true` (stretcher; responders cannot occupy; counts toward patient transport capacity), or `isPrisonerSeat:true` (cage/cell; responders cannot occupy; counts toward prisoner transport capacity). The per-unit-type flag `autoFillOptionalSeats` controls whether default-dispatch auto-fill should fill every seat (fire apparatus, `true`) or only the required floor (ambulances, patrol, fly cars, helicopters, `false`). The dispatch gate fires when every seat with `requiredCert` is filled by someone whose certs satisfy it (direct hit, `interchangeableCerts` hit, or the cert hierarchy's `satisfies` chain); optional seats never block dispatch. Assembly timer cap: `BAM_CONFIG.volunteerAssemblyFailGameMin` (default 10 game-min; legacy alias `volunteerAssemblyMaxGameMin`). Drives the Crew-Select Dispatch picker and the Unit Details modal's merged Seating & Crew section. Per-seat assignment is persisted on `person.currentAssignment.seatId`.
+
 **Spawnmode** — The placement rule for incident locations within an ESN:
   - `building` — Spawns on a building centroid (structure fires, gas leaks)
   - `road_major` — Spawns on major road nodes, weighted toward intersections (highway MVAs)
@@ -79,7 +85,7 @@
 **Station Types** (Phase 4) —
   - **Career:** Fully paid stations. Units respond immediately.
   - **Combination:** Mix of career and volunteer personnel. Variable response delay based on volunteer availability.
-  - **Volunteer:** Unpaid stations. Volunteers must respond from their home/work location within the ESN before apparatus can respond, adding realistic response delay.
+  - **Volunteer:** Unpaid stations. Each paged volunteer rolls a personal assembly delay from the station's `volunteerAssembly` window (mean ± spread game minutes); the apparatus rolls once required seats are filled. *(Pre-refactor 5D used OSM-derived home/work locations and OSRM-routed map travel; that model was retired — see history.md.)*
 
 **Transporting** — A unit status (Phase 3+) indicating the unit is en route to a hospital or correctional facility with a patient or prisoner. Units remain unavailable during transport + offload time.
 

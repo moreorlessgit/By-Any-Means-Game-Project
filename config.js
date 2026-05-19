@@ -53,185 +53,419 @@ const BAM_CONFIG = {
   // ---------------------------------------------------------------------------
   // UNIT TYPE DEFINITIONS
   // ---------------------------------------------------------------------------
-  // "tags" is the backend capability list. A mission requiring "engine" will
-  // accept ANY unit that has "engine" in its tags.
-  // "stationType" must match the unitCategory of the station type hosting this unit.
-  // "providerLevel" = medical provider level for patient stabilization (null = none).
-  // "maxTransportCapacity" = max patients or suspects this unit can transport at once.
-  // "straightLine" = true for aircraft (bypasses OSRM, uses direct haversine path).
-  // "speedMph" = used for ETA calc on straight-line (aircraft) units.
+  // SEATS ARE THE SINGLE SOURCE OF TRUTH for apparatus capacity, crew requirements,
+  // and patient/prisoner transport capacity. There is no separate `maxTransportCapacity`
+  // or `crewDefaults` block — every constraint lives on the seat itself.
+  //
+  // Top-level fields:
+  //   tags          — backend capability list for mission/box-alarm matching.
+  //                   ('transport' / 'transport_prisoner' tags retired — patient/
+  //                   prisoner transport is now expressed via seat flags below
+  //                   and matched via `{ needs:'isPatientSeat' }` in missions.)
+  //   stationType   — must match the unitCategory of the hosting station type.
+  //   providerLevel — medical provider level for patient stabilization (null = none).
+  //   straightLine  — true for aircraft (bypasses OSRM, uses direct haversine path).
+  //   speedMph      — used for ETA calc on straight-line (aircraft) units.
+  //
+  // SEAT SCHEMA — each entry in `seats[]`:
+  //   id                    — unique slot key within the apparatus.
+  //   label                 — display name. Rename freely.
+  //   isDriver              — true marks the driver/operator seat (label-only).
+  //                           A driver seat is ALWAYS hard-required for dispatch
+  //                           when it has a requiredCert.
+  //   requiredCert          — HARD cert gate. The seat MUST be filled by a person
+  //                           who holds this cert (or an equivalent via the cert
+  //                           hierarchy's `satisfies` chain, or any cert in
+  //                           `interchangeableCerts` below). Leave null/undefined
+  //                           for an optional seat — nice to fill, doesn't block.
+  //   interchangeableCerts  — array of certs that ALSO satisfy this seat's hard
+  //                           gate. Use when several certs are equally acceptable
+  //                           (e.g., a fire cab seat that takes fire_support OR
+  //                           fire_exterior OR ff1 OR ff2).
+  //   niceToHaveCerts       — additive scoring bonus per cert held. Stackable —
+  //                           a candidate holding two nice-to-haves outscores one.
+  //   isPatientSeat         — true = stretcher. Responders cannot occupy. Counts
+  //                           toward patient transport capacity.
+  //   isPrisonerSeat        — true = prisoner cage/cell. Responders cannot occupy.
+  //                           Counts toward prisoner transport capacity.
+  //
+  // Mutually exclusive: a seat is EITHER a responder seat (with requiredCert /
+  // interchangeableCerts / niceToHaveCerts) OR a patient seat OR a prisoner seat.
+  // The matcher silently skips isPatientSeat / isPrisonerSeat seats during crew
+  // assignment.
+  //
+  // PER-UNIT-TYPE FLAG — autoFillOptionalSeats:
+  //   true  — default-dispatch auto-fill should fill EVERY responder seat (fire
+  //           apparatus). Ideal-crew status requires every seat filled.
+  //   false — default-dispatch auto-fill fills only requiredCert seats + the
+  //           driver seat; optional seats stay empty (ambulances ride 2-person,
+  //           single-officer patrol is normal). Ideal-crew status only needs the
+  //           required floor.
+  //
+  // DISPATCH GATE — apparatus rolls when every seat with `requiredCert` (which
+  // includes the driver seat when it carries one) is filled. Optional seats do
+  // NOT block dispatch.
   // ---------------------------------------------------------------------------
   unitTypes: {
     // ── FIRE ──────────────────────────────────────────────────────────────────
     engine: {
-      label:                'Engine',
-      tags:                 ['engine'],
-      stationType:          'fire',
-      cost:                 8000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Engine',
+      tags:           ['engine'],
+      stationType:    'fire',
+      cost:           8000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,   // fire trucks want every seat filled
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['pump_ops_1','ff1','ff2'] },
+        { id:'officer', label:'Officer',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','fire_officer_2','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt','aemt','hazmat_ops','rescue_tech'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt','aemt','hazmat_ops','rescue_tech'] }
+      ],
     },
     pumper_tanker: {
-      label:                'Pumper/Tanker',
-      tags:                 ['engine','tanker'],   // counts as BOTH
-      stationType:          'fire',
-      cost:                 14000,
-      personnel:            3,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Pumper/Tanker',
+      tags:           ['engine','tanker'],   // counts as BOTH
+      stationType:    'fire',
+      cost:           14000,
+      personnel:      3,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['pump_ops_1','ff1'] },
+        { id:'officer', label:'Officer',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt'] }
+      ],
     },
     tanker: {
-      label:                'Tanker',
-      tags:                 ['tanker'],
-      stationType:          'fire',
-      cost:                 10000,
-      personnel:            2,
-      color:                '#c94800',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Tanker',
+      tags:           ['tanker'],
+      stationType:    'fire',
+      cost:           10000,
+      personnel:      2,
+      color:          '#c94800',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver', label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['pump_ops_1','ff1'] },
+        { id:'cab_1',  label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt'] }
+      ],
     },
     ladder: {
-      label:                'Ladder/Aerial',
-      tags:                 ['ladder','engine'],   // ladder also counts as engine
-      stationType:          'fire',
-      cost:                 18000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Ladder/Aerial',
+      tags:           ['ladder','engine'],   // ladder also counts as engine
+      stationType:    'fire',
+      cost:           18000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['aerial_operator','ff2'] },
+        { id:'officer', label:'Officer',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','fire_officer_2','ff2'],
+          niceToHaveCerts:[] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['rescue_tech','emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt'] }
+      ],
     },
     brush_truck: {
-      label:                'Brush Truck',
-      tags:                 ['brush'],
-      stationType:          'fire',
-      cost:                 6000,
-      personnel:            2,
-      color:                '#8b4513',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Brush Truck',
+      tags:           ['brush'],
+      stationType:    'fire',
+      cost:           6000,
+      personnel:      2,
+      color:          '#8b4513',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver', label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_small',
+          niceToHaveCerts:['wildland_ff','ff1'] },
+        { id:'cab_1',  label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['wildland_ff','fire_exterior','ff1','ff2'],
+          niceToHaveCerts:[] }
+      ],
     },
     rescue: {
-      label:                'Heavy Rescue',
-      tags:                 ['rescue'],
-      stationType:          'fire',
-      cost:                 16000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Heavy Rescue',
+      tags:           ['rescue'],
+      stationType:    'fire',
+      cost:           16000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['rescue_tech','ff1'] },
+        { id:'officer', label:'Officer',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['rescue_tech'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['aemt'] }
+      ],
     },
     rescue_engine: {
-      label:                'Rescue Engine',
-      tags:                 ['rescue','engine'],   // counts as BOTH
-      stationType:          'fire',
-      cost:                 20000,
-      personnel:            4,
-      color:                '#e05c1a',
-      icon:                 '🚒',
-      providerLevel:        'first_aid',
-      maxTransportCapacity: 0,
+      label:          'Rescue Engine',
+      tags:           ['rescue','engine'],   // counts as BOTH
+      stationType:    'fire',
+      cost:           20000,
+      personnel:      4,
+      color:          '#e05c1a',
+      icon:           '🚒',
+      providerLevel:  'first_aid',
+      autoFillOptionalSeats: true,
+      seats: [
+        { id:'driver',  label:'Driver/Operator', isDriver:true,
+          requiredCert:'evoc_large',
+          niceToHaveCerts:['pump_ops_1','rescue_tech'] },
+        { id:'officer', label:'Officer',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_officer_1','ff1','ff2'],
+          niceToHaveCerts:['rescue_tech'] },
+        { id:'cab_1',   label:'Cab Seat 1',
+          requiredCert:'fire_support',
+          interchangeableCerts:['rescue_tech','ff1','ff2'],
+          niceToHaveCerts:['emt'] },
+        { id:'cab_2',   label:'Cab Seat 2',
+          requiredCert:'fire_support',
+          interchangeableCerts:['fire_exterior','ff1','ff2'],
+          niceToHaveCerts:['emt','aemt'] }
+      ],
     },
     // ── EMS ───────────────────────────────────────────────────────────────────
     als_ambulance: {
-      label:                'ALS Ambulance',
-      tags:                 ['als','bls','transport'],
-      stationType:          'ems',
-      cost:                 9000,
-      personnel:            2,
-      color:                '#2ea8ff',
-      icon:                 '🚑',
-      providerLevel:        'als',
-      maxTransportCapacity: 1,
+      label:          'ALS Ambulance',
+      tags:           ['als','bls'],
+      stationType:    'ems',
+      cost:           9000,
+      personnel:      2,
+      color:          '#2ea8ff',
+      icon:           '🚑',
+      providerLevel:  'als',
+      autoFillOptionalSeats: false,  // ambulances ride 2-person minimum; extra seats stay empty on default dispatch
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          niceToHaveCerts:['emt','aemt','paramedic'] },
+        { id:'captains_chair',  label:"Captain's Chair",
+          requiredCert:'paramedic',   // ALS amb must roll with a medic
+          niceToHaveCerts:['ccp','aemt'] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['emt','aemt','paramedic','evoc_small'] },
+        { id:'bench',           label:'Bench Seat',
+          niceToHaveCerts:['emt','aemt','paramedic','ff1'] },
+        { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
+      ],
     },
     bls_ambulance: {
-      label:                'BLS Ambulance',
-      tags:                 ['bls','transport'],
-      stationType:          'ems',
-      cost:                 7000,
-      personnel:            2,
-      color:                '#1a7fc4',
-      icon:                 '🚑',
-      providerLevel:        'bls',
-      maxTransportCapacity: 1,
+      label:          'BLS Ambulance',
+      tags:           ['bls'],
+      stationType:    'ems',
+      cost:           7000,
+      personnel:      2,
+      color:          '#1a7fc4',
+      icon:           '🚑',
+      providerLevel:  'bls',
+      autoFillOptionalSeats: false,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          niceToHaveCerts:['emt','aemt'] },
+        { id:'captains_chair',  label:"Captain's Chair",
+          requiredCert:'emt',                       // BLS amb must roll with an EMT
+          interchangeableCerts:['aemt','paramedic'],
+          niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['emt','aemt','emr'] },
+        { id:'bench',           label:'Bench Seat',
+          niceToHaveCerts:['emt','emr','aemt'] },
+        { id:'stretcher',       label:'Stretcher', isPatientSeat:true }
+      ],
     },
     fly_car: {
-      label:                'Medic Fly Car',
-      tags:                 ['als'],              // ALS but NO transport
-      stationType:          'ems',
-      cost:                 5000,
-      personnel:            1,
-      color:                '#2ea8ff',
-      icon:                 '🚗',
-      providerLevel:        'als',
-      maxTransportCapacity: 0,
+      label:          'Medic Fly Car',
+      tags:           ['als'],              // ALS but NO transport
+      stationType:    'ems',
+      cost:           5000,
+      personnel:      1,
+      color:          '#2ea8ff',
+      icon:           '🚗',
+      providerLevel:  'als',
+      autoFillOptionalSeats: false,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          niceToHaveCerts:['paramedic','aemt','emt'] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['paramedic','ccp','aemt','emt'] }
+      ],
     },
     // ── POLICE ────────────────────────────────────────────────────────────────
     patrol: {
-      label:                'Patrol Unit',
-      tags:                 ['patrol','transport_prisoner'],
-      stationType:          'police',
-      cost:                 4000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 2,   // patrol can hold up to 2 suspects
+      label:          'Patrol Unit',
+      tags:           ['patrol'],
+      stationType:    'police',
+      cost:           4000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
+      autoFillOptionalSeats: false,  // single-officer patrol is fine
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          interchangeableCerts:['patrol_officer','patrol_supervisor'],
+          niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
+        { id:'rear_left',       label:'Rear (Driver Side)',  isPrisonerSeat:true },
+        { id:'rear_right',      label:'Rear (Passenger Side)', isPrisonerSeat:true }
+      ],
     },
     supervisor: {
-      label:                'Supervisor',
-      tags:                 ['patrol','supervisor'],
-      stationType:          'police',
-      cost:                 5000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 1,
+      label:          'Supervisor',
+      tags:           ['patrol','supervisor'],
+      stationType:    'police',
+      cost:           5000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
+      autoFillOptionalSeats: false,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          interchangeableCerts:['patrol_supervisor','patrol_officer'],
+          niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
+        { id:'rear_left',       label:'Rear (Driver Side)', isPrisonerSeat:true }
+      ],
     },
     k9: {
-      label:                'K9 Unit',
-      tags:                 ['patrol','k9'],
-      stationType:          'police',
-      cost:                 6000,
-      personnel:            1,
-      color:                '#5865f2',
-      icon:                 '🚔',
-      providerLevel:        null,
-      maxTransportCapacity: 1,
+      label:          'K9 Unit',
+      tags:           ['patrol','k9'],
+      stationType:    'police',
+      cost:           6000,
+      personnel:      1,
+      color:          '#5865f2',
+      icon:           '🚔',
+      providerLevel:  null,
+      autoFillOptionalSeats: false,
+      seats: [
+        { id:'driver',          label:'Handler/Driver',  isDriver:true,
+          requiredCert:'evoc_small',
+          interchangeableCerts:['k9_handler','patrol_officer'],
+          niceToHaveCerts:['k9_handler'] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['patrol_officer'] },
+        { id:'rear_cage',       label:'Rear Cage', isPrisonerSeat:true }
+      ],
     },
     sheriff_transport: {
-      label:                'Sheriff Transport Van',
-      tags:                 ['transport_prisoner'],
-      stationType:          'police',
-      cost:                 7000,
-      personnel:            2,
-      color:                '#64748b',
-      icon:                 '🚐',
-      providerLevel:        null,
-      maxTransportCapacity: 6,   // van can hold more suspects
+      label:          'Sheriff Transport Van',
+      tags:           ['transport_van'],
+      stationType:    'police',
+      cost:           7000,
+      personnel:      2,
+      color:          '#64748b',
+      icon:           '🚐',
+      providerLevel:  null,
+      autoFillOptionalSeats: false,
+      seats: [
+        { id:'driver',          label:'Driver',          isDriver:true,
+          requiredCert:'evoc_small',
+          interchangeableCerts:['patrol_officer','patrol_supervisor'],
+          niceToHaveCerts:[] },
+        { id:'front_passenger', label:'Front Passenger',
+          niceToHaveCerts:['patrol_officer','patrol_supervisor'] },
+        { id:'cell_1', label:'Prisoner Cell 1', isPrisonerSeat:true },
+        { id:'cell_2', label:'Prisoner Cell 2', isPrisonerSeat:true },
+        { id:'cell_3', label:'Prisoner Cell 3', isPrisonerSeat:true },
+        { id:'cell_4', label:'Prisoner Cell 4', isPrisonerSeat:true },
+        { id:'cell_5', label:'Prisoner Cell 5', isPrisonerSeat:true },
+        { id:'cell_6', label:'Prisoner Cell 6', isPrisonerSeat:true }
+      ],
     },
     // ── AIR MEDICAL ───────────────────────────────────────────────────────────
     helicopter: {
-      label:                'Medical Helicopter',
-      tags:                 ['als','transport','air_als'],
-      stationType:          'air',   // matches unitCategory 'air' in stationTypeDefs
-      cost:                 80000,
-      personnel:            2,
-      color:                '#f59e0b',
-      icon:                 '🚁',
-      providerLevel:        'als',
-      maxTransportCapacity: 1,
-      straightLine:         true,   // bypasses OSRM; uses direct point-to-point path
-      speedMph:             150,    // used for ETA calc and animation duration
+      label:          'Medical Helicopter',
+      tags:           ['als','air_als'],
+      stationType:    'air',   // matches unitCategory 'air' in stationTypeDefs
+      cost:           80000,
+      personnel:      2,
+      color:          '#f59e0b',
+      icon:           '🚁',
+      providerLevel:  'als',
+      straightLine:   true,    // bypasses OSRM; uses direct point-to-point path
+      speedMph:       150,     // used for ETA calc and animation duration
+      autoFillOptionalSeats: false,  // flight ops launch with the required medic; second seat is optional
+      // Pilot seat has no requiredCert — flight ops aren't gated by EVOC.
+      // The hard driver gate is conceptually "we have a pilot" which is
+      // assumed always-available in this game.
+      seats: [
+        { id:'pilot',   label:'Pilot',         isDriver:true,
+          niceToHaveCerts:[] },
+        { id:'medic_1', label:'Flight Medic 1',
+          requiredCert:'paramedic',                       // air ALS must have a medic on board
+          interchangeableCerts:['ccp','phrn'],
+          niceToHaveCerts:['ff1'] },
+        { id:'medic_2', label:'Flight Medic 2',
+          niceToHaveCerts:['ccp','paramedic','aemt'] },
+        { id:'stretcher', label:'Stretcher', isPatientSeat:true }
+      ],
     },
   },
 
@@ -297,7 +531,16 @@ const BAM_CONFIG = {
   // MISSION DEFINITIONS
   // ---------------------------------------------------------------------------
   // spawnWeight: relative probability (higher = more common)
-  // requirements: array of unit TAG groups
+  // requirements: array of REQUIREMENT SLOTS. Each slot is satisfied by ONE unit.
+  //   Two slot shapes:
+  //     1. Tag-based:   { tags:['engine'] }            — any unit holding this tag
+  //                     { tags:['bls','als'] }         — any unit holding ANY of these
+  //     2. Seat-based:  { needs:'isPatientSeat' }      — unit with ≥1 patient seat
+  //                     { needs:'isPrisonerSeat' }     — unit with ≥1 prisoner seat
+  //   A slot may also combine both: { tags:['als'], needs:'isPatientSeat' }.
+  //   Legacy string-array slots (['engine'],['transport']) are supported by the
+  //   matcher with 'transport' → 'isPatientSeat' and 'transport_prisoner' →
+  //   'isPrisonerSeat' so old box-alarm preferences keep working.
   // reward: $ on scene resolution (before transport revenue)
   // patientChance: 0-1 probability that this call generates patients at all
   // patients: array of patient entries — each rolled independently:
@@ -528,7 +771,7 @@ const BAM_CONFIG = {
       category:      'ems',
       spawnMode:     'random',
       spawnWeight:   6,
-      requirements:  [['als'],['transport']],
+      requirements:  [['als'], { needs:'isPatientSeat' }],
       reward:        500,
       patientChance: 1.0,
       patients:      [
@@ -564,7 +807,7 @@ const BAM_CONFIG = {
       category:      'fire',
       spawnMode:     'road_major',
       spawnWeight:   0,
-      requirements:  [['als'],['transport'],['rescue'],['engine']],
+      requirements:  [['als'], { needs:'isPatientSeat' }, ['rescue'], ['engine']],
       reward:        1500,
       patientChance: 1.0,
       patients:      [
@@ -602,7 +845,7 @@ const BAM_CONFIG = {
       category:      'police',
       spawnMode:     'road_any',
       spawnWeight:   0,
-      requirements:  [['patrol'],['transport_prisoner']],
+      requirements:  [['patrol'], { needs:'isPrisonerSeat' }],
       reward:        400,
       patientChance: 0.2,
       patients:      [
@@ -1141,19 +1384,401 @@ const BAM_CONFIG = {
   },
 
   // ---------------------------------------------------------------------------
-  // PERSONNEL CERTIFICATIONS
-  // Used to staff units. Each unit needs personnel meeting minimums.
+  // PERSONNEL CERTIFICATIONS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // Every responder holds zero or more cert codes. Certs drive unit staffing
+  // (which apparatus can roll with which crew) and determine training costs.
+  //
+  //   label     — display name shown in UI
+  //   category  — 'fire' | 'ems' | 'police' | 'shared' (used for grouping/filters)
+  //   cost      — flat $ to train an existing responder OR to add at hire time
+  //   prereqs   — cert codes that must be held before this one can be earned
+  //   satisfies — other cert codes this one automatically counts as. Equivalency
+  //               walks are transitive (paramedic→aemt→emt→emr is one chain).
+  //               These propagate through `expandCertSet()` in personnel.js so a
+  //               Paramedic can fill an "EMT" crew slot, FF2 can fill an "FF1"
+  //               slot, Large EVOC can fill a "Small EVOC" slot, etc.
   // ---------------------------------------------------------------------------
   certifications: {
-    ff1:      { label: 'Firefighter I',     category: 'fire'   },
-    ff2:      { label: 'Firefighter II',    category: 'fire'   },
-    driver:   { label: 'Driver/Operator',   category: 'fire'   },
-    emt:      { label: 'EMT-Basic',         category: 'ems'    },
-    aemt:     { label: 'AEMT',              category: 'ems'    },
-    medic:    { label: 'Paramedic',         category: 'ems'    },
-    leo:      { label: 'Police Officer',    category: 'police' },
-    leo_sup:  { label: 'Police Supervisor', category: 'police' }
+    // ── Fire core ────────────────────────────────────────────────────────────
+    fire_support:        { label: 'Fireground Support',     category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    fire_exterior:       { label: 'Exterior Firefighter',   category: 'fire',   cost: 1500, prereqs: [],                         satisfies: ['fire_support'] },
+    ff1:                 { label: 'Firefighter 1',          category: 'fire',   cost: 3000, prereqs: [],                         satisfies: ['fire_support','fire_exterior'] },
+    ff2:                 { label: 'Firefighter 2',          category: 'fire',   cost: 4500, prereqs: ['ff1'],                    satisfies: ['fire_support','fire_exterior','ff1'] },
+    // EVOC: small covers ambulances and chief cars; large covers heavy apparatus and satisfies small.
+    evoc_small:          { label: 'Small Vehicle EVOC',     category: 'fire',   cost:  800, prereqs: [],                         satisfies: [] },
+    evoc_large:          { label: 'Large Vehicle EVOC',     category: 'fire',   cost: 1500, prereqs: ['evoc_small'],             satisfies: ['evoc_small'] },
+    pump_ops_1:          { label: 'Pump Operator 1',        category: 'fire',   cost: 1500, prereqs: ['evoc_large'],             satisfies: [] },
+    pump_ops_2:          { label: 'Pump Operator 2',        category: 'fire',   cost: 3000, prereqs: ['pump_ops_1'],             satisfies: ['pump_ops_1'] },
+    aerial_operator:     { label: 'Aerial Operator',        category: 'fire',   cost: 4000, prereqs: ['evoc_large'],             satisfies: [] },
+    fire_officer_1:      { label: 'Fire Officer 1',         category: 'fire',   cost: 3500, prereqs: ['ff1'],                    satisfies: [] },
+    fire_officer_2:      { label: 'Fire Officer 2',         category: 'fire',   cost: 5000, prereqs: ['fire_officer_1'],         satisfies: ['fire_officer_1'] },
+    hazmat_awareness:    { label: 'HazMat Awareness',       category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    hazmat_ops:          { label: 'HazMat Operations',      category: 'fire',   cost: 1500, prereqs: ['hazmat_awareness'],       satisfies: ['hazmat_awareness'] },
+    hazmat_tech:         { label: 'HazMat Technician',      category: 'fire',   cost: 5000, prereqs: ['hazmat_ops'],             satisfies: ['hazmat_awareness','hazmat_ops'] },
+    basic_vehicle_rescue:{ label: 'Basic Vehicle Rescue',   category: 'fire',   cost: 1000, prereqs: [],                         satisfies: [] },
+    rescue_tech:         { label: 'Rescue Technician',      category: 'fire',   cost: 4000, prereqs: ['basic_vehicle_rescue'],   satisfies: ['basic_vehicle_rescue'] },
+    wildland_ff:         { label: 'Wildland Firefighter',   category: 'fire',   cost: 1500, prereqs: [],                         satisfies: [] },
+    fire_police:         { label: 'Fire Police',            category: 'fire',   cost:  500, prereqs: [],                         satisfies: [] },
+    // ── EMS ladder + specialties ─────────────────────────────────────────────
+    emr:                 { label: 'EMR',                    category: 'ems',    cost:  500, prereqs: [],                         satisfies: [] },
+    emt:                 { label: 'EMT',                    category: 'ems',    cost: 2000, prereqs: [],                         satisfies: ['emr'] },
+    aemt:                { label: 'AEMT',                   category: 'ems',    cost: 3500, prereqs: ['emt'],                    satisfies: ['emt','emr'] },
+    paramedic:           { label: 'Paramedic',              category: 'ems',    cost: 6000, prereqs: ['emt'],                    satisfies: ['aemt','emt','emr'] },
+    ccp:                 { label: 'Critical Care Paramedic',category: 'ems',    cost: 8000, prereqs: ['paramedic'],              satisfies: ['paramedic','aemt','emt','emr'] },
+    phrn:                { label: 'Prehospital RN',         category: 'ems',    cost: 8000, prereqs: [],                         satisfies: ['paramedic','aemt','emt','emr'] },
+    ems_supervisor:      { label: 'EMS Supervisor',         category: 'ems',    cost: 4000, prereqs: ['emt'],                    satisfies: [] },
+    tactical_ems:        { label: 'Tactical EMS',           category: 'ems',    cost: 5000, prereqs: ['emt'],                    satisfies: [] },
+    // ── Police ───────────────────────────────────────────────────────────────
+    patrol_officer:      { label: 'Patrol Officer',         category: 'police', cost: 2000, prereqs: [],                         satisfies: [] },
+    patrol_supervisor:   { label: 'Patrol Supervisor',      category: 'police', cost: 4000, prereqs: ['patrol_officer'],         satisfies: ['patrol_officer'] },
+    fto:                 { label: 'Field Training Officer', category: 'police', cost: 2500, prereqs: ['patrol_officer'],         satisfies: [] },
+    crash_investigation: { label: 'Crash Investigation',    category: 'police', cost: 2500, prereqs: ['patrol_officer'],         satisfies: [] },
+    k9_handler:          { label: 'K9 Handler',             category: 'police', cost: 3000, prereqs: ['patrol_officer'],         satisfies: [] },
+    swat:                { label: 'SWAT',                   category: 'police', cost: 6000, prereqs: ['patrol_officer'],         satisfies: [] },
+    detective:           { label: 'Detective',              category: 'police', cost: 5000, prereqs: ['patrol_officer'],         satisfies: [] },
+    crisis_negotiator:   { label: 'Crisis Negotiator',      category: 'police', cost: 4000, prereqs: ['patrol_officer'],         satisfies: [] },
+    bomb_squad:          { label: 'Bomb Squad',             category: 'police', cost: 7000, prereqs: ['patrol_officer'],         satisfies: [] },
+    // ── Shared across services ──────────────────────────────────────────────
+    bls_first_aid:       { label: 'BLS / First Aid',        category: 'shared', cost:  300, prereqs: [],                         satisfies: [] },
+    drone_operator:      { label: 'Drone Operator',         category: 'shared', cost: 2000, prereqs: [],                         satisfies: [] }
   },
+
+  // ---------------------------------------------------------------------------
+  // DISPATCH GATE + CREW SCORING  (seat-based — retired crewDefaults)
+  // ---------------------------------------------------------------------------
+  // The legacy `crewDefaults` block is retired. Crew requirements now live
+  // on each seat (see unitTypes above): `requiredCert` + optional
+  // `interchangeableCerts` form the HARD gate; `niceToHaveCerts` is the
+  // weighted scoring bonus. The values below tune the auto-assign scoring
+  // and the station-assembly timer.
+  //
+  // SCORING (per candidate, per seat):
+  //   • requiredCert/interchangeable hit — eligibility filter; +crewScorePreferredHit baseline bonus
+  //   • niceToHaveCerts each hit         — +crewScoreNiceToHaveHit (stacks)
+  //   • career on-duty at station        — +crewScoreAtStation
+  //   • volunteer travel penalty         — −crewScoreVolEtaPerMin per ETA minute
+  //
+  // ASSEMBLY TIMER — `volunteerAssemblyMaxGameMin` game-minutes after the
+  // apparatus is staged. At expiry:
+  //   • Required seats filled → roll with whoever's at the station
+  //   • Required seats short  → ABORT dispatch (release crew, fire
+  //                             crew-failure notification toast); responders
+  //                             still complete the trip to the station and
+  //                             linger there for `volunteerStationLingerGameMin`
+  //                             before normal availability resumes.
+  //
+  // FORCE-OUT — the player's "Send Anyway" button bypasses the timer. The
+  // driver-cert gate is the only block on force-out.
+  // ---------------------------------------------------------------------------
+  crewScorePreferredHit:                  100, // points for satisfying the hard gate (requiredCert OR any interchangeableCert)
+  crewScoreNiceToHaveHit:                  25, // points per niceToHave the person holds (stacks)
+  crewScoreAtStation:                      50, // bonus for career-on-duty at the station
+  crewScoreVolEtaPerMin:                    1, // penalty per minute of volunteer assembly delay
+  // Per-station assembly delay defaults. Each volunteer station carries its
+  // own meanGameMin / spreadGameMin in `station.volunteerAssembly`; these are
+  // only the fallback when a station hasn't been customized yet.
+  volunteerAssemblyMeanGameMin:             5,  // base mean for assembly delay (game minutes)
+  volunteerAssemblySpreadGameMin:           2,  // ± spread around the mean
+  volunteerOutOfAreaMultiplier:           1.5,  // multiplier on delay when currentState === 'roaming'
+  volunteerAssemblyFailGameMin:            10,  // hard cap before assembly resolves (roll-with-what-you've-got or fail)
+  volunteerFailedAssemblyLingerGameMin:    30,  // post-assembly linger before normal availability resumes
+  volunteerAtStationHourlyChance:        0.02,  // hourly chance a volunteer is already at-station for the whole hour
+  // Retained for save backward-compat — the old `volunteerAssemblyMaxGameMin`
+  // and `volunteerStationLingerGameMin` keys are read as fallbacks by callers
+  // that haven't migrated to the new names yet.
+  volunteerAssemblyMaxGameMin:             10,  // legacy alias for volunteerAssemblyFailGameMin
+  volunteerStationLingerGameMin:           30,  // legacy alias for volunteerFailedAssemblyLingerGameMin
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL / DISPATCH POLICY DEFAULTS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // stationStaffingTypes   — Valid values for station.stationType. Career and
+  //                          combination are active in 5B; volunteer behavior
+  //                          (home/work locations, direct-to-scene) lands in 5D.
+  // personnelHireCostBase  — Flat onboarding cost per career responder, before
+  //                          any selected cert training costs are added.
+  // ---------------------------------------------------------------------------
+  stationStaffingTypes:  ['career','combination','volunteer'],
+  personnelHireCostBase: 2000,
+
+  // ---------------------------------------------------------------------------
+  // SALARY + TRAINING ECONOMICS  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // salaryBaseAnnual          — Entry-level base annual salary in $. Per-person
+  //                             salary = salaryBaseAnnual × rank.salaryMultiplier.
+  //                             Daily deduction = salaryAnnual / 365.
+  // salaryDeductionInterval   — 'gameDay' default. Runs once per in-game-day
+  //                             rollover inside _tickGameClock. Configurable to
+  //                             'gameHour' or 'realMinute' in the future.
+  // trainingCostMultiplier    — Multiplier applied to a cert's `cost` when an
+  //                             existing person is retrained into that cert.
+  //                             1.0 = parity with the at-hire cost. Players can
+  //                             nudge this if training feels too cheap/expensive.
+  // ---------------------------------------------------------------------------
+  salaryBaseAnnual:        50000,
+  salaryDeductionInterval: 'gameDay',
+  trainingCostMultiplier:  1.0,
+
+  // ---------------------------------------------------------------------------
+  // RANK CONFIG  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // Per-service rank ladders. Each rank:
+  //   key                — internal id. person.rankKey points here.
+  //   label              — display name shown to the player.
+  //   service            — 'fire' | 'ems' | 'police_local' | 'police_county' | 'police_state'
+  //   prereqCerts        — cert codes that must be held (transitively, via
+  //                        expandCertSet) before the player can manually
+  //                        promote the person into this rank. Empty = anyone.
+  //   salaryMultiplier   — multiplier on salaryBaseAnnual for career personnel.
+  //                        Volunteers ignore salaries entirely.
+  //
+  // Promotion is manual + free (player-confirmed 2026-05-17): the player picks
+  // when an eligible person advances. Cert training is the economic cost.
+  // Free-text fallback is preserved on the person via `rank` for backwards-
+  // compat with the 5B free-text rank field.
+  // ---------------------------------------------------------------------------
+  rankConfig: {
+    fire: [
+      { key:'fire_probationary',  label:'Probationary Firefighter', service:'fire', prereqCerts:[],                                salaryMultiplier:0.80 },
+      { key:'fire_firefighter',   label:'Firefighter',              service:'fire', prereqCerts:['ff1'],                           salaryMultiplier:1.00 },
+      { key:'fire_senior_ff',     label:'Senior Firefighter',       service:'fire', prereqCerts:['ff2'],                           salaryMultiplier:1.10 },
+      { key:'fire_driver_op',     label:'Driver/Operator',          service:'fire', prereqCerts:['evoc_large','pump_ops_1'],       salaryMultiplier:1.20 },
+      { key:'fire_lieutenant',    label:'Lieutenant',               service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.35 },
+      { key:'fire_captain',       label:'Captain',                  service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.55 },
+      { key:'fire_battalion',     label:'Battalion Chief',          service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:1.80 },
+      { key:'fire_deputy',        label:'Deputy Chief',             service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.00 },
+      { key:'fire_assistant',     label:'Assistant Chief',          service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.20 },
+      { key:'fire_dept_chief',    label:'Department Chief',         service:'fire', prereqCerts:['fire_officer_2'],                salaryMultiplier:2.60 },
+      { key:'fire_marshal',       label:'Fire Marshal',             service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.50 },
+      { key:'fire_inspector',     label:'Fire Inspector',           service:'fire', prereqCerts:['ff1'],                           salaryMultiplier:1.25 },
+      { key:'fire_training',      label:'Training Officer',         service:'fire', prereqCerts:['fire_officer_1','ff2'],          salaryMultiplier:1.40 },
+      { key:'fire_safety',        label:'Safety Officer',           service:'fire', prereqCerts:['fire_officer_1'],                salaryMultiplier:1.40 }
+    ],
+    ems: [
+      { key:'ems_probationary',   label:'Probationary EMS Member',  service:'ems',  prereqCerts:[],                                salaryMultiplier:0.75 },
+      { key:'ems_driver',         label:'EMS Driver',               service:'ems',  prereqCerts:['evoc_small'],                    salaryMultiplier:0.85 },
+      { key:'ems_emr',            label:'EMR',                      service:'ems',  prereqCerts:['emr'],                           salaryMultiplier:0.90 },
+      { key:'ems_emt',            label:'EMT',                      service:'ems',  prereqCerts:['emt'],                           salaryMultiplier:1.00 },
+      { key:'ems_aemt',           label:'Advanced EMT',             service:'ems',  prereqCerts:['aemt'],                          salaryMultiplier:1.15 },
+      { key:'ems_paramedic',      label:'Paramedic',                service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.40 },
+      { key:'ems_senior_emt',     label:'Senior EMT',               service:'ems',  prereqCerts:['emt'],                           salaryMultiplier:1.15 },
+      { key:'ems_senior_medic',   label:'Senior Paramedic',         service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.55 },
+      { key:'ems_fto',            label:'Field Training Officer',   service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:1.50 },
+      { key:'ems_lieutenant',     label:'EMS Lieutenant',           service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.60 },
+      { key:'ems_captain',        label:'EMS Captain',              service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.80 },
+      { key:'ems_supervisor',     label:'EMS Supervisor',           service:'ems',  prereqCerts:['ems_supervisor'],                salaryMultiplier:1.70 },
+      { key:'ems_duty_officer',   label:'EMS Duty Officer',         service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:1.85 },
+      { key:'ems_chief',          label:'EMS Chief',                service:'ems',  prereqCerts:['paramedic','ems_supervisor'],    salaryMultiplier:2.20 },
+      { key:'ems_medical_dir',    label:'Medical Director',         service:'ems',  prereqCerts:['paramedic'],                     salaryMultiplier:2.50 }
+    ],
+    police_local: [
+      { key:'pol_recruit',        label:'Police Recruit',           service:'police_local', prereqCerts:[],                        salaryMultiplier:0.85 },
+      { key:'pol_officer',        label:'Police Officer',           service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.00 },
+      { key:'pol_senior',         label:'Senior Police Officer',    service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.10 },
+      { key:'pol_corporal',       label:'Corporal',                 service:'police_local', prereqCerts:['patrol_officer'],        salaryMultiplier:1.20 },
+      { key:'pol_sergeant',       label:'Sergeant',                 service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.35 },
+      { key:'pol_lieutenant',     label:'Lieutenant',               service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.55 },
+      { key:'pol_captain',        label:'Captain',                  service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.75 },
+      { key:'pol_deputy',         label:'Deputy Chief',             service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.00 },
+      { key:'pol_assistant',      label:'Assistant Chief',          service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.20 },
+      { key:'pol_chief',          label:'Police Chief',             service:'police_local', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.50 }
+    ],
+    police_county: [
+      { key:'sher_deputy',        label:"Sheriff's Deputy",         service:'police_county', prereqCerts:['patrol_officer'],       salaryMultiplier:1.00 },
+      { key:'sher_senior',        label:'Senior Deputy',            service:'police_county', prereqCerts:['patrol_officer'],       salaryMultiplier:1.15 },
+      { key:'sher_sergeant',      label:'Sergeant Deputy',          service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:1.35 },
+      { key:'sher_lieutenant',    label:'Lieutenant Deputy',        service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:1.55 },
+      { key:'sher_chief',         label:'Chief Deputy',             service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:2.00 },
+      { key:'sher_sheriff',       label:'Sheriff',                  service:'police_county', prereqCerts:['patrol_supervisor'],    salaryMultiplier:2.50 }
+    ],
+    police_state: [
+      { key:'sp_trooper',         label:'State Trooper',            service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.05 },
+      { key:'sp_first_class',     label:'Trooper First Class',      service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.15 },
+      { key:'sp_corporal',        label:'Trooper Corporal',         service:'police_state', prereqCerts:['patrol_officer'],        salaryMultiplier:1.25 },
+      { key:'sp_sergeant',        label:'Trooper Sergeant',         service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.45 },
+      { key:'sp_lieutenant',      label:'Trooper Lieutenant',       service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.65 },
+      { key:'sp_captain',         label:'Trooper Captain',          service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:1.90 },
+      { key:'sp_major',           label:'Major',                    service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.20 },
+      { key:'sp_colonel',         label:'Colonel / Superintendent', service:'police_state', prereqCerts:['patrol_supervisor'],     salaryMultiplier:2.70 }
+    ]
+  },
+
+  // ---------------------------------------------------------------------------
+  // SHIFT TEMPLATES  (Phase 5C)
+  // ---------------------------------------------------------------------------
+  // Built-in shift schedules selectable in the Station Manage modal's shift
+  // editor. Each station also keeps its own `shifts: []` array of custom
+  // schedules. A person's `shiftId` points to either a built-in (by key) or a
+  // station-custom (by id) shift.
+  //
+  //   key            — internal id used by person.shiftId.
+  //   label          — display name in dropdowns.
+  //   cycleDays      — total days in the repeat cycle (24/48 = 3-day cycle).
+  //   onPattern      — per-cycle-day array of on-hour windows. Each window is
+  //                    [startHour, endHour] in 24-hour time. endHour may exceed
+  //                    24 to indicate the shift carries past midnight (cycle
+  //                    rollover handled by isOnDutyNow).
+  //
+  // Common patterns (US fire/EMS career staffing):
+  //   24/48 — 1 day on, 2 days off, 3-day cycle.
+  //   48/96 — 2 days on, 4 days off, 6-day cycle.
+  //   Day shift  — every day 06:00–18:00.
+  //   Night shift — every day 18:00–06:00 (carries into next day).
+  //   Weekday days — Mon–Fri 08:00–17:00.
+  // ---------------------------------------------------------------------------
+  shiftTemplates: [
+    { key:'shift_24_48',    label:'24/48 (1 on, 2 off)',  cycleDays:3, onPattern:[ [[0,24]], [], [] ] },
+    { key:'shift_48_96',    label:'48/96 (2 on, 4 off)',  cycleDays:6, onPattern:[ [[0,24]], [[0,24]], [], [], [], [] ] },
+    { key:'shift_day',      label:'Day shift (06–18)',     cycleDays:1, onPattern:[ [[6,18]] ] },
+    { key:'shift_night',    label:'Night shift (18–06)',   cycleDays:1, onPattern:[ [[18,30]] ] },
+    { key:'shift_weekday',  label:'Weekday daytime',       cycleDays:7, onPattern:[ [[8,17]], [[8,17]], [[8,17]], [[8,17]], [[8,17]], [], [] ] }
+  ],
+
+  // ---------------------------------------------------------------------------
+  // VOLUNTEER + OSM CONSTANTS  (Phase 5D)
+  // ---------------------------------------------------------------------------
+  // overpassEndpoint           — Public Overpass API. Used to fetch buildings
+  //                              per ESN polygon. Retained for future call-
+  //                              generation features (e.g., POI-driven calls).
+  //                              Volunteers no longer consume this data.
+  // overpassTimeoutMs          — Single-query timeout for Overpass fetches.
+  // osmCacheTtlMs              — Per-ESN cache TTL in REAL-LIFE milliseconds.
+  // osmRebuildCooldownSec      — Soft per-ESN cooldown so click-happy "Rebuild"
+  //                              presses don't hammer Overpass.
+  // ambulanceDriverOnlyDefault — Global default for the per-station ambulance
+  //                              driver-only policy. Player-confirmed: FALSE.
+  //                              Ambulances complete crew at the station by
+  //                              default; driver-only response is opt-in.
+  // directToSceneAllowedRoles  — Cert codes whose holders may respond direct
+  //                              to scene (POV) instead of reporting to station
+  //                              first.
+  // ---------------------------------------------------------------------------
+  overpassEndpoint:            'https://overpass-api.de/api/interpreter',
+  overpassTimeoutMs:           10000,
+  osmCacheTtlMs:               30 * 24 * 60 * 60 * 1000,
+  osmRebuildCooldownSec:       30,
+  // Phase 5 bugfix — hourly availability state model.
+  //
+  // Every game-hour, each idle volunteer re-rolls their state:
+  //   • availableHomeChance  — probability of being available at home
+  //   • availableRoamingChance — probability of being available but at a
+  //                              random point inside one of the station's
+  //                              coverage ESNs (rare per spec)
+  //   • the remainder (1 - home - roaming) — unavailable
+  //
+  // Schedule windows still apply on top of these — if the current hour falls
+  // outside a configured availability window, the volunteer is forced to
+  // 'unavailable' regardless of the dice roll.
+  volunteerAvailableHomeChance:    0.7,
+  volunteerAvailableRoamingChance: 0.05,
+  // Post-call release timing (game-seconds).
+  //   • PostCallReleaseGameSec  — after a volunteer's unit reaches the station
+  //     on return, the volunteer stays at-station this long (still flagged
+  //     busy so the player can re-dispatch them) before being marked
+  //     available again.
+  //   • ReturnHomeGameSec       — after that, this long passes before the
+  //     volunteer auto-travels home (if no new assignment intervenes).
+  volunteerPostCallReleaseGameSec: 300,   // 5 game-minutes
+  volunteerReturnHomeGameSec:      600,   // 10 game-minutes after release
+  ambulanceDriverOnlyDefault:  false,
+  directToSceneAllowedRoles: [
+    'fire_officer_1','fire_officer_2',     // chiefs and officers
+    'fire_police',                          // fire police
+    'patrol_officer','patrol_supervisor',   // LEOs
+    'emt','aemt','paramedic','ccp','phrn',  // EMS
+    'emr'                                   // first responders
+  ],
+
+  // ---------------------------------------------------------------------------
+  // SPAN OF CONTROL  (Phase 5E — NIMS/ICS officer-to-responder ratio)
+  // ---------------------------------------------------------------------------
+  // Ratio = subordinates / officers (officers = Fire Officer 1+, EMS Supervisor,
+  // Patrol Supervisor+). Universal across incident size per player requirement.
+  // Each tier ships with a player-facing tooltip explaining what's happening
+  // and how to fix it — surfaced on the call window status chip.
+  // ---------------------------------------------------------------------------
+  spanOfControlTiers: {
+    bored: {
+      label: 'Command Staff Bored',
+      max:   3,            // ratio <= 3 (officers exceed need)
+      color: '#9ca3af',
+      tooltip: 'More officers on scene than needed. Subordinates are underutilized. Send officers to other incidents or release them.'
+    },
+    ideal: {
+      label: 'Ideal Command Staffing',
+      max:   5,            // ratio 4-5
+      color: '#22c55e',
+      tooltip: 'Officer-to-responder ratio is in the sweet spot (1:4–1:5). Command staffing is healthy.'
+    },
+    task_saturated: {
+      label: 'Command Staff Task Saturated',
+      max:   7,            // ratio 6-7
+      color: '#fbbf24',
+      tooltip: 'Officers are stretched thin (1:6–1:7). Consider sending another officer-qualified responder before the incident grows.'
+    },
+    overwhelmed: {
+      label: 'Command Staff Overwhelmed — Need More Officers',
+      max:   Infinity,     // ratio > 7
+      color: '#e8431a',
+      tooltip: 'Not enough officers to safely manage the incident (above 1:7). Send at least one more Fire Officer 1+ / supervisor immediately.'
+    }
+  },
+  // Cert codes that count as "officer" for span-of-control evaluation.
+  spanOfControlOfficerCerts: [
+    'fire_officer_1','fire_officer_2',
+    'ems_supervisor',
+    'patrol_supervisor'
+  ],
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL STABILIZATION RATES  (Phase 5E — personnel-driven patient mechanic)
+  // ---------------------------------------------------------------------------
+  // Per-game-second stabilization contribution from a provider holding each
+  // EMS cert tier. Distinct from the existing unit-level `stabilizationRates`
+  // block above (line 1073) — that one is the unit-on-scene rate inherited
+  // from earlier phases; this one is the additive contribution from each
+  // ASSIGNED personnel (Phase 5E patient mechanic).
+  //
+  // Multiple providers stack additively on the same patient. One provider can
+  // only be assigned to one patient at a time (slot rule, enforced in
+  // assignPersonToPatient).
+  //
+  // Tuning aims: solo EMT resolves a stable patient in ~3–4 in-game minutes;
+  // a Paramedic ~1.5 min; CCP nearly halves that again.
+  // ---------------------------------------------------------------------------
+  personnelStabilizationRates: {
+    emr:       0.0020,    // ~500 sec to stabilize solo
+    emt:       0.0050,    // ~200 sec
+    aemt:      0.0070,    // ~143 sec
+    paramedic: 0.0110,    // ~91 sec
+    ccp:       0.0140,    // ~71 sec
+    phrn:      0.0140
+  },
+  // Cap on how much rate a single patient can receive (avoids 10-provider
+  // pile-on degenerate cases). 0 = no cap.
+  personnelStabilizationMaxRate: 0.05,
+
+  // ---------------------------------------------------------------------------
+  // PERSONNEL NAME POOLS  (Phase 5B)
+  // ---------------------------------------------------------------------------
+  // Used to auto-generate names for auto-staffed and batch-hired personnel.
+  // Players can rename any responder at any time.
+  // ---------------------------------------------------------------------------
+  firstNames: [
+    'James','John','Robert','Michael','William','David','Richard','Joseph','Thomas','Charles',
+    'Christopher','Daniel','Matthew','Anthony','Mark','Donald','Steven','Paul','Andrew','Joshua',
+    'Mary','Patricia','Jennifer','Linda','Elizabeth','Barbara','Susan','Jessica','Sarah','Karen',
+    'Nancy','Lisa','Margaret','Betty','Sandra','Ashley','Kimberly','Emily','Donna','Michelle',
+    'Kevin','Brian','Edward','Ronald','Timothy','Jason','Jeffrey','Ryan','Jacob','Gary'
+  ],
+  lastNames: [
+    'Smith','Johnson','Williams','Brown','Jones','Garcia','Miller','Davis','Rodriguez','Martinez',
+    'Hernandez','Lopez','Gonzalez','Wilson','Anderson','Thomas','Taylor','Moore','Jackson','Martin',
+    'Lee','Perez','Thompson','White','Harris','Sanchez','Clark','Ramirez','Lewis','Robinson',
+    'Walker','Young','Allen','King','Wright','Scott','Torres','Nguyen','Hill','Flores',
+    'Green','Adams','Nelson','Baker','Hall','Rivera','Campbell','Mitchell','Carter','Roberts'
+  ],
 
   // ---------------------------------------------------------------------------
   // SERVICE TAG LOOKUP
@@ -1162,16 +1787,17 @@ const BAM_CONFIG = {
   // ---------------------------------------------------------------------------
   serviceTags: {
     fire:   ['engine','tanker','ladder','rescue','brush'],
-    ems:    ['als','bls','transport','air_als'],
-    police: ['patrol','supervisor','k9','transport_prisoner']
+    ems:    ['als','bls','air_als'],
+    police: ['patrol','supervisor','k9','transport_van']
   },
 
   // ---------------------------------------------------------------------------
   // INCIDENT SPAWN SETTINGS
   // ---------------------------------------------------------------------------
   spawn: {
-    intervalMinMs:  90000,
-    intervalMaxMs:  180000,
+    // Tuned for ~1 call every 5 minutes on average (4–6 min spread).
+    intervalMinMs:  240000,
+    intervalMaxMs:  360000,
     maxActiveIncidents: 8,
     defaultRadiusKm: 8,
 

@@ -207,6 +207,11 @@ function _finishDrawESN() {
       _applyTooltipStyle(polygon, esn.color, esn.labelSize);
       polygon.on('click', () => openESNModal(esn.id));
       esn.polygon = polygon;
+      // Polygon changed, so the per-ESN OSM building cache is stale (candidates
+      // may no longer fall inside the new shape). Purge; the next read lazy-
+      // refetches. Volunteer auto-migration was removed in the abstract-
+      // assembly refactor — volunteers no longer have physical home locations.
+      if(typeof purgeBuildingCacheForESN === 'function') purgeBuildingCacheForESN(esn.id);
       setStatus(`✅ ESN "${esn.name}" shape updated.`);
       openESNModal(editId);
     }
@@ -332,13 +337,31 @@ function openESNModal(esnId) {
   const lsEl = document.getElementById('esn-label-size');
   if (lsEl) lsEl.value = existing?.labelSize || 'md';
 
+  // Phase 5D bug-fix — exclude-from-generation toggle
+  const exEl = document.getElementById('esn-exclude-from-gen');
+  if (exEl) exEl.checked = !!existing?.excludeFromGeneration;
+
   _renderESNAssignUI(existing);
   _renderESNBoxAlarms(esnId);
   // Show "Edit Shape" button only when editing an existing ESN
   const editShapeBtn = document.getElementById('esn-edit-shape-btn');
   if (editShapeBtn) editShapeBtn.style.display = existing ? '' : 'none';
+  // Phase 5D — same visibility rule for "Rebuild Building Cache"
+  const rebuildBtn = document.getElementById('esn-rebuild-osm-btn');
+  if (rebuildBtn) rebuildBtn.style.display = existing ? '' : 'none';
   document.getElementById('esn-modal').classList.add('open');
   setTimeout(() => document.getElementById('esn-name-input').focus(), 40);
+}
+
+// Phase 5D — Rebuild the volunteer building cache for a single ESN. Calls
+// fetchBuildingsForESN(force=true). Provides progress feedback via setStatus.
+async function _esnRebuildBuildingCache(esnId){
+  if(!esnId || typeof fetchBuildingsForESN !== 'function') return;
+  const esn = esns.find(e => e.id === esnId);
+  if(!esn) return;
+  setStatus(`Rebuilding OSM building cache for ${esn.name}…`);
+  await fetchBuildingsForESN(esnId, true);
+  // Status line is set by fetchBuildingsForESN itself.
 }
 
 function closeESNModal() {
@@ -537,6 +560,7 @@ function confirmESNModal() {
   const editId   = document.getElementById('esn-modal').dataset.editId;
   const color    = document.getElementById('esn-color-custom')?.value || '#f0a500';
   const labelSize = document.getElementById('esn-label-size')?.value || 'md';
+  const excludeFromGeneration = !!document.getElementById('esn-exclude-from-gen')?.checked;
 
   const assignments = { fire: [], ems: [], police: [] };
   // Only coverage checkboxes have data-svctype; the DC checkboxes don't, so this naturally skips them.
@@ -554,6 +578,7 @@ function confirmESNModal() {
       esn.color = color;
       esn.labelSize = labelSize;
       esn.assignments = assignments;
+      esn.excludeFromGeneration = excludeFromGeneration;
       esn.polygon?.setStyle({ color, fillColor: color });
       esn.polygon?.setTooltipContent(`<span style="color:${color};">${name}</span>`);
       _applyTooltipStyle(esn.polygon, color, labelSize);
@@ -568,6 +593,7 @@ function confirmESNModal() {
     }
   } else {
     const newESN = _createESN(name, [...drawCoords], assignments, color, labelSize);
+    if(newESN) newESN.excludeFromGeneration = excludeFromGeneration;
     drawCoords = [];
     // Assign to selected DC
     if(selectedDCId && newESN){
@@ -579,6 +605,16 @@ function confirmESNModal() {
   closeESNModal();
   renderESNList();
   renderDCList();
+  // Phase 5A — ESN coverage assignments drive station-to-DC mapping, so refresh
+  // anything that displays unit prefixes when those assignments change.
+  if(typeof renderStationList === 'function')       renderStationList();
+  if(typeof renderUnitList === 'function')          renderUnitList();
+  if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
+  // Phase 5E bug-fix — keep the Database Health panel in sync with the live
+  // ESN list (its OSM cache rows are keyed on esn.id).
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
+  // Volunteer auto-migration on ESN edit was removed (abstract-assembly
+  // refactor — volunteers no longer have physical home locations).
   setStatus(`✅ ESN "${name}" saved.`);
 }
 
@@ -627,6 +663,7 @@ function deleteESN(id) {
   dispatchCenters.forEach(dc => { dc.assignedESNs = dc.assignedESNs.filter(eid => eid !== id); });
   renderESNList();
   renderDCList();
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
   setStatus('🗑 ESN deleted.');
 }
 
@@ -973,6 +1010,11 @@ function startPlaceDispatchCenter() {
 function _openDCCreateModal(latlng) {
   document.getElementById('dc-latlng').value = `${latlng.lat},${latlng.lng}`;
   document.getElementById('dc-name-input').value = '';
+  // Phase 5A — reset prefix fields for a new DC
+  const pfx = document.getElementById('dc-unit-prefix');
+  if(pfx) pfx.value = '';
+  const fmt = document.getElementById('dc-prefix-format');
+  if(fmt) fmt.value = 'bracket';
   document.getElementById('dc-modal').dataset.editId = '';
   const titleEl = document.getElementById('dc-modal-title');
   if (titleEl) titleEl.textContent = 'New Dispatch Center';
@@ -1020,20 +1062,37 @@ function confirmDCModal() {
     if (dc) {
       dc.name         = name;
       dc.assignedESNs = assignedESNs;
+      // Phase 5A — pull updated prefix + format from modal
+      dc.unitPrefix   = document.getElementById('dc-unit-prefix')?.value.trim() || '';
+      dc.prefixFormat = document.getElementById('dc-prefix-format')?.value      || 'bracket';
       dc.marker?.setIcon(_buildDCIcon(name));
       dc.marker?.bindTooltip(name + ' — Dispatch Center');
     }
     closeDCModal();
     renderDCList();
+    // Re-render any open station-related views so prefix changes appear immediately
+    if(typeof renderStationList === 'function')       renderStationList();
+    if(typeof renderUnitList === 'function')          renderUnitList();
+    if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
     setStatus(`✅ Dispatch Center "${name}" updated.`);
   } else {
     // Creating a new DC
     const [lat, lng] = document.getElementById('dc-latlng').value.split(',').map(Number);
     const id     = 'dc_' + Date.now();
     const marker = _buildDCMarker(id, name, lat, lng);
-    dispatchCenters.push({ id, name, lat, lng, assignedESNs, inService: true, marker });
+    // Phase 5A — DC unit prefix + format come from modal inputs (default to empty/bracket)
+    const unitPrefix   = document.getElementById('dc-unit-prefix')?.value.trim() || '';
+    const prefixFormat = document.getElementById('dc-prefix-format')?.value      || 'bracket';
+    dispatchCenters.push({
+      id, name, lat, lng, assignedESNs, inService: true, marker,
+      unitPrefix, prefixFormat
+    });
     closeDCModal();
     renderDCList();
+    // Refresh views so the new prefix shows immediately
+    if(typeof renderStationList === 'function')       renderStationList();
+    if(typeof renderUnitList === 'function')          renderUnitList();
+    if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
     setStatus(`✅ Dispatch Center "${name}" placed.`);
   }
 }
@@ -1152,6 +1211,11 @@ function openDCEditModal(id) {
   document.getElementById('dc-modal-title').textContent = 'Edit Dispatch Center';
   document.getElementById('dc-name-input').value = dc.name;
   document.getElementById('dc-latlng').value = `${dc.lat},${dc.lng}`;
+  // Phase 5A — pre-fill prefix + format
+  const pfx = document.getElementById('dc-unit-prefix');
+  if(pfx) pfx.value = dc.unitPrefix || '';
+  const fmt = document.getElementById('dc-prefix-format');
+  if(fmt) fmt.value = dc.prefixFormat || 'bracket';
   _renderDCESNList(dc.assignedESNs);
   document.getElementById('dc-modal').classList.add('open');
   setTimeout(() => document.getElementById('dc-name-input').focus(), 40);
@@ -1411,14 +1475,23 @@ function getESNSaveData() {
   return esns.map(e => ({
     id: e.id, name: e.name, coords: e.coords,
     assignments: e.assignments, inService: e.inService,
-    color: e.color, labelSize: e.labelSize
+    color: e.color, labelSize: e.labelSize,
+    // Phase 5D — volunteer home/work building cache. Lives in the save blob
+    // (consistent with Phase 5 persistence rule). TTL is 30 real-life days
+    // (Date.now()-based) per docs/data-lifecycle.md. Distinct from the
+    // separate _osmCache used by spawn (line 754) — different shape, different
+    // purpose, both intentionally non-clashing field names.
+    osmBuildingCache: e.osmBuildingCache || null
   }));
 }
 
 function getDCSaveData() {
   return dispatchCenters.map(d => ({
     id: d.id, name: d.name, lat: d.lat, lng: d.lng,
-    assignedESNs: d.assignedESNs, inService: d.inService
+    assignedESNs: d.assignedESNs, inService: d.inService,
+    // Phase 5A — DC-set unit prefix and format
+    unitPrefix:   d.unitPrefix   || '',
+    prefixFormat: d.prefixFormat || 'bracket'
   }));
 }
 
@@ -1450,7 +1523,14 @@ function loadESNData(data) {
 function loadDCData(data) {
   (data || []).forEach(d => {
     const marker = _buildDCMarker(d.id, d.name, d.lat, d.lng);
-    dispatchCenters.push({ ...d, inService: d.inService !== false, marker });
+    // Phase 5A — default prefix fields for older saves missing them
+    dispatchCenters.push({
+      ...d,
+      inService:    d.inService !== false,
+      unitPrefix:   d.unitPrefix   || '',
+      prefixFormat: d.prefixFormat || 'bracket',
+      marker
+    });
   });
   renderDCList();
 }

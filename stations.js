@@ -107,21 +107,26 @@ function renderStationList(){
       // Jail transport phases (set by dispatchPrisonerTransport)
       const isJailTrans = isTrans && u.transportDestination?.type === 'jail';
       const isPickup    = isJailTrans && u.transportPhase === 'enroute_pickup';
+      // Phase 5A — display name applies any DC unit prefix
+      const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
       // Pill text: show ETA on returning, destination on transporting/offloading
-      let pillTxt = u.name;
-      if(isRet)   pillTxt = `${u.name} ↩${formatETA(u._returnRemSec)}`;
+      let pillTxt = dispName;
+      // Phase 5D bug-fix — awaiting volunteer crew at station before depart
+      if(u.status === 'awaiting_crew') pillTxt = `${dispName} ⏳${u._awaitingCrewCount || 0}`;
+      if(isRet)   pillTxt = `${dispName} ↩${formatETA(u._returnRemSec)}`;
       if(isTrans){
-        if(isPickup)         pillTxt = `${u.name} 🚔📥`;
-        else if(isJailTrans) pillTxt = `${u.name} 🚔→`;
-        else                 pillTxt = `${u.name} 🚑→`;
+        if(isPickup)         pillTxt = `${dispName} 🚔📥`;
+        else if(isJailTrans) pillTxt = `${dispName} 🚔→`;
+        else                 pillTxt = `${dispName} 🚑→`;
       }
       if(isOff){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
-        pillTxt = remSec > 0 ? `${u.name} 🏥 ${formatETA(remSec)}` : `${u.name} 🏥`;
+        pillTxt = remSec > 0 ? `${dispName} 🏥 ${formatETA(remSec)}` : `${dispName} 🏥`;
       }
       const cls = uOOS ? 'oos' : (isTrans||isOff ? 'transporting' : u.status);
       // Tooltip text
       let ttip = uOOS ? 'Out of service' : u.status;
+      if(u.status === 'awaiting_crew') ttip = `Awaiting ${u._awaitingCrewCount||0} volunteer${(u._awaitingCrewCount||0)===1?'':'s'} responding to station`;
       if(isRet)   ttip = `Returning — ${formatETA(u._returnRemSec)} to ST`;
       if(isTrans){
         // Resolve destination name across facility types
@@ -148,8 +153,9 @@ function renderStationList(){
         const remSec = u.offloadEndSec ? Math.max(0, u.offloadEndSec - gameSeconds) : 0;
         ttip = remSec > 0 ? `Offloading — ${formatETA(remSec)} until clear` : 'Offloading at facility';
       }
-      return `<span class="unit-pill ${cls}" title="${ttip}"
-               onclick="toggleUnitService('${s.id}','${u.id}');event.stopPropagation();">${pillTxt}</span>`;
+      // Phase 5A: click opens Unit Details; shift-click toggles in/out of service (power-user shortcut).
+      return `<span class="unit-pill ${cls}" title="${ttip} — Click for details, Shift+click to toggle service"
+               onclick="event.stopPropagation(); if(event.shiftKey){ toggleUnitService('${s.id}','${u.id}'); } else { openUnitDetails('${u.id}'); }">${pillTxt}</span>`;
     }).join('');
 
     return `<div class="scard${oos?' oos':''}">
@@ -208,6 +214,12 @@ function openStationModal(type){
   document.getElementById('sm-title').textContent = `New ${typeLabel}`;
   document.getElementById('sm-name').value = '';
   document.getElementById('sm-unitname').value = '';
+  // Phase 5D bug-fix — reset staffing selector + pregenerate toggle to defaults
+  // each time the modal opens so a previous selection doesn't leak across.
+  const stTypeSel = document.getElementById('sm-stationtype');
+  if(stTypeSel) stTypeSel.value = 'career';
+  const preGen = document.getElementById('sm-pregenstaff');
+  if(preGen) preGen.checked = true;
 
   // Filter units to those compatible with this station's unitCategory
   const unitCategory = typeDef?.unitCategory || type;
@@ -233,6 +245,14 @@ function confirmStation(){
   const unitTypeKey = document.getElementById('sm-unittype').value;
   if(!name || !unitName) return;
 
+  // Phase 5D bug-fix — read staffing selections from the create modal so the
+  // generated roster matches the player's intent up front (volunteer station →
+  // volunteer roster, career → career, etc.).
+  const stTypes  = BAM_CONFIG.stationStaffingTypes || ['career','combination','volunteer'];
+  const stTypeIn = document.getElementById('sm-stationtype')?.value || 'career';
+  const stationType = stTypes.includes(stTypeIn) ? stTypeIn : 'career';
+  const pregenStaff = document.getElementById('sm-pregenstaff')?.checked !== false;
+
   const stCost   = BAM_CONFIG.economy.stationCost[_placingStationType] || 0;
   const unitCost = BAM_CONFIG.unitTypes[unitTypeKey]?.cost || 0;
   const total    = stCost + unitCost;
@@ -250,16 +270,34 @@ function confirmStation(){
     status:'available', inService:true, _animGen:0,
     incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[],
     _returnRemSec:0,
+    // Per-unit overrides retired with crewDefaults — seats now own the gate.
+    pinnedPersonnelIds: []
   };
 
   const station = {
     id, name, type:_placingStationType,
     lat:pendingLatLng.lat, lng:pendingLatLng.lng,
-    units:[firstUnit], marker, upgrades:[], inService:true
+    units:[firstUnit], marker, upgrades:[], inService:true,
+    preferredDCId: null,            // Phase 5A — manual DC override (null = auto-pick)
+    stationType,                    // Phase 5D — picked at creation time
+    shifts: [],                     // Phase 5C — custom shift templates
+    // Per-station volunteer assembly delay (game minutes). Only meaningful
+    // for volunteer/combination stations; null until first opened. Seeded
+    // from config defaults in the station modal.
+    volunteerAssembly: null
   };
 
   stations.push(station);
   updateMoney(-total);
+  // Phase 5D — pregenerate the starter roster only when the player asked for it.
+  // generateStarterRoster reads stationType and seeds career or volunteer (with
+  // home/work) accordingly.
+  if(pregenStaff && typeof generateStarterRoster === 'function'){
+    const hired = generateStarterRoster(id, { mode:'create' });
+    if(hired.length){
+      logCashflow(0, `Starter roster: ${hired.length} ${stationType === 'volunteer' ? 'volunteer' : 'responder'}${hired.length===1?'':'s'} at ${name}`);
+    }
+  }
   closeStationModal();
   renderStationList();
   renderStats();
@@ -275,6 +313,9 @@ function openManageStation(stationId){
   const s = stations.find(x => x.id === stationId);
   if(!s) return;
   _activeManageStation = stationId;
+  // Reset to Overview tab on every open so the player always lands on the
+  // main station page first (Phase 5 bugfix — sibling-tab restructure).
+  if(typeof _msmActiveTab !== 'undefined') _msmActiveTab = 'overview';
   document.getElementById('msm-title').textContent = s.name;
   _renderManageBody();
   document.getElementById('manage-station-modal').classList.add('open');
@@ -287,11 +328,142 @@ function closeManageStation(){
   _deleteUnitConfirm = null;
 }
 
+// Phase 5A — renders the Dispatch Center / unit prefix row inside the Manage Station modal.
+// Shows the resolved DC, a picker when multiple DCs cover this station, and a conflict
+// warning when more than one DC could apply and the player hasn't picked one yet.
+function _renderManageDCRow(s){
+  if(typeof getCandidateDCs !== 'function') return '';  // units.js not loaded
+  const candidates = getCandidateDCs(s.id);
+  if(!candidates.length){
+    return `<div style="margin-top:10px;font-size:.78rem;color:var(--muted);">
+      📡 No dispatch center covers this station's ESNs. Assign this station to an ESN and that ESN to a DC to receive a unit prefix.
+    </div>`;
+  }
+  const resolved = getStationDC(s);
+  const conflict = hasStationDCConflict(s);
+
+  // Single DC — just show it, no picker needed
+  if(candidates.length === 1){
+    const dc = candidates[0];
+    const pfxText = dc.unitPrefix
+      ? `prefix <span style="color:var(--gold);font-family:var(--mono);">${dc.unitPrefix}</span>`
+      : '<span style="color:var(--muted);">no prefix set</span>';
+    return `<div style="margin-top:10px;font-size:.82rem;">
+      📡 Dispatch Center: <b>${dc.name.replace(/"/g,'&quot;')}</b> · ${pfxText}
+    </div>`;
+  }
+
+  // Multiple candidate DCs — render a picker so the player can choose one explicitly
+  const options = `<option value="">Auto — first match</option>` +
+    candidates.map(dc => `<option value="${dc.id}" ${s.preferredDCId === dc.id ? 'selected' : ''}>
+      ${dc.name.replace(/"/g,'&quot;')}${dc.unitPrefix ? ' [' + dc.unitPrefix + ']' : ''}
+    </option>`).join('');
+
+  return `<div style="margin-top:10px;">
+    <label class="field-label">Dispatch Center for Unit Prefixes</label>
+    <select id="msm-preferred-dc" onchange="setStationPreferredDC('${s.id}', this.value)" style="width:100%;">
+      ${options}
+    </select>
+    <div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
+      ${resolved ? `Active: <span style="color:var(--text);">${resolved.name.replace(/"/g,'&quot;')}</span>${resolved.unitPrefix ? ' · prefix <span style="color:var(--gold);font-family:var(--mono);">' + resolved.unitPrefix + '</span>' : ''}` : ''}
+    </div>
+    ${conflict ? `<div style="margin-top:6px;color:var(--gold);font-size:.78rem;">
+      ⚠ Multiple DCs cover this station's ESNs. Pick one to lock in the prefix.
+    </div>` : ''}
+  </div>`;
+}
+
+// Persists the player's DC choice for prefix resolution and refreshes all unit views.
+function setStationPreferredDC(stationId, dcId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return;
+  s.preferredDCId = dcId || null;
+  renderStationList();
+  if(typeof renderUnitList === 'function')          renderUnitList();
+  if(typeof refreshAllUnitMapLabels === 'function') refreshAllUnitMapLabels();
+  _renderManageBody();
+  setStatus(dcId
+    ? `Preferred DC set for ${s.name}.`
+    : `Preferred DC cleared for ${s.name} — using first match.`);
+}
+
 // Renders the content inside the manage station modal.
+// Phase 5 bugfix — top-level tab restructure. The header (name + DC + personnel
+// summary chips) renders on every tab. Body dispatches to the active tab:
+//   overview · roster · training · shifts
 function _renderManageBody(){
   const s = stations.find(x => x.id === _activeManageStation);
   if(!s) return;
 
+  // Default tab when the state var is undefined (e.g. first invocation before
+  // personnel.js defined it).
+  if(typeof _msmActiveTab === 'undefined' || _msmActiveTab == null) _msmActiveTab = 'overview';
+  const tabKey = ['overview','roster','training','shifts'].includes(_msmActiveTab) ? _msmActiveTab : 'overview';
+
+  // Always-visible header — station name + DC picker. The personnel summary
+  // (staffing type, roster counts, composition, categories, salaries, cert
+  // breakdown) moved to the personnel-related tabs only per the Phase 5
+  // bug list — keeps Station Overview focused on the station itself.
+  const headerHtml = `<label class="field-label">Station Name</label>
+  <div style="display:flex;gap:8px;">
+    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
+    <button class="btn-sm" onclick="renameStation()">Rename</button>
+  </div>
+  ${_renderManageDCRow(s)}`;
+
+  // Top-level tab strip — sibling tabs, Overview owns the original station chrome.
+  const tabBtn = (key, label) => {
+    const active = tabKey === key;
+    return `<div style="flex:1;padding:8px 10px;text-align:center;font-size:.78rem;letter-spacing:1px;text-transform:uppercase;cursor:pointer;
+      border-bottom:2px solid ${active?'var(--gold)':'transparent'};color:${active?'var(--gold)':'var(--muted)'};"
+      onclick="setMSMActiveTab('${key}')">${label}</div>`;
+  };
+  const tabBar = `<div style="display:flex;border-bottom:1px solid var(--border);margin-top:14px;">
+    ${tabBtn('overview', 'Station Overview')}
+    ${tabBtn('roster',   'Roster')}
+    ${tabBtn('training', 'Training')}
+    ${tabBtn('shifts',   'Shifts')}
+  </div>`;
+
+  let bodyHtml = '';
+  // Personnel summary (staffing chips + cert breakdown) is prepended to each
+  // personnel-related tab so the player sees roster context whenever they're
+  // looking at roster / training / shifts data, without cluttering Overview.
+  const personnelHeader = (tabKey === 'roster' || tabKey === 'training' || tabKey === 'shifts')
+    && typeof renderStationPersonnelSummaryHTML === 'function'
+      ? renderStationPersonnelSummaryHTML(s) : '';
+  if(tabKey === 'roster' && typeof _renderStationRosterTab === 'function'){
+    const careerCount = (typeof getPersonnelByStation === 'function')
+      ? getPersonnelByStation(s.id).filter(p => p.type !== 'volunteer').length : 0;
+    bodyHtml = personnelHeader + _renderStationRosterTab(s.id, careerCount);
+  } else if(tabKey === 'training' && typeof _renderStationTrainingTab === 'function'){
+    bodyHtml = personnelHeader + _renderStationTrainingTab(s.id);
+  } else if(tabKey === 'shifts' && typeof _renderStationShiftsTab === 'function'){
+    bodyHtml = personnelHeader + _renderStationShiftsTab(s.id);
+  } else {
+    bodyHtml = _renderStationOverviewTabBody(s);
+  }
+
+  // Delete station button state — kept in the modal footer, refreshed each render.
+  const delBtn = document.getElementById('msm-delete-btn');
+  if(delBtn){
+    delBtn.disabled = false;
+    if(_deleteStationConfirm === s.id){
+      delBtn.textContent = 'Confirm Delete?';
+      delBtn.style.background = 'var(--accent)';
+    } else {
+      delBtn.textContent = 'Delete Station';
+      delBtn.style.background = '';
+    }
+  }
+
+  document.getElementById('msm-body').innerHTML =
+    headerHtml + tabBar + `<div style="padding-top:12px;">${bodyHtml}</div>`;
+}
+
+// Overview tab body — units list, add-unit row, upgrades section. Everything
+// the old single-page modal had EXCEPT the personnel section (now its own tabs).
+function _renderStationOverviewTabBody(s){
   // Determine which unit types are available for this station
   const typeDef = BAM_CONFIG.stationTypeDefs[s.type];
   const unitCategory = typeDef?.unitCategory || s.type;
@@ -312,12 +484,7 @@ function _renderManageBody(){
     }
   });
 
-  let html = `<label class="field-label">Station Name</label>
-  <div style="display:flex;gap:8px;">
-    <input type="text" id="msm-rename-input" value="${s.name.replace(/"/g,'&quot;')}" style="flex:1;"/>
-    <button class="btn-sm" onclick="renameStation()">Rename</button>
-  </div>
-  <div class="section-title" style="margin-top:14px;">Units (${s.units.length})</div>`;
+  let html = `<div class="section-title" style="margin-top:0;">Units (${s.units.length})</div>`;
 
   if(!s.units.length){
     html += '<div class="empty-msg">No units. Add one below.</div>';
@@ -326,6 +493,12 @@ function _renderManageBody(){
     const utCfg = BAM_CONFIG.unitTypes[u.typeKey];
     const statusBadge = u.status !== 'available'
       ? `<span style="font-size:.6rem;color:var(--gold);">${u.status.replace('_',' ').toUpperCase()}</span>` : '';
+    // Phase 5A — show the prefixed display name as a hint above the rename input so the player
+    // sees what the unit currently looks like with its DC prefix applied.
+    const dispName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
+    const showPrefixHint = dispName !== u.name;
+    // Phase 5B — staffing chip (🟢 Ready / 🟡 Min only / 🔴 Understaffed / 🚫 No driver)
+    const staffingChip = (typeof renderUnitStaffingChip === 'function') ? renderUnitStaffingChip(u) : '';
     html += `<div class="manage-unit-row" draggable="true" data-unit-id="${u.id}"
                ondragstart="_unitDragStart(event)"
                ondragover="_unitDragOver(event)"
@@ -334,10 +507,13 @@ function _renderManageBody(){
       <span style="font-size:.9rem;color:var(--muted);margin-right:4px;cursor:grab;" title="Drag to reorder">⠿</span>
       <div class="manage-unit-name">
         <input type="text" id="msm-u-${u.id}" value="${u.name.replace(/"/g,'&quot;')}" style="width:100%;"/>
+        ${showPrefixHint ? `<div style="font-size:.68rem;color:var(--muted);margin-top:2px;">Display: ${dispName.replace(/"/g,'&quot;')}</div>` : ''}
+        ${staffingChip ? `<div style="margin-top:3px;">${staffingChip}</div>` : ''}
       </div>
       <span class="manage-unit-label">${utCfg?.label || u.typeKey}</span>
       ${statusBadge}
       <button class="btn-sm" onclick="renameUnit('${u.id}')">Save</button>
+      <button class="btn-sm" onclick="openUnitDetails('${u.id}')" title="Unit details">ℹ︎</button>
       ${_deleteUnitConfirm === u.id
         ? `<button class="btn-sm danger" onclick="deleteUnit('${u.id}')" style="border-color:var(--accent);color:var(--accent);background:rgba(232,67,26,.15);">Confirm?</button>`
         : `<button class="btn-sm danger" onclick="deleteUnit('${u.id}')">Delete</button>`}
@@ -388,20 +564,7 @@ function _renderManageBody(){
     });
   }
 
-  // Delete station button
-  const delBtn = document.getElementById('msm-delete-btn');
-  if(delBtn){
-    delBtn.disabled = false;
-    if(_deleteStationConfirm === s.id){
-      delBtn.textContent = 'Confirm Delete?';
-      delBtn.style.background = 'var(--accent)';
-    } else {
-      delBtn.textContent = 'Delete Station';
-      delBtn.style.background = '';
-    }
-  }
-
-  document.getElementById('msm-body').innerHTML = html;
+  return html;
 }
 
 // Renames the active station.
@@ -526,12 +689,21 @@ function deleteStation(){
   });
   s.marker?.remove();
   const refund = BAM_CONFIG.economy.stationCost[s.type] || 0;
+  // Phase 5B — cascade personnel deletion. Force=true so any responder marked
+  // busy on a call gets released along with the station (matches the station
+  // force-delete escape hatch in docs/data-lifecycle.md).
+  let cascadedPersonnel = 0;
+  if(typeof cascadeDeletePersonnelForStation === 'function'){
+    const res = cascadeDeletePersonnelForStation(s.id, { force: true });
+    cascadedPersonnel = res.removed.length;
+  }
   stations = stations.filter(x => x.id !== _activeManageStation);
   updateMoney(refund);
   if(refund > 0) logCashflow(refund, `Station sold: ${s.name}`);
   closeManageStation();
   renderStationList(); renderStats(); renderIncidentList();
-  setStatus(`🗑 Station deleted. Refund: +$${refund.toLocaleString()}`);
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  setStatus(`🗑 Station deleted${cascadedPersonnel ? ` (${cascadedPersonnel} personnel released)` : ''}. Refund: +$${refund.toLocaleString()}`);
 }
 
 // Purchases a station upgrade and installs it.
@@ -563,6 +735,9 @@ function getStationSaveData(){
   return stations.map(s => ({
     id:s.id, name:s.name, type:s.type, lat:s.lat, lng:s.lng,
     upgrades:s.upgrades||[], inService:s.inService,
+    // Phase 5A — manual DC override when multiple DCs serve this station's ESNs.
+    // null means "auto pick first matching DC" (see getStationDC()).
+    preferredDCId: s.preferredDCId || null,
     _holdingCells: s._holdingCells ? {
       installed: true,
       cells: s._holdingCells.cells,
@@ -589,14 +764,30 @@ function recreateStation(s){
   const station = {
     ...s, marker,
     inService: s.inService !== false,
+    preferredDCId:   s.preferredDCId   || null,       // Phase 5A
+    stationType:     s.stationType     || 'career',   // Phase 5B — defaults career on legacy saves
+    shifts:          s.shifts          || [],         // Phase 5C — custom shift templates
+    // Per-station volunteer assembly delay window (game minutes). Seeded from
+    // config defaults the first time a station is loaded; player-editable in
+    // the station modal. Carries through saves verbatim once set.
+    volunteerAssembly: s.volunteerAssembly || null,
     _holdingCells: s._holdingCells || undefined,
-    units: s.units.map(u => ({
-      ...u, inService: u.inService !== false,
-      status: ['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
-      _animGen:0, _returnRemSec:0,
-      incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
-    }))
+    units: s.units.map(u => {
+      // Strip retired fields from legacy saves: crewMin, crewIdeal,
+      // idealCrewWaitMs, staffingPolicy. Seats now own the dispatch gate.
+      const { crewMin:_cm, crewIdeal:_ci, idealCrewWaitMs:_iw, staffingPolicy:_sp, ...rest } = u;
+      return {
+        ...rest, inService: u.inService !== false,
+        status: ['available','oos'].includes(u.status||'available') ? (u.status||'available') : 'available',
+        pinnedPersonnelIds: u.pinnedPersonnelIds || [],
+        _animGen:0, _returnRemSec:0,
+        incidentId:null, routeLine:null, returnLine:null, animMarker:null, routeCoords:[]
+      };
+    })
   };
+  // Strip retired station field too — but we already left it off `s` upstream
+  // (the save shape no longer ships it). Defensive delete in case of older saves.
+  delete station.idealCrewWaitMs;
   stations.push(station);
 }
 
@@ -898,6 +1089,8 @@ function seedTestData(){
     stations.push({
       id, name:seed.name, type:seed.type, lat:seed.lat, lng:seed.lng,
       upgrades:[], marker, inService:true,
+      preferredDCId: null,   // Phase 5A — manual DC override
+
       units: seed.units.map((u,i) => ({
         id:'u_seed_'+Date.now()+'_'+i, name:u.name, typeKey:u.typeKey,
         status:'available', inService:true, _animGen:0, _returnRemSec:0,

@@ -1,0 +1,3962 @@
+// =============================================================================
+// BY ANY MEANS — PERSONNEL MODULE (Phase 5B)
+// =============================================================================
+// Owns everything about individual responders:
+//   • Career personnel data model (`personnel[]` top-level state)
+//   • Cert taxonomy + equivalency expansion (paramedic counts as EMT, etc.)
+//   • Crew matching against unit min/ideal slots (greedy bipartite, slot rule)
+//   • Auto-staff / batch-hire economics (hire cost = base + Σ cert costs)
+//   • Per-station and per-unit roster summary rendering
+//   • Personnel tab in the Operations Modal
+//
+// Depends on: config.js, stations.js (stations[]), index.html (money, updateMoney,
+// logCashflow, setStatus, gameSeconds). Loaded after units.js.
+// =============================================================================
+
+// ── STATE ────────────────────────────────────────────────────────────────────
+// Top-level array of every career responder in the world.
+// Volunteers land in 5D and will share the same shape with type='volunteer'.
+// Each record:
+//   { id, name, stationId, pinnedUnitId, type, rank, certs[], preference,
+//     status, currentAssignment, createdAt, playerEdited }
+let personnel = [];
+
+// Operations Modal → Personnel tab state. Live filters/sort across renders.
+let _personnelTabSearch        = '';
+let _personnelTabStationFilter = '';   // station id; '' = all
+let _personnelTabCertFilter    = '';   // cert id;    '' = all
+let _personnelTabSort          = 'station';  // station | name | rank | certs | status
+
+// Add-personnel modal state (single + batch hire).
+let _addPersonModalStationId = null;
+let _addPersonModalBatch     = false;
+let _addPersonModalCerts     = new Set();
+let _addPersonModalCount     = 1;
+let _addPersonModalName      = '';
+let _addPersonModalPref      = 'either';
+let _addPersonModalType      = 'career';   // Phase 5D — 'career' | 'volunteer'
+
+// ── ID GENERATION ───────────────────────────────────────────────────────────
+// Personnel use the `p_` prefix per docs/conventions.md.
+function _genPersonnelId(){
+  return 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+}
+
+// =============================================================================
+// CERTIFICATION HELPERS
+// =============================================================================
+
+// Returns the union of a person's held certs PLUS every cert those certs
+// transitively satisfy. Example: ['paramedic'] → {paramedic, aemt, emt, emr}.
+// Used by the crew matcher so a Paramedic can fill an EMT crew slot.
+function expandCertSet(certIds){
+  const out = new Set();
+  const defs = BAM_CONFIG.certifications || {};
+  const walk = (id) => {
+    if(!id || out.has(id)) return;
+    out.add(id);
+    const def = defs[id];
+    if(!def) return;
+    (def.satisfies || []).forEach(walk);
+  };
+  (certIds || []).forEach(walk);
+  return out;
+}
+
+// True if a person holds (or satisfies) a given cert via transitive equivalency.
+function personHasCert(person, certId){
+  if(!person || !certId) return false;
+  return expandCertSet(person.certs || []).has(certId);
+}
+
+// =============================================================================
+// SEAT HELPERS  (seats are the single source of truth for capacity + crew req)
+// =============================================================================
+// Each unit type's `seats[]` defines:
+//   • Responder seats (default) — accept assigned crew. Optional flags:
+//       requiredCert         (HARD gate — seat must fill with this cert to roll)
+//       interchangeableCerts (additional certs that also satisfy the hard gate)
+//       niceToHaveCerts      (additive scoring bonus)
+//       isDriver             (label-only; the seat's own requiredCert is the gate)
+//   • Patient seats (isPatientSeat:true)  — stretcher; counts toward patient
+//                                            transport capacity. Responder
+//                                            assignment skips these.
+//   • Prisoner seats (isPrisonerSeat:true) — cell/cage; counts toward prisoner
+//                                            transport capacity. Same skip rule.
+// Plus per-unit-type:
+//   autoFillOptionalSeats — true: default-dispatch fills every responder seat.
+//                            false: default-dispatch only fills required + driver
+//                                   (ambulance / police). Also drives ideal-crew
+//                                   semantics (see hasIdealCrew below).
+// =============================================================================
+
+// Returns true for seats that hold a responder (not patient/prisoner).
+function isResponderSeat(seat){
+  return !!seat && !seat.isPatientSeat && !seat.isPrisonerSeat;
+}
+
+// Returns the seating layout array for the given unit (empty if none configured).
+function _seatsOf(unitOrType){
+  const typeKey = (typeof unitOrType === 'string') ? unitOrType : unitOrType?.typeKey;
+  return BAM_CONFIG.unitTypes?.[typeKey]?.seats || [];
+}
+
+// All seats that accept a responder, in config order.
+function getResponderSeats(unit){
+  return _seatsOf(unit).filter(isResponderSeat);
+}
+
+// Seats that MUST be filled for the apparatus to roll. Defined as: any seat
+// with requiredCert set (driver or otherwise). The isDriver flag alone is
+// label-only — explicit requiredCert is what marks a seat as required.
+function getRequiredSeats(unit){
+  return getResponderSeats(unit).filter(s => !!s.requiredCert);
+}
+
+// Returns true if the given expanded cert set satisfies a seat's hard gate.
+// The hard gate is `requiredCert` OR any cert in `interchangeableCerts[]`.
+// A seat with no requiredCert is optional — anyone (including no one) satisfies.
+function _seatHardGateOk(personCertSet, seat){
+  if(!seat || !seat.requiredCert) return true;
+  if(personCertSet.has(seat.requiredCert)) return true;
+  const inter = seat.interchangeableCerts || [];
+  for(const c of inter){ if(personCertSet.has(c)) return true; }
+  return false;
+}
+
+// Returns true if the unit's typeKey opts into filling optional (non-requiredCert)
+// seats during default auto-dispatch. Fire apparatus default true; ambulance /
+// police default false so the auto path doesn't waste personnel on bench seats.
+function unitAutoFillsOptionalSeats(unit){
+  if(!unit) return false;
+  const ut = BAM_CONFIG.unitTypes?.[unit.typeKey];
+  return !!ut?.autoFillOptionalSeats;
+}
+
+// Returns the unit's driver-cert (the requiredCert on its first isDriver seat),
+// or null if the apparatus has no driver gate (helicopter pilot in current config).
+function getUnitDriverCert(unit){
+  const driverSeat = _seatsOf(unit).find(s => s.isDriver);
+  return driverSeat?.requiredCert || null;
+}
+
+// Capacity helpers — replace the retired `maxTransportCapacity` field.
+function unitPatientCapacity(unit){
+  return _seatsOf(unit).filter(s => s.isPatientSeat).length;
+}
+function unitPrisonerCapacity(unit){
+  return _seatsOf(unit).filter(s => s.isPrisonerSeat).length;
+}
+function unitCanTransportPatient(unit){
+  return unitPatientCapacity(unit) > 0;
+}
+function unitCanTransportPrisoner(unit){
+  return unitPrisonerCapacity(unit) > 0;
+}
+
+// Returns the count of seats with the given flag (isPatientSeat | isPrisonerSeat).
+function unitSeatFlagCount(unit, flag){
+  return _seatsOf(unit).filter(s => !!s[flag]).length;
+}
+
+// Mission/box-alarm requirement matching. A `requirement` can be:
+//   • an array of strings (legacy tag-group), where 'transport' →
+//     isPatientSeat and 'transport_prisoner' → isPrisonerSeat for backward
+//     compat with any persisted preferences
+//   • an object { tags?: string[], needs?: 'isPatientSeat'|'isPrisonerSeat' }
+// Returns true iff the unit satisfies the slot.
+function unitMatchesRequirement(unit, req){
+  if(!unit || !req) return false;
+  const tags = BAM_CONFIG.unitTypes?.[unit.typeKey]?.tags || [];
+  // Legacy string-array shape.
+  if(Array.isArray(req)){
+    return req.some(token => {
+      if(token === 'transport')           return unitCanTransportPatient(unit);
+      if(token === 'transport_prisoner')  return unitCanTransportPrisoner(unit);
+      return tags.includes(token);
+    });
+  }
+  // Object shape.
+  const tagsOk  = !req.tags  || req.tags.some(t => tags.includes(t));
+  const needsOk = !req.needs || (
+    req.needs === 'isPatientSeat'  ? unitCanTransportPatient(unit)  :
+    req.needs === 'isPrisonerSeat' ? unitCanTransportPrisoner(unit) : false
+  );
+  return tagsOk && needsOk;
+}
+
+// Validates that a candidate cert list is internally consistent (every prereq
+// is also present). Used at hire time to prevent paying for AEMT without EMT.
+// Returns { ok, missing } — missing lists the unmet prereq codes.
+function validateCertPrereqs(certIds){
+  const have = new Set(certIds || []);
+  const defs = BAM_CONFIG.certifications || {};
+  const missing = [];
+  have.forEach(c => {
+    const def = defs[c];
+    if(!def) return;
+    (def.prereqs || []).forEach(p => {
+      if(!have.has(p) && !expandCertSet([...have]).has(p)) missing.push(p);
+    });
+  });
+  return { ok: missing.length === 0, missing };
+}
+
+// =============================================================================
+// ECONOMICS
+// =============================================================================
+
+// Returns the $ cost to onboard `count` responders, each holding every cert in
+// `certs`. Cost = (PERSONNEL_HIRE_COST_BASE + Σ cert.cost) × count.
+// Unknown cert codes are charged 0 (defensive — should never happen in practice).
+function calcHireCost({ count = 1, certs = [] } = {}){
+  const defs = BAM_CONFIG.certifications || {};
+  const certTotal = certs.reduce((sum, c) => sum + (defs[c]?.cost || 0), 0);
+  const perPerson = (BAM_CONFIG.personnelHireCostBase || 0) + certTotal;
+  return perPerson * Math.max(0, count|0);
+}
+
+// =============================================================================
+// CRUD
+// =============================================================================
+
+// Returns the personnel record with the given id, or null.
+function getPersonnelById(id){
+  return personnel.find(p => p.id === id) || null;
+}
+
+// Returns all personnel currently assigned to a station.
+function getPersonnelByStation(stationId){
+  return personnel.filter(p => p.stationId === stationId);
+}
+
+// Returns all personnel currently pinned to a specific unit.
+function getPinnedPersonnelForUnit(unitId){
+  return personnel.filter(p => p.pinnedUnitId === unitId);
+}
+
+// Picks a random first+last name from the config pools. Used by auto-staff
+// and as the default name when the player doesn't type one in Add Person.
+function _randomPersonName(){
+  const fn = BAM_CONFIG.firstNames || ['Jane'];
+  const ln = BAM_CONFIG.lastNames  || ['Doe'];
+  return fn[Math.floor(Math.random() * fn.length)] + ' ' + ln[Math.floor(Math.random() * ln.length)];
+}
+
+// Picks a sensible default `rank` from a cert set (used for new hires before
+// 5C builds the rank picker). Returns a free-text rank string.
+function _defaultRankFromCerts(certs){
+  const set = expandCertSet(certs);
+  if(set.has('fire_officer_2'))   return 'Battalion Chief';
+  if(set.has('fire_officer_1'))   return 'Lieutenant';
+  if(set.has('paramedic'))        return 'Paramedic';
+  if(set.has('aemt'))             return 'AEMT';
+  if(set.has('emt'))              return 'EMT';
+  if(set.has('emr'))              return 'EMR';
+  if(set.has('patrol_supervisor'))return 'Sergeant';
+  if(set.has('patrol_officer'))   return 'Patrol Officer';
+  if(set.has('ff2'))              return 'Senior Firefighter';
+  if(set.has('ff1'))              return 'Firefighter';
+  return 'Probationary';
+}
+
+// =============================================================================
+// RANK HELPERS  (Phase 5C)
+// =============================================================================
+
+// Returns the entire rankConfig as a flat array across all services. Used by
+// promote pickers and rank lookups.
+function _allRankDefs(){
+  const cfg = BAM_CONFIG.rankConfig || {};
+  return Object.values(cfg).flat();
+}
+
+// Looks up a single rank definition by its `key`. Returns null if not found
+// (e.g. legacy person with free-text rank only).
+function getRankByKey(rankKey){
+  if(!rankKey) return null;
+  return _allRankDefs().find(r => r.key === rankKey) || null;
+}
+
+// Picks a sensible default rankKey from a cert set + service preference. Mirrors
+// _defaultRankFromCerts but returns a rankConfig key instead of a free-text
+// label, so salary derivation and promote eligibility can use it directly.
+// Service hint:
+//   'fire' | 'ems' | 'police' | 'either'
+// Defaults to fire if 'either' and the cert mix is fire-heavy, otherwise EMS.
+function _defaultRankKeyFromCerts(certs, service){
+  const set = expandCertSet(certs);
+  // Police is unambiguous — if patrol_officer is held, we go police.
+  if(set.has('patrol_officer') || service === 'police'){
+    if(set.has('patrol_supervisor')) return 'pol_sergeant';
+    return 'pol_officer';
+  }
+  // Service preference drives fire-vs-EMS when both are credible.
+  const preferEms = service === 'ems'
+    || (service !== 'fire' && (set.has('paramedic') || set.has('aemt') || set.has('emt')) && !set.has('ff1'));
+  if(preferEms){
+    if(set.has('paramedic'))     return 'ems_paramedic';
+    if(set.has('aemt'))          return 'ems_aemt';
+    if(set.has('emt'))           return 'ems_emt';
+    if(set.has('emr'))           return 'ems_emr';
+    if(set.has('evoc_small'))    return 'ems_driver';
+    return 'ems_probationary';
+  }
+  // Fire side.
+  if(set.has('fire_officer_2'))                       return 'fire_battalion';
+  if(set.has('fire_officer_1'))                       return 'fire_lieutenant';
+  if(set.has('pump_ops_1') && set.has('evoc_large'))  return 'fire_driver_op';
+  if(set.has('ff2'))                                  return 'fire_senior_ff';
+  if(set.has('ff1'))                                  return 'fire_firefighter';
+  return 'fire_probationary';
+}
+
+// Returns the daily salary for a person in $. Career personnel derive from
+// rankKey × salaryBaseAnnual / 365. Volunteers always return 0 (no salary).
+// If `salaryAnnual` is explicitly set on the record it wins (player override).
+function getSalaryDailyFor(person){
+  if(!person) return 0;
+  // Volunteers never accrue salary. Belt-and-suspenders: also zero out a stale
+  // salaryAnnual that may have leaked in from an earlier bug (career roster
+  // converted to volunteer pre-cascade-fix, etc.) so payroll math stays clean.
+  if(person.type === 'volunteer'){
+    if(person.salaryAnnual) person.salaryAnnual = 0;
+    return 0;
+  }
+  const annual = (person.salaryAnnual != null)
+    ? person.salaryAnnual
+    : _deriveSalaryAnnual(person.rankKey);
+  return annual / 365;
+}
+
+// Computes annual salary in $ for a given rankKey. Returns salaryBaseAnnual if
+// no rank lookup matches (graceful fallback for legacy free-text-only ranks).
+function _deriveSalaryAnnual(rankKey){
+  const base = BAM_CONFIG.salaryBaseAnnual || 0;
+  const def  = getRankByKey(rankKey);
+  if(!def) return base;
+  return Math.round(base * (def.salaryMultiplier || 1.0));
+}
+
+// Creates one personnel record. Does NOT debit money — callers (addPersonnel,
+// batchAddPersonnel, generateStarterRoster) handle cashflow.
+function _createPersonnelRecord(stationId, { name, type='career', rank, rankKey, certs=[], preference='either' } = {}){
+  const finalCerts  = Array.from(new Set(certs)); // dedupe
+  const finalRankKey = rankKey || _defaultRankKeyFromCerts(finalCerts, preference);
+  const rec = {
+    id: _genPersonnelId(),
+    name: (name && name.trim()) || _randomPersonName(),
+    stationId,
+    pinnedUnitId: null,
+    type,
+    // Phase 5B free-text rank kept for back-compat / display. If rankKey resolves
+    // we prefer its label; otherwise fall back to the cert-derived free-text rank.
+    rank: rank || (getRankByKey(finalRankKey)?.label) || _defaultRankFromCerts(finalCerts),
+    // Phase 5C — points into BAM_CONFIG.rankConfig. Drives salary + promote.
+    rankKey: finalRankKey,
+    certs: finalCerts,
+    preference,
+    status: 'available',
+    currentAssignment: null,
+    createdAt: Date.now(),
+    playerEdited: false,
+    // Phase 5C — shift assignment + salary. shiftId null = always-on (treated
+    // as on-duty until the player assigns a real shift). salaryAnnual is
+    // derived from rankKey at hire time; player can override later.
+    shiftId:      null,
+    salaryAnnual: (type === 'volunteer') ? 0 : _deriveSalaryAnnual(finalRankKey),
+    // Volunteer availability state model (abstract-assembly refactor).
+    //
+    //   currentState        — 'unavailable' | 'home' | 'roaming' | 'at_station'
+    //   nextRollGameHour    — integer game-hour at which to re-roll (0 forces
+    //                         a first roll on the next hourly tick after hire)
+    //   schedule            — optional player-defined availability windows
+    //   forceAvailableUntil — optional player override; while gameSeconds is
+    //                         below this value, volunteer is forced 'home'
+    //                         regardless of the roll
+    //
+    // Career personnel use shift gating instead; availability stays null.
+    availability: (type === 'volunteer') ? {
+      currentState:        'home',           // start available so first dispatch isn't blocked
+      nextRollGameHour:    0,
+      schedule:            [],
+      forceAvailableUntil: null
+    } : null,
+    // Phase 5E — per-person stat counters + career history log.
+    stats: _emptyStats(),
+    history: []
+  };
+  personnel.push(rec);
+  return rec;
+}
+
+// Public: hire one career responder. Debits hire cost upfront and logs cashflow.
+// Returns the created record on success, or null if funds are insufficient.
+function addPersonnel(stationId, opts = {}){
+  const cost = calcHireCost({ count:1, certs: opts.certs || [] });
+  if(money < cost){
+    setStatus(`Cannot hire — need $${cost.toLocaleString()}, have $${money.toLocaleString()}.`);
+    return null;
+  }
+  updateMoney(-cost);
+  logCashflow(-cost, `Hired ${opts.name || 'new responder'}`);
+  const rec = _createPersonnelRecord(stationId, opts);
+  setStatus(`Hired ${rec.name} (${rec.rank}) — −$${cost.toLocaleString()}.`);
+  return rec;
+}
+
+// Public: hire `count` identical responders in one transaction.
+// Phase 5D — accepts `type` ('career' | 'volunteer'). Volunteers are unpaid;
+// the hire fee covers training+gear. Returns { hired, cost, ok }. If funds are
+// insufficient, hires zero.
+function batchAddPersonnel(stationId, { count = 1, certs = [], preference = 'either', type = 'career' } = {}){
+  const cost = calcHireCost({ count, certs });
+  if(money < cost){
+    setStatus(`Cannot batch-hire — need $${cost.toLocaleString()}, have $${money.toLocaleString()}.`);
+    return { hired: [], cost, ok: false };
+  }
+  updateMoney(-cost);
+  logCashflow(-cost, `Batch hired ${count} ${type === 'volunteer' ? 'volunteer' : 'responder'}${count===1?'':'s'}`);
+  const hired = [];
+  for(let i = 0; i < count; i++){
+    hired.push(_createPersonnelRecord(stationId, { certs, preference, type }));
+  }
+  setStatus(`Hired ${count} ${type === 'volunteer' ? 'volunteer' : 'responder'}${count===1?'':'s'} — −$${cost.toLocaleString()}.`);
+  return { hired, cost, ok: true };
+}
+
+// Public: removes a personnel record. Blocks if status==='busy' unless force.
+// Returns { ok, conflicts } — conflicts describes why removal was refused.
+function deletePersonnel(personnelId, { force = false } = {}){
+  const idx = personnel.findIndex(p => p.id === personnelId);
+  if(idx < 0) return { ok: false, conflicts: ['not_found'] };
+  const p = personnel[idx];
+  if(p.status === 'busy' && !force){
+    return { ok: false, conflicts: ['on_active_assignment'] };
+  }
+  // If force-deleting a busy responder, also detach from the unit they're on.
+  if(p.status === 'busy' && p.currentAssignment?.unitId){
+    // Defensive: the unit's crew list lives in personnel.pinnedUnitId for pinned,
+    // or transient assignment for auto-assigned. No mirrored field to clean here.
+  }
+  personnel.splice(idx, 1);
+  return { ok: true, conflicts: [] };
+}
+
+// Public: moves a person to a different station. First-class non-destructive
+// action — the alternative to delete + re-hire. Clears any pin (pin belongs
+// to a unit at the old station). Returns the updated record or null.
+function reassignPersonnel(personnelId, newStationId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return null;
+  const oldStationId = p.stationId;
+  p.stationId    = newStationId;
+  p.pinnedUnitId = null;          // pin doesn't carry across stations
+  p.playerEdited = true;
+  setStatus(`${p.name} reassigned.`);
+  return p;
+}
+
+// Public: patches arbitrary fields on a person (name, certs, preference, rank).
+// Marks playerEdited=true so 5D's auto-migration logic leaves this person alone.
+function updatePersonnel(personnelId, patch = {}){
+  const p = getPersonnelById(personnelId);
+  if(!p) return null;
+  Object.assign(p, patch);
+  p.playerEdited = true;
+  return p;
+}
+
+// Public: pins a person to a specific unit (or unpins when unitId is null).
+// Pinned personnel are tried first by the crew matcher before pool fallback.
+// Validates that the unit belongs to the person's station; otherwise no-op.
+function pinPersonnelToUnit(personnelId, unitId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return null;
+  if(unitId === null){
+    p.pinnedUnitId = null;
+    return p;
+  }
+  // Verify the unit is at the person's current station.
+  const station = stations.find(s => s.id === p.stationId);
+  if(!station || !station.units?.some(u => u.id === unitId)){
+    setStatus('Cannot pin — unit is not at this person\'s station.');
+    return null;
+  }
+  p.pinnedUnitId = unitId;
+  return p;
+}
+
+// =============================================================================
+// AUTO-STAFFING
+// =============================================================================
+
+// Returns the unit's seat-based dispatch gate spec, derived from the unit type.
+// Shape mirrors what older callers expected so the rest of the codebase can
+// migrate incrementally:
+//   { driverCert, requiredSeats: [{seatId, cert}], responderSeats: Seat[] }
+function _resolveCrewSpec(unit){
+  const responderSeats = getResponderSeats(unit);
+  const requiredSeats  = responderSeats
+    .filter(s => !!s.requiredCert)
+    .map(s => ({ seatId: s.id, cert: s.requiredCert, label: s.label }));
+  return {
+    driverCert: getUnitDriverCert(unit),
+    requiredSeats,
+    responderSeats
+  };
+}
+
+// Sums the cert demand needed to fully crew every responder seat at the station
+// to its primary required cert. Used by auto-staff to size starter hires.
+// Strategy: each seat contributes one count of its primary cert candidate —
+// requiredCert if set, else niceToHaveCerts[0], else null. nulls are skipped.
+// Returns a map { certId: totalCountNeeded }.
+function _sumIdealCertDemand(station){
+  const demand = {};
+  (station.units || []).forEach(u => {
+    getResponderSeats(u).forEach(s => {
+      const cert = s.requiredCert || (s.niceToHaveCerts && s.niceToHaveCerts[0]);
+      if(!cert) return;
+      demand[cert] = (demand[cert] || 0) + 1;
+    });
+  });
+  return demand;
+}
+
+// Public: auto-generate a starter roster for a station, sized to ideal-staff
+// every unit at that station once. Free in 'create' mode (called automatically
+// at station creation, like seed personnel); debited in 'topup' mode when the
+// player clicks "Refresh / Auto-staff to ideal".
+//
+// Strategy: greedily create one person per ideal slot, holding exactly that
+// cert. The crew matcher takes care of equivalency later — we don't need to
+// stack certs on each new hire here. Player can train them up later.
+function generateStarterRoster(stationId, { mode = 'create' } = {}){
+  const station = stations.find(s => s.id === stationId);
+  if(!station) return [];
+  const demand = _sumIdealCertDemand(station);
+  const certKeys = Object.keys(demand);
+  // Build a flat list of cert assignments — one entry per person we'll create.
+  const slots = [];
+  certKeys.forEach(c => { for(let i = 0; i < demand[c]; i++) slots.push(c); });
+  if(!slots.length) return [];
+
+  // Phase 5D — auto-staff respects the station's staffing type and service.
+  // Volunteer stations seed volunteers (unpaid, with auto-generated home/work).
+  // Combination + career stations seed career staff. Service preference is
+  // pinned to the station's discipline so police stations don't get fire ranks
+  // (and vice versa).
+  const hireType    = (station.stationType === 'volunteer') ? 'volunteer' : 'career';
+  const servicePref = (station.type === 'police') ? 'police'
+                    : (station.type === 'fire')   ? 'fire'
+                    : (station.type === 'ems')    ? 'ems'
+                    : 'either';
+
+  // Cost: free at station creation (the "starter roster" is part of the build);
+  // paid per-person on topup. Use calcHireCost with one cert each, sum them.
+  if(mode === 'topup'){
+    // Only hire to fill the GAP vs current roster cert capability.
+    const currentSupply = {};
+    getPersonnelByStation(stationId).forEach(p => {
+      expandCertSet(p.certs).forEach(c => {
+        currentSupply[c] = (currentSupply[c] || 0) + 1;
+      });
+    });
+    // Filter slots: skip if currentSupply already covers it.
+    // Greedy: decrement supply as we mark slots as already-covered.
+    const supply = { ...currentSupply };
+    const remaining = [];
+    slots.forEach(c => {
+      if((supply[c] || 0) > 0){ supply[c]--; }
+      else                     { remaining.push(c); }
+    });
+    if(!remaining.length){
+      setStatus('Roster already meets ideal staffing.');
+      return [];
+    }
+    const cost = remaining.reduce((sum, c) => sum + calcHireCost({ count:1, certs:[c] }), 0);
+    if(money < cost){
+      setStatus(`Top-up costs $${cost.toLocaleString()} — funds insufficient.`);
+      return [];
+    }
+    updateMoney(-cost);
+    logCashflow(-cost, `Auto-staff top-up at ${station.name}`);
+    const hired = remaining.map(c => _createPersonnelRecord(stationId, {
+      certs:[c], preference: servicePref, type: hireType
+    }));
+    if(hireType === 'volunteer') _seedVolunteerLocations(hired);
+    setStatus(`Hired ${hired.length} ${hireType} for ${station.name} — −$${cost.toLocaleString()}.`);
+    return hired;
+  }
+
+  // mode === 'create' — free seed roster bundled with station purchase.
+  //
+  // Phase 5 bugfix — randomize certs so the starter roster isn't perfectly
+  // uniform. Every person gets the slot's required cert (the apparatus minimum
+  // is still satisfied), plus a chance at a non-officer cross-cert so the
+  // roster has FF1+EMT combos / EMT+FF1 combos like a real volunteer co.
+  // Officer certs (chief / supervisor) are role-locked.
+  const hired = slots.map(c => {
+    const certs = [c];
+    if(!_isOfficerCert(c)){
+      const cross = _rollCrossCert(c, hireType);
+      if(cross && cross !== c) certs.push(cross);
+    }
+    // Volunteer service preference is randomized between fire/EMS for combination
+    // and volunteer stations (police is still police-only). Career stations stay
+    // pinned to the station's discipline so payroll matches role expectations.
+    let pref = servicePref;
+    if(hireType === 'volunteer' && (station.type === 'fire' || station.type === 'ems')){
+      pref = Math.random() < 0.5 ? 'fire' : 'ems';
+    }
+    return _createPersonnelRecord(stationId, { certs, preference: pref, type: hireType });
+  });
+  if(hireType === 'volunteer') _seedVolunteerLocations(hired);
+  return hired;
+}
+
+// Returns true if a cert is an "officer" role that should not be cross-trained
+// on the auto-fill path. Officer roles are deliberately specialized so the
+// roster includes pure chiefs / supervisors rather than triple-cert generalists.
+function _isOfficerCert(certId){
+  if(!certId) return false;
+  return certId === 'fire_officer_1' || certId === 'fire_officer_2'
+      || certId === 'ems_supervisor' || certId === 'patrol_supervisor';
+}
+
+// Rolls a possible secondary cert for a starter-roster volunteer/career hire.
+// Returns the cross-cert id or null. Probabilities are tuned to give a roughly
+// 30–40% cross-trained roster with realistic combos (FF1+EMT etc.) and never
+// to stack rare drivers on top of operational primaries.
+function _rollCrossCert(primaryCert, hireType){
+  const defs = BAM_CONFIG.certifications || {};
+  // Cross-training tables keyed on the primary cert. Each entry is an array
+  // of { cert, chance }. We pick the first roll that succeeds.
+  const tables = {
+    ff1:           [{cert:'emt',         chance:0.35}],
+    ff2:           [{cert:'emt',         chance:0.30}, {cert:'aemt', chance:0.10}],
+    emt:           [{cert:'ff1',         chance:0.30}],
+    aemt:          [{cert:'ff1',         chance:0.20}],
+    paramedic:     [{cert:'ff1',         chance:0.15}],
+    evoc_large:    [{cert:'emt',         chance:0.30}, {cert:'ff1', chance:0.20}],
+    evoc_small:    [{cert:'emt',         chance:0.40}],
+    pump_ops_1:    [{cert:'evoc_large',  chance:0.40}, {cert:'emt', chance:0.20}],
+    fire_police:   [{cert:'ff1',         chance:0.40}],
+    patrol_officer:[]  // LEOs stay focused (officer-cert path handles supervisors)
+  };
+  const opts = tables[primaryCert];
+  if(!opts || !opts.length) return null;
+  for(const o of opts){
+    if(!defs[o.cert]) continue;
+    if(Math.random() < o.chance) return o.cert;
+  }
+  return null;
+}
+
+// Phase 5 bugfix — exposed for the new "Reroll Starter Roster" button in the
+// Roster tab. Wipes the station's existing auto-generated personnel (preserves
+// any player-edited records) and runs `generateStarterRoster({mode:'create'})`
+// again so cert randomization is re-applied. Confirms first.
+function rerollStationStarterRoster(stationId){
+  const station = stations.find(s => s.id === stationId);
+  if(!station) return 0;
+  const all = getPersonnelByStation(stationId);
+  // Only auto-generated records are eligible to wipe. `playerEdited` is set
+  // when the player has touched a person via the details modal, training, or
+  // a manual hire. Volunteers with `isCustomized` are also preserved (matches
+  // the existing auto-migration / location-regen rules).
+  const wipeable = all.filter(p => !p.playerEdited && !p.isCustomized && !p.isSuperResponder);
+  const preserved = all.length - wipeable.length;
+  if(!wipeable.length){
+    if(typeof setStatus === 'function') setStatus('Nothing to reroll — every responder is player-edited or customized.');
+    return 0;
+  }
+  const msg = preserved
+    ? `Reroll the ${wipeable.length} auto-generated responder(s) at ${station.name}? ${preserved} player-edited responder(s) will be preserved.`
+    : `Reroll all ${wipeable.length} starter responders at ${station.name}? This wipes their stats and re-rolls cert combinations.`;
+  if(typeof confirm === 'function' && !confirm(msg)) return 0;
+  // Remove wipeables — bypass the busy-check (force) so the wipe always succeeds.
+  wipeable.forEach(p => {
+    if(typeof deletePersonnel === 'function') deletePersonnel(p.id, { force: true });
+  });
+  // Re-generate. mode:'create' is free (matches station-build behavior).
+  const hired = generateStarterRoster(stationId, { mode: 'create' });
+  if(typeof setStatus === 'function'){
+    setStatus(`Rerolled starter roster: ${hired.length} new responder(s) at ${station.name}.`);
+  }
+  if(typeof _renderManageBody === 'function')  _renderManageBody();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  return hired.length;
+}
+
+// _seedVolunteerLocations — removed. Volunteers no longer have physical
+// home/work locations; the abstract-assembly refactor dropped them. Callers
+// that referenced this now do nothing.
+
+// =============================================================================
+// CASCADE HOOK (called from station delete in stations.js)
+// =============================================================================
+
+// Removes every personnel record attached to a station. Used by the station
+// delete flow. Force=true skips the busy check (matches station force-delete).
+// Returns { removed, blocked } — blocked lists personnel who were busy and
+// not removed when force=false.
+function cascadeDeletePersonnelForStation(stationId, { force = false } = {}){
+  const removed = [];
+  const blocked = [];
+  // Walk a copy so splicing is safe.
+  personnel.slice().forEach(p => {
+    if(p.stationId !== stationId) return;
+    const res = deletePersonnel(p.id, { force });
+    if(res.ok) removed.push(p.id); else blocked.push(p.id);
+  });
+  return { removed, blocked };
+}
+
+// =============================================================================
+// UNIT LOOKUP + CREW SCOPE HELPERS
+// =============================================================================
+
+// Walks the stations array to find a {unit, station} pair for a unit id.
+// Returns { unit:null, station:null } when not found.
+function _findUnitAndStation(unitId){
+  for(const s of (stations || [])){
+    const u = s.units?.find(x => x.id === unitId);
+    if(u) return { unit: u, station: s };
+  }
+  return { unit: null, station: null };
+}
+
+// Returns every personnel record currently eligible to crew a specific unit:
+//   • Same station
+//   • status === 'available' (not on another call)
+//   • Either pinned to THIS unit, or not pinned to any unit (free pool)
+//   • Career personnel: must be on-duty per their shift schedule (Phase 5C).
+//   • Volunteers: must pass isVolunteerAvailableNow (Phase 5D) — combines
+//     schedule, reliability roll, super-responder flag, defaultAvailable.
+// Pinned-to-other-unit personnel are reserved and excluded.
+function getCrewForUnit(unitId){
+  const { unit, station } = _findUnitAndStation(unitId);
+  if(!unit || !station) return [];
+  return personnel.filter(p => {
+    if(p.stationId !== station.id) return false;
+    if(p.status !== 'available') return false;
+    if(p.pinnedUnitId != null && p.pinnedUnitId !== unitId) return false;
+    if(p.type === 'volunteer'){
+      return (typeof isVolunteerAvailableNow === 'function') ? isVolunteerAvailableNow(p) : true;
+    }
+    return isOnDutyNow(p);
+  });
+}
+
+// =============================================================================
+// SEAT-BASED CREW MATCHING + SCORING
+// =============================================================================
+//
+// _matchCrewToSeats(crew, unit, opts):
+//   Greedy seat-by-seat assignment that respects:
+//     • requiredCert + interchangeableCerts (HARD filter — candidate must
+//       satisfy at least one of these for the seat to be eligible)
+//     • niceToHaveCerts (additive score, stacks per cert held)
+//     • Volunteer ETA penalty + at-station bonus (uses person._pickerMeta if set)
+//   Seat priority: required seats first (so the rarest cert demand gets first
+//   pick), then the rest in config order. Within a pass we pick the seat with
+//   the smallest eligible-candidate set first — same min-degree heuristic as
+//   the legacy cert-slot matcher, but adapted to seats.
+//
+//   Returns:
+//     {
+//       assignments:      { seatId: personId, ... },
+//       seatAssignments:  [{ seatId, personId, score }, ...],
+//       unfilledRequired: [{ seatId, requiredCert, label }, ...],
+//       unfilledOptional: [{ seatId, label }, ...]
+//     }
+function _scoreCandidateForSeat(person, seat, certSet){
+  let score = 0;
+  // Hard-gate matches contribute a baseline so a properly-credentialed pick
+  // (requiredCert OR an interchangeable equivalent) outranks an empty-gate fit.
+  if(seat.requiredCert && certSet.has(seat.requiredCert)){
+    score += (BAM_CONFIG.crewScorePreferredHit || 100);
+  } else if((seat.interchangeableCerts || []).some(c => certSet.has(c))){
+    score += (BAM_CONFIG.crewScorePreferredHit || 100);
+  }
+  // Nice-to-have certs each contribute a stacking bonus.
+  (seat.niceToHaveCerts || []).forEach(c => {
+    if(certSet.has(c)) score += (BAM_CONFIG.crewScoreNiceToHaveHit || 25);
+  });
+  // Career on-duty at station gets a constant bump so they outrank a volunteer
+  // who's still 5 miles away even when cert weight matches.
+  if(person.type !== 'volunteer'){
+    score += (BAM_CONFIG.crewScoreAtStation || 50);
+  }
+  // Volunteer ETA penalty — _pickerMeta is set by getCrewCandidatesForUnit.
+  const meta = person._pickerMeta;
+  if(meta && typeof meta.etaMin === 'number'){
+    score -= meta.etaMin * (BAM_CONFIG.crewScoreVolEtaPerMin || 1);
+  }
+  return score;
+}
+
+// opts: { skipOptional: bool } — when true, the second (optional) pass is
+// skipped entirely. Used by default-dispatch auto-fill when the unit type
+// has autoFillOptionalSeats === false (ambulance / police).
+function _matchCrewToSeats(crew, unit, opts){
+  const skipOptional = !!(opts && opts.skipOptional);
+  const responderSeats = getResponderSeats(unit);
+  const personCerts = new Map();
+  (crew || []).forEach(p => personCerts.set(p.id, expandCertSet(p.certs)));
+
+  // Two passes: required seats first, then optional. Within each pass we use a
+  // greedy "lowest-degree-first" loop so rare-cert seats grab their candidate
+  // before a more flexible seat consumes them.
+  const assignments      = {};
+  const seatAssignments  = [];
+  const unfilledRequired = [];
+  const unfilledOptional = [];
+  const usedIds = new Set();
+
+  function passOver(seats){
+    let pool = seats.slice();
+    while(pool.length){
+      // Re-score eligibility each iteration since assignments mutate.
+      const scored = pool.map(seat => {
+        const eligible = (crew || [])
+          .filter(p => !usedIds.has(p.id))
+          .filter(p => _seatHardGateOk(personCerts.get(p.id), seat))
+          .map(p => ({ p, score: _scoreCandidateForSeat(p, seat, personCerts.get(p.id)) }))
+          .sort((a, b) => b.score - a.score);
+        return { seat, eligible };
+      });
+      // Pick the seat with the fewest eligible candidates (rarest demand).
+      scored.sort((a, b) => a.eligible.length - b.eligible.length);
+      const next = scored.shift();
+      pool = scored.map(x => x.seat);
+      if(!next.eligible.length){
+        if(next.seat.requiredCert){
+          unfilledRequired.push({
+            seatId: next.seat.id,
+            requiredCert: next.seat.requiredCert,
+            label: next.seat.label
+          });
+        } else {
+          unfilledOptional.push({ seatId: next.seat.id, label: next.seat.label });
+        }
+        continue;
+      }
+      const chosen = next.eligible[0];
+      assignments[next.seat.id] = chosen.p.id;
+      seatAssignments.push({ seatId: next.seat.id, personId: chosen.p.id, score: chosen.score });
+      usedIds.add(chosen.p.id);
+    }
+  }
+
+  const requiredSeats = responderSeats.filter(s => !!s.requiredCert);
+  const optionalSeats = responderSeats.filter(s => !s.requiredCert);
+  passOver(requiredSeats);
+  if(skipOptional){
+    // Report optional seats as unfilled but don't try to fill them. The "ideal
+    // crew" gate uses the unit type's autoFillOptionalSeats flag to decide
+    // whether these count against the ideal status.
+    optionalSeats.forEach(s => unfilledOptional.push({ seatId: s.id, label: s.label }));
+  } else {
+    passOver(optionalSeats);
+  }
+
+  return { assignments, seatAssignments, unfilledRequired, unfilledOptional };
+}
+
+// True if every required seat is filled by a person whose cert set satisfies
+// that seat's `requiredCert`. Driver seats are required when they carry a
+// requiredCert (which the config sets explicitly for every non-aircraft driver).
+// `crewOverride` lets the picker test a hypothetical crew without committing.
+function hasQualifiedDriver(unitId, crewOverride){
+  const { unit } = _findUnitAndStation(unitId);
+  if(!unit) return false;
+  const driverCert = getUnitDriverCert(unit);
+  if(!driverCert) return true;  // aircraft etc. — no driver gate configured
+  const crew = crewOverride || getCrewForUnit(unitId);
+  return crew.some(p => personHasCert(p, driverCert));
+}
+
+// For units mid-call (dispatched / awaiting_crew / on_scene / transporting /
+// offloading / returning) staffing should evaluate against the crew currently
+// ASSIGNED to this unit, not the available pool at its home station.
+function getAssignedCrewForUnit(unitId){
+  return (personnel || []).filter(p => p.currentAssignment?.unitId === unitId);
+}
+
+function _unitIsOnCall(unit){
+  return unit && ['dispatched','awaiting_crew','on_scene','transporting','offloading','returning']
+    .includes(unit.status);
+}
+
+// =============================================================================
+// DISPATCH GATE  (seat-based)
+// =============================================================================
+// The dispatch gate is "every required seat is filled with the right cert".
+// Empty optional seats don't block dispatch — they kick the assembly timer.
+//
+// hasRequiredSeatsFilled(unitId) is the primary gate. hasMinimumCrew(unitId)
+// is preserved as a backward-compat wrapper that returns a similar shape
+// (ok / hasDriver / crew / missing) so older callers keep working.
+
+function hasRequiredSeatsFilled(unitId){
+  const { unit } = _findUnitAndStation(unitId);
+  const empty = { ok:false, hasDriver:false, crew:[], assignments:{}, unfilledRequired:[], unfilledOptional:[], driverCert:null };
+  if(!unit) return empty;
+  const driverCert = getUnitDriverCert(unit);
+  const crew = _unitIsOnCall(unit) ? getAssignedCrewForUnit(unitId) : getCrewForUnit(unitId);
+  const hasDriver = driverCert ? crew.some(p => personHasCert(p, driverCert)) : true;
+  const m = _matchCrewToSeats(crew, unit);
+  return {
+    ok:               hasDriver && m.unfilledRequired.length === 0,
+    hasDriver,
+    crew,
+    assignments:      m.assignments,
+    seatAssignments:  m.seatAssignments,
+    unfilledRequired: m.unfilledRequired,
+    unfilledOptional: m.unfilledOptional,
+    driverCert
+  };
+}
+
+// Backward-compat wrapper. Returns the legacy `{ ok, missing, hasDriver, ... }`
+// shape. `missing` is now a {seatLabel: 1} map summarizing unfilled required
+// seats so existing _formatMissing() calls produce readable output.
+function hasMinimumCrew(unitId){
+  const r = hasRequiredSeatsFilled(unitId);
+  const missing = {};
+  r.unfilledRequired.forEach(s => {
+    const key = s.label || s.requiredCert || s.seatId;
+    missing[key] = (missing[key] || 0) + 1;
+  });
+  return {
+    ok:        r.ok,
+    missing,
+    hasDriver: r.hasDriver,
+    crew:      r.crew,
+    matched:   r.seatAssignments || [],
+    driverCert: r.driverCert
+  };
+}
+
+// "Ideal crew" semantics — unit-type aware:
+//   • For unit types with autoFillOptionalSeats === false (ambulance, police):
+//     ideal = every requiredCert seat filled + driver present. Optional seats
+//     don't count against ideal (ambulance can ride with empty bench seats).
+//   • For unit types with autoFillOptionalSeats === true (fire apparatus):
+//     ideal = every responder seat filled (required + optional + driver).
+// Falling short of ideal does NOT block dispatch — the dispatch gate is
+// `hasRequiredSeatsFilled` (required + driver).
+function hasIdealCrew(unitId){
+  const r = hasRequiredSeatsFilled(unitId);
+  const { unit } = _findUnitAndStation(unitId);
+  const fillsOptional = unitAutoFillsOptionalSeats(unit);
+  const missing = {};
+  // Required shortfalls always count (ideal implies floor is met).
+  r.unfilledRequired.forEach(s => {
+    const key = s.label || s.requiredCert || s.seatId;
+    missing[key] = (missing[key] || 0) + 1;
+  });
+  // Optional shortfalls only count for unit types that want them filled.
+  if(fillsOptional){
+    r.unfilledOptional.forEach(s => {
+      const key = s.label || s.seatId;
+      missing[key] = (missing[key] || 0) + 1;
+    });
+  }
+  const ok = r.ok && (!fillsOptional || r.unfilledOptional.length === 0);
+  return {
+    ok,
+    missing,
+    hasDriver: r.hasDriver,
+    crew:      r.crew,
+    matched:   r.seatAssignments || [],
+    driverCert: r.driverCert
+  };
+}
+
+// =============================================================================
+// ASSEMBLY TIMER
+// =============================================================================
+// Replaces the legacy idealCrewWaitMs concept. Returns the game-seconds the
+// apparatus will hold at-station for crew to assemble before rolling (or
+// aborting). Pulled from the global config tunable — no per-unit override
+// because real-world dispatch policy doesn't differentiate at the apparatus
+// level. We expose this as game-seconds because the assembly poll uses the
+// game clock.
+function getAssemblyMaxGameSec(){
+  return (BAM_CONFIG.volunteerAssemblyMaxGameMin || 10) * 60;
+}
+
+// Returns the game-seconds a crew member who fails to assemble in time will
+// remain at the station after their trip completes, before normal availability
+// rolls re-kick. Reads `BAM_CONFIG.volunteerStationLingerGameMin`.
+function getStationLingerGameSec(){
+  return (BAM_CONFIG.volunteerStationLingerGameMin || 30) * 60;
+}
+
+// =============================================================================
+// STATION SUMMARY (used by the Manage Station Personnel block + Personnel tab)
+// =============================================================================
+
+// Returns an aggregate roster summary for a station:
+//   { total, available, busy, offDuty, byCategory: { fire, ems, police, shared } }
+// byCategory counts each PERSON once per category any of their certs belong to.
+function getStaffingRatio(stationId){
+  const defs   = BAM_CONFIG.certifications || {};
+  const roster = getPersonnelByStation(stationId);
+  const byCategory = { fire:0, ems:0, police:0, shared:0 };
+  let available = 0, busy = 0, offDuty = 0;
+  roster.forEach(p => {
+    if(p.status === 'available')   available++;
+    else if(p.status === 'busy')   busy++;
+    else                            offDuty++;
+    const cats = new Set();
+    (p.certs || []).forEach(c => { if(defs[c]?.category) cats.add(defs[c].category); });
+    cats.forEach(cat => { byCategory[cat] = (byCategory[cat] || 0) + 1; });
+  });
+  return { total: roster.length, available, busy, offDuty, byCategory };
+}
+
+// =============================================================================
+// CALL-LIFECYCLE HOOKS  (used by dispatch in Step 10)
+// =============================================================================
+
+// Assigns crew to each responder seat using the seat-based matcher. Called
+// from executeDispatch when a unit is freshly tasked.
+//
+// Rules:
+//   • Required seats consume their cert-eligible candidate first (scored).
+//   • Optional seats fill greedily by score thereafter.
+//   • Pinned personnel are merged in: if they fit any unfilled seat (by
+//     requiredCert eligibility and seat availability), they ride; if they
+//     don't, they're left at the station.
+//   • Career on-duty at-station gets a status='busy' immediately.
+//     Volunteers (still at home/roaming) get 'responding' so the
+//     awaiting_crew gate in executeDispatch animates them to the station.
+//
+// Returns:
+//   {
+//     assigned: Person[],           // mutated crew members
+//     seatAssignments: [{seatId, personId, score}],
+//     unfilledRequired: [...],      // seats still missing on dispatch
+//     unfilledOptional: [...],
+//     requiredMet: bool
+//   }
+function assignPersonnelToUnit(unitId, callId){
+  const { unit } = _findUnitAndStation(unitId);
+  const empty = { assigned:[], seatAssignments:[], unfilledRequired:[], unfilledOptional:[], requiredMet:false };
+  if(!unit) return empty;
+
+  // Get scored candidates (already excludes busy/responding + pinned-to-other-unit).
+  const candidatesWithMeta = (typeof getCrewCandidatesForUnit === 'function')
+    ? getCrewCandidatesForUnit(unitId)
+    : getCrewForUnit(unitId);
+  // Pinned personnel always seed the matcher even if they're "lower-priority"
+  // candidates — we want them on this apparatus when possible.
+  // (They already flow through getCrewCandidatesForUnit because that path
+  // honors p.pinnedUnitId === unitId. So no extra step here.)
+
+  // Honor the unit type's autoFillOptionalSeats flag — ambulances and police
+  // skip filling optional seats during default auto-dispatch (driver + EMT/
+  // medic only); fire apparatus fills everything if staff are available.
+  const m = _matchCrewToSeats(candidatesWithMeta, unit, {
+    skipOptional: !unitAutoFillsOptionalSeats(unit)
+  });
+  const assigned = [];
+  Object.entries(m.assignments).forEach(([seatId, personId]) => {
+    const p = personnel.find(x => x.id === personId);
+    if(!p) return;
+    if(p.status !== 'available') return;
+    p.status = (p.type === 'volunteer') ? 'responding' : 'busy';
+    p.currentAssignment = { unitId, callId, seatId };
+    assigned.push(p);
+  });
+  return {
+    assigned,
+    seatAssignments:  m.seatAssignments,
+    unfilledRequired: m.unfilledRequired,
+    unfilledOptional: m.unfilledOptional,
+    requiredMet:      m.unfilledRequired.length === 0
+  };
+}
+
+// Releases every responder currently assigned to a unit. Called when the unit
+// clears the call (returns available, returning, or back at station).
+function releasePersonnelFromUnit(unitId){
+  let released = 0;
+  personnel.forEach(p => {
+    if(p.currentAssignment?.unitId === unitId){
+      p.status = 'available';
+      p.currentAssignment = null;
+      released++;
+    }
+  });
+  return released;
+}
+
+// =============================================================================
+// CREW-SELECT DISPATCH HELPERS  (manual seat-by-seat crew picking)
+// =============================================================================
+// Used by the "Dispatch w/ Crew…" modal. The auto-crew path (assignPersonnelToUnit
+// + auto-fill) is unchanged — these helpers are for the manual flow only.
+// =============================================================================
+
+// Returns the seating layout for a unit. Seats live on the unit type itself
+// (BAM_CONFIG.unitTypes[typeKey].seats) so capacity, crew requirements, and
+// patient/prisoner transport capacity all live together. Falls back to a
+// generic "driver only" layout if the unit's typeKey has no seats configured.
+function getSeatingLayoutForUnit(unit){
+  if(!unit) return null;
+  const utCfg = BAM_CONFIG.unitTypes?.[unit.typeKey];
+  if(utCfg && Array.isArray(utCfg.seats) && utCfg.seats.length){
+    return { label: utCfg.label || 'Apparatus', seats: utCfg.seats };
+  }
+  // Fallback: one driver seat. Keeps the picker functional if a new unit type
+  // is added without seats configured yet.
+  return {
+    label: utCfg?.label || 'Apparatus',
+    seats: [{ id:'driver', label:'Driver/Operator', isDriver:true,
+              requiredCert:null, interchangeableCerts:[], niceToHaveCerts:[] }]
+  };
+}
+
+// Estimates a volunteer's expected assembly time. Under the abstract model
+// this is no longer distance-based — it's the station's mean delay (multiplied
+// by the out-of-area factor when applicable). Returns { distanceMi, etaMin }
+// for back-compat with the crew picker UI, distanceMi always 0.
+//
+// Returns null for career personnel (they're at the station) or non-volunteers.
+function _estimateResponderTravel(person, station){
+  if(!person || !station) return null;
+  if(person.type !== 'volunteer') return null;
+  if(typeof estimateVolunteerAssemblyMin === 'function'){
+    return estimateVolunteerAssemblyMin(person, station);
+  }
+  // Fallback if volunteers.js isn't loaded yet — use config defaults.
+  const meanMin = BAM_CONFIG.volunteerAssemblyMeanGameMin ?? 5;
+  return { distanceMi: 0, etaMin: meanMin };
+}
+
+// Returns every responder who could ride on this unit RIGHT NOW. Includes:
+//   • Career personnel at the unit's station who are on-duty + available
+//   • Volunteers at the unit's station whose currentState is 'home' or 'roaming'
+//     (super-responder + forceAvailableUntil overrides honored via isVolunteerAvailableNow)
+//
+// Excludes:
+//   • status !== 'available' (busy / responding / off-duty)
+//   • Personnel pinned to a different unit
+//   • Career personnel currently outside their shift window
+//
+// Each returned candidate is the original `person` object plus a `_pickerMeta`
+// field describing where they are and how long they'd take to arrive:
+//   _pickerMeta: {
+//     state:      'station' | 'home' | 'roaming',
+//     distanceMi: number,   // 0 for 'station'
+//     etaMin:     number,   // 0 for 'station'
+//     fitsSeats:  Set<seatId>  // populated by the picker, not here
+//   }
+//
+// NOTE: cert-eligibility is NOT enforced here. The picker shows everyone so
+// the player can cross-staff (e.g., put an EMT with FF1 on a fire cab seat).
+// The driver-cert hard gate is evaluated downstream in evaluateCrewSelection.
+function getCrewCandidatesForUnit(unitId){
+  const { unit, station } = _findUnitAndStation(unitId);
+  if(!unit || !station) return [];
+  const out = [];
+  (personnel || []).forEach(p => {
+    if(p.stationId !== station.id) return;
+    if(p.status !== 'available') return;
+    if(p.pinnedUnitId != null && p.pinnedUnitId !== unitId) return;
+    if(p.type === 'volunteer'){
+      // Availability gate (state-driven; no physical locations anymore).
+      if(typeof isVolunteerAvailableNow === 'function' && !isVolunteerAvailableNow(p)) return;
+      // Picker metadata: state ('station' / 'home' / 'roaming') + the mean
+      // assembly delay for this station applied to this volunteer.
+      p._pickerMeta = (typeof decorateVolunteerCandidate === 'function')
+        ? decorateVolunteerCandidate(p, station)
+        : { state: 'home', distanceMi: 0, etaMin: 0, fitsSeats: null };
+    } else {
+      // Career personnel — must be on-duty per their shift schedule.
+      if(typeof isOnDutyNow === 'function' && !isOnDutyNow(p)) return;
+      p._pickerMeta = { state: 'station', distanceMi: 0, etaMin: 0, fitsSeats: null };
+    }
+    out.push(p);
+  });
+  // Career-at-station + already-at-station volunteers first (zero wait),
+  // then home, then roaming. Within tied states, lower ETA wins.
+  out.sort((a, b) => {
+    const order = { station:0, home:1, roaming:2 };
+    const oa = order[a._pickerMeta.state] ?? 9;
+    const ob = order[b._pickerMeta.state] ?? 9;
+    if(oa !== ob) return oa - ob;
+    return (a._pickerMeta.etaMin || 0) - (b._pickerMeta.etaMin || 0);
+  });
+  return out;
+}
+
+// Pure analyzer — takes a unit + a proposed list of personIds (or a
+// {seatId: personId} map) and reports whether the crew satisfies the
+// dispatch gate, WITHOUT committing anything. Used by the picker's banner.
+//
+// Returns (backward-compatible shape):
+//   {
+//     ok,             // true iff driver present AND every required seat filled
+//     hasDriver,      // true iff someone fills the driver seat's requiredCert
+//     driverCert,     // the cert id required (or null for aircraft)
+//     minMet,         // alias for ok — "all required seats filled"
+//     missing,        // { seatLabel: shortfallCount } for required seats
+//     idealMet,       // true iff EVERY responder seat is filled
+//     idealMissing,   // { seatLabel: shortfallCount } for optional seats
+//     crew,           // resolved Person[] for the personIds given
+//     assignments,    // { seatId: personId } if a map was supplied
+//     unfilledRequired,
+//     unfilledOptional
+//   }
+function evaluateCrewSelection(unitId, personIdsOrMap){
+  const empty = { ok:false, hasDriver:false, driverCert:null, minMet:false, missing:{}, idealMet:false, idealMissing:{}, crew:[] };
+  const { unit } = _findUnitAndStation(unitId);
+  if(!unit) return empty;
+
+  // Accept either Person[] (legacy) or {seatId: personId} (Crew-Select picker).
+  let personIds = [];
+  let seatMap = null;
+  if(personIdsOrMap && !Array.isArray(personIdsOrMap) && typeof personIdsOrMap === 'object'){
+    seatMap = personIdsOrMap;
+    personIds = Object.values(seatMap).filter(Boolean);
+  } else {
+    personIds = (personIdsOrMap || []).filter(Boolean);
+  }
+
+  const driverCert = getUnitDriverCert(unit);
+  const crew = personIds.map(id => personnel.find(p => p.id === id)).filter(Boolean);
+
+  // Driver check is by the driver seat's requiredCert (any crew member ok).
+  const hasDriver = driverCert ? crew.some(p => personHasCert(p, driverCert)) : true;
+
+  // When the player has supplied a seat map, evaluate seat-by-seat against
+  // the picks. When given just a person list, run the auto-matcher to score
+  // an arrangement and report what's missing.
+  let unfilledRequired = [], unfilledOptional = [], assignments = {};
+  if(seatMap){
+    getResponderSeats(unit).forEach(seat => {
+      const pid = seatMap[seat.id];
+      const p = pid ? personnel.find(x => x.id === pid) : null;
+      if(!p){
+        if(seat.requiredCert) unfilledRequired.push({ seatId:seat.id, requiredCert:seat.requiredCert, label:seat.label });
+        else                  unfilledOptional.push({ seatId:seat.id, label:seat.label });
+        return;
+      }
+      if(seat.requiredCert){
+        // Hard gate satisfied by requiredCert OR any interchangeableCerts.
+        const certSet = expandCertSet(p.certs || []);
+        if(!_seatHardGateOk(certSet, seat)){
+          unfilledRequired.push({ seatId:seat.id, requiredCert:seat.requiredCert, label:seat.label });
+          return;
+        }
+      }
+      assignments[seat.id] = p.id;
+    });
+  } else {
+    const m = _matchCrewToSeats(crew, unit);
+    unfilledRequired = m.unfilledRequired;
+    unfilledOptional = m.unfilledOptional;
+    assignments = m.assignments;
+  }
+
+  const minMet   = unfilledRequired.length === 0;
+  // idealMet semantics are unit-type-aware: ambulance / police only need
+  // required seats; fire apparatus need every seat filled.
+  const fillsOptional = unitAutoFillsOptionalSeats(unit);
+  const idealMet = minMet && (!fillsOptional || unfilledOptional.length === 0);
+  const missingMap = {};
+  unfilledRequired.forEach(s => {
+    const k = s.label || s.requiredCert || s.seatId;
+    missingMap[k] = (missingMap[k] || 0) + 1;
+  });
+  const idealMissingMap = {};
+  unfilledOptional.forEach(s => {
+    const k = s.label || s.seatId;
+    idealMissingMap[k] = (idealMissingMap[k] || 0) + 1;
+  });
+  return {
+    ok:           hasDriver && minMet,
+    hasDriver,
+    driverCert,
+    minMet,
+    missing:      missingMap,
+    idealMet,
+    idealMissing: idealMissingMap,
+    crew,
+    assignments,
+    unfilledRequired,
+    unfilledOptional
+  };
+}
+
+// Commits a manually-chosen crew to a unit. The Crew-Select picker now passes
+// a {seatId: personId} map so each person rides in the seat the player put
+// them in. Legacy callers passing just a Person[] still work — the matcher
+// auto-assigns seats from the list.
+//
+// Status mutations:
+//   • career on-duty at-station → 'busy'
+//   • volunteer (still at home/roaming) → 'responding'
+// The awaiting_crew gate in executeDispatch ticks the responding crew to the
+// station before the apparatus rolls.
+//
+// Returns:
+//   { assigned: Person[], hasDriver, minMet, seatAssignments }
+function assignSpecificCrewToUnit(unitId, callId, personIdsOrMap){
+  const { unit } = _findUnitAndStation(unitId);
+  if(!unit) return { assigned:[], hasDriver:false, minMet:false, seatAssignments:[] };
+
+  // Normalize to a seat map by either accepting the player's mapping
+  // verbatim or running the matcher on a bare list.
+  let seatMap;
+  if(personIdsOrMap && !Array.isArray(personIdsOrMap) && typeof personIdsOrMap === 'object'){
+    seatMap = personIdsOrMap;
+  } else {
+    const ids = (personIdsOrMap || []).filter(Boolean);
+    const crew = ids.map(id => personnel.find(p => p.id === id)).filter(Boolean);
+    const m = _matchCrewToSeats(crew, unit);
+    seatMap = m.assignments;
+  }
+
+  const ev = evaluateCrewSelection(unitId, seatMap);
+  const assigned = [];
+  const seatAssignments = [];
+  Object.entries(seatMap).forEach(([seatId, personId]) => {
+    if(!personId) return;
+    const p = personnel.find(x => x.id === personId);
+    if(!p) return;
+    if(p.status !== 'available') return;  // defensive — race against another dispatch
+    p.status = (p.type === 'volunteer') ? 'responding' : 'busy';
+    p.currentAssignment = { unitId, callId, seatId };
+    assigned.push(p);
+    seatAssignments.push({ seatId, personId, score: null });
+  });
+  return { assigned, hasDriver: ev.hasDriver, minMet: ev.minMet, seatAssignments };
+}
+
+// =============================================================================
+// HTML ESCAPE HELPER  (scoped to this file)
+// =============================================================================
+function _escPersonHtml(str){
+  return String(str ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// =============================================================================
+// RENDERING — Manage Station section + per-unit staffing chip
+// =============================================================================
+
+// Formats a "missing" map into a human string. With the seat-based gate the
+// keys are seat labels ("Driver/Operator", "Captain's Chair") rather than raw
+// cert ids — render them verbatim. Falls back to certification labels for
+// any leftover cert-keyed entries from legacy callers.
+function _formatMissing(missingMap){
+  const defs = BAM_CONFIG.certifications || {};
+  return Object.entries(missingMap || {})
+    .map(([key, n]) => {
+      const label = defs[key]?.label || key;
+      return n > 1 ? `${n}× ${label}` : label;
+    })
+    .join(', ');
+}
+
+// Compact staffing chip for a unit row. Used in Manage Station + Unit List.
+//   🚫 No driver           — driver seat unfilled (hard block)
+//   🔴 Required short      — at least one requiredCert seat unfilled
+//   🟡 Seats short         — required seats filled, optional seats empty
+//   🟢 All seats filled    — every responder seat has someone assigned
+function renderUnitStaffingChip(unit){
+  if(!unit) return '';
+  const r = hasRequiredSeatsFilled(unit.id);
+  if(!r.hasDriver){
+    return `<span class="staffing-chip" style="font-size:.66rem;font-weight:700;background:rgba(232,67,26,.15);color:var(--accent);border:1px solid var(--accent);padding:1px 6px;border-radius:9px;" title="No qualified driver — apparatus cannot move">🚫 No driver</span>`;
+  }
+  if(r.unfilledRequired.length){
+    const reqLabels = r.unfilledRequired.map(s => s.label || s.requiredCert).join(', ');
+    return `<span class="staffing-chip" style="font-size:.66rem;font-weight:700;background:rgba(232,67,26,.15);color:var(--accent);border:1px solid var(--accent);padding:1px 6px;border-radius:9px;" title="Required seats unfilled: ${_escPersonHtml(reqLabels)}">🔴 Required short</span>`;
+  }
+  if(r.unfilledOptional.length){
+    const optLabels = r.unfilledOptional.map(s => s.label).join(', ');
+    return `<span class="staffing-chip" style="font-size:.66rem;font-weight:700;background:rgba(251,191,36,.15);color:var(--gold);border:1px solid var(--gold);padding:1px 6px;border-radius:9px;" title="Optional seats empty: ${_escPersonHtml(optLabels)}">🟡 Seats short</span>`;
+  }
+  return `<span class="staffing-chip" style="font-size:.66rem;font-weight:700;background:rgba(34,197,94,.15);color:var(--green);border:1px solid var(--green);padding:1px 6px;border-radius:9px;" title="All responder seats filled">🟢 Fully staffed</span>`;
+}
+
+// Returns the HTML block injected into the Manage Station modal between the
+// DC row and the Units section. Shows:
+//   • Station Type dropdown (career/combination/volunteer)
+//   • Personnel summary counts (total, on-duty, by category)
+//   • Auto-staff top-up button, Add Personnel button, Batch Add button
+// Phase 5D bug-fix — Manage Station personnel sub-tabs. Persisted across
+// re-renders so the player doesn't lose their place when the station modal
+// repaints (which happens on virtually every personnel/unit edit).
+//
+// Phase 5 bugfix — promoted to a top-level tab key. 'overview' is the new
+// default (Station Overview), siblings: 'roster' | 'training' | 'shifts'.
+let _msmActiveTab = 'overview';
+function setMSMActiveTab(tab){
+  _msmActiveTab = tab;
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+
+// Phase 5 bugfix — renamed from `renderManageStationPersonnelHTML`. Now renders
+// ONLY the personnel summary chip block (no tab bar, no body). The tab bar
+// lives in `_renderManageBody` and the body renderers
+// (`_renderStationRosterTab` / `_renderStationTrainingTab` /
+// `_renderStationShiftsTab`) are invoked directly from there.
+function renderStationPersonnelSummaryHTML(s){
+  if(!s) return '';
+  const ratio    = getStaffingRatio(s.id);
+  const stType   = s.stationType || 'career';
+  const stTypes  = BAM_CONFIG.stationStaffingTypes || ['career','combination','volunteer'];
+  const typeOpts = stTypes.map(t =>
+    `<option value="${t}" ${stType===t?'selected':''}>${t[0].toUpperCase()+t.slice(1)}</option>`
+  ).join('');
+
+  // Cert-category counts shown as inline chips.
+  const catChip = (label, count, color) =>
+    `<span style="font-size:.7rem;background:${color};color:#000;padding:1px 6px;border-radius:9px;margin-right:4px;">${label}: ${count}</span>`;
+  const chips = [
+    catChip('Fire',   ratio.byCategory.fire,   'rgba(224,92,26,.55)'),
+    catChip('EMS',    ratio.byCategory.ems,    'rgba(46,168,255,.55)'),
+    catChip('Police', ratio.byCategory.police, 'rgba(88,101,242,.55)'),
+    catChip('Shared', ratio.byCategory.shared, 'rgba(200,200,200,.4)'),
+  ].join('');
+
+  const roster        = getPersonnelByStation(s.id);
+  const careerCount   = roster.filter(p => p.type !== 'volunteer').length;
+  const volCount      = roster.filter(p => p.type === 'volunteer').length;
+  const stationDaily  = (typeof estimateStationSalaryDaily === 'function')
+    ? estimateStationSalaryDaily(s.id) : 0;
+  const typeChip = (label, count, color) =>
+    `<span style="font-size:.7rem;background:${color};color:#000;padding:1px 7px;border-radius:9px;margin-right:4px;font-weight:700;">${label}: ${count}</span>`;
+  const typeChips = `${typeChip('Career', careerCount, 'rgba(46,168,255,.55)')}${typeChip('Volunteer', volCount, 'rgba(34,197,94,.55)')}`;
+  let mismatchBanner = '';
+  if(stType === 'volunteer' && careerCount > 0){
+    mismatchBanner = `<div style="margin-top:6px;padding:6px 8px;background:rgba(224,92,26,.12);border:1px solid var(--accent);border-radius:4px;font-size:.74rem;color:var(--accent);">
+      ⚠ ${careerCount} career personnel at a volunteer station. Click <b>Make all volunteer</b> below to convert them.
+    </div>`;
+  } else if(stType === 'career' && volCount > 0){
+    mismatchBanner = `<div style="margin-top:6px;padding:6px 8px;background:rgba(224,92,26,.12);border:1px solid var(--accent);border-radius:4px;font-size:.74rem;color:var(--accent);">
+      ⚠ ${volCount} volunteer personnel at a career station. Switch staffing to combination or career-convert them.
+    </div>`;
+  }
+
+  // Volunteer assembly delay block — visible only for stations that have
+  // (or could have) volunteers. The window is editable as mean ± spread game
+  // minutes; "Reset" returns to config defaults.
+  let assemblyBlock = '';
+  if(stType === 'volunteer' || stType === 'combination'){
+    if(typeof ensureStationAssemblyDefaults === 'function') ensureStationAssemblyDefaults(s);
+    const win = (typeof getStationAssemblyDelay === 'function')
+      ? getStationAssemblyDelay(s)
+      : { meanGameMin: 5, spreadGameMin: 2 };
+    assemblyBlock = `
+      <div style="margin-top:8px;padding:7px 9px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:4px;">
+        <div style="font-size:.72rem;letter-spacing:1px;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Volunteer Assembly Delay</div>
+        <div style="display:flex;gap:8px;align-items:center;font-size:.78rem;flex-wrap:wrap;">
+          <span>Mean</span>
+          <input type="number" min="0.5" max="60" step="0.5" value="${win.meanGameMin}"
+            onchange="setStationVolunteerAssembly('${s.id}', 'meanGameMin', this.value)"
+            style="width:64px;"/>
+          <span>±</span>
+          <input type="number" min="0" max="30" step="0.5" value="${win.spreadGameMin}"
+            onchange="setStationVolunteerAssembly('${s.id}', 'spreadGameMin', this.value)"
+            style="width:64px;"/>
+          <span>game min</span>
+          <button class="btn-sm" onclick="resetStationVolunteerAssembly('${s.id}')" title="Reset to config defaults">Reset</button>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:3px;">
+          Each paged volunteer rolls a personal delay from this window. Out-of-area responders take ${BAM_CONFIG.volunteerOutOfAreaMultiplier ?? 1.5}× longer.
+        </div>
+      </div>`;
+  }
+
+  return `<div class="section-title" style="margin-top:0;">Personnel</div>
+    <div style="display:grid;grid-template-columns:max-content 1fr;gap:4px 10px;font-size:.82rem;align-items:center;">
+      <label class="field-label" style="margin:0;">Staffing Type</label>
+      <select onchange="setStationStaffingType('${s.id}', this.value)" style="width:160px;">
+        ${typeOpts}
+      </select>
+      <div style="color:var(--muted);">Roster</div>
+      <div>
+        <b>${ratio.total}</b> total
+        · <span style="color:var(--green);">${ratio.available} available</span>
+        · <span style="color:var(--gold);">${ratio.busy} busy</span>
+        ${ratio.offDuty ? ` · <span style="color:var(--muted);">${ratio.offDuty} off-duty</span>` : ''}
+      </div>
+      <div style="color:var(--muted);">Composition</div>
+      <div>${typeChips}</div>
+      <div style="color:var(--muted);">Categories</div>
+      <div>${chips}</div>
+      <div style="color:var(--muted);">Salaries</div>
+      <div style="font-weight:600;">
+        $${stationDaily.toLocaleString()}/day
+        ${stationDaily > 0 ? `<span style="color:var(--muted);font-size:.7rem;"> · $${(stationDaily * 365).toLocaleString()}/yr</span>` : ''}
+      </div>
+    </div>
+    ${assemblyBlock}
+    ${mismatchBanner}
+    ${renderStationCertBreakdownHTML(s.id)}`;
+}
+
+// Public — wired to the station-modal Assembly Delay inputs. Clamps to a sane
+// range and re-renders the station modal so the new value is reflected.
+function setStationVolunteerAssembly(stationId, field, rawValue){
+  const s = (typeof stations !== 'undefined' ? stations : []).find(x => x.id === stationId);
+  if(!s) return;
+  if(typeof ensureStationAssemblyDefaults === 'function') ensureStationAssemblyDefaults(s);
+  if(!s.volunteerAssembly) s.volunteerAssembly = {};
+  let v = parseFloat(rawValue);
+  if(!isFinite(v) || v < 0) v = 0;
+  if(field === 'meanGameMin')   s.volunteerAssembly.meanGameMin   = Math.min(60, Math.max(0.5, v));
+  if(field === 'spreadGameMin') s.volunteerAssembly.spreadGameMin = Math.min(30, Math.max(0,   v));
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+
+// Resets the station's assembly window to the global config defaults.
+function resetStationVolunteerAssembly(stationId){
+  const s = (typeof stations !== 'undefined' ? stations : []).find(x => x.id === stationId);
+  if(!s) return;
+  s.volunteerAssembly = {
+    meanGameMin:   BAM_CONFIG.volunteerAssemblyMeanGameMin   ?? 5,
+    spreadGameMin: BAM_CONFIG.volunteerAssemblySpreadGameMin ?? 2,
+  };
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+
+// Phase 5 bugfix — easy-to-read summary of the certifications held at this
+// station, grouped by category. Counts each cert only once per person even
+// if they hold equivalent/parent certs (e.g. a Paramedic does NOT also get
+// counted as EMT in this rollup — the displayed cert is their highest in
+// that family). Sorted by count desc within each category.
+function renderStationCertBreakdownHTML(stationId){
+  const roster = getPersonnelByStation(stationId);
+  if(!roster.length){
+    return `<div style="margin-top:8px;font-size:.75rem;color:var(--muted);">No certifications to summarize — roster is empty.</div>`;
+  }
+  const defs = BAM_CONFIG.certifications || {};
+  // Count raw cert holdings — one entry per (person, cert) pair on their
+  // direct certs list. Equivalency expansion is intentionally NOT applied
+  // here: we want to show "1 Paramedic" rather than "1 Paramedic, 1 AEMT,
+  // 1 EMT, 1 EMR" for the same person. The legend is what they hold, not
+  // what they're eligible to perform.
+  const counts = {};
+  roster.forEach(p => {
+    (p.certs || []).forEach(c => {
+      if(!defs[c]) return;
+      counts[c] = (counts[c] || 0) + 1;
+    });
+  });
+  const grouped = { fire: [], ems: [], police: [], shared: [] };
+  Object.entries(counts).forEach(([certId, n]) => {
+    const def = defs[certId];
+    if(!def) return;
+    const cat = def.category || 'shared';
+    (grouped[cat] || grouped.shared).push({ id: certId, label: def.label || certId, n });
+  });
+
+  const catColors = {
+    fire:   'rgba(224,92,26,.18)',   // accent-orange
+    ems:    'rgba(46,168,255,.18)',  // ems-blue
+    police: 'rgba(88,101,242,.18)',  // police-violet
+    shared: 'rgba(200,200,200,.15)'  // neutral
+  };
+  const catBorders = {
+    fire:   'var(--accent)',
+    ems:    '#2ea8ff',
+    police: '#5865f2',
+    shared: 'rgba(200,200,200,.45)'
+  };
+
+  const sections = ['fire','ems','police','shared'].map(cat => {
+    const list = (grouped[cat] || []).slice().sort((a,b) => b.n - a.n);
+    if(!list.length) return '';
+    const chips = list.map(({label, n}) =>
+      `<span style="display:inline-block;font-size:.7rem;padding:2px 7px;border-radius:9px;margin:2px 4px 2px 0;
+        background:${catColors[cat]};border:1px solid ${catBorders[cat]};color:var(--text);"
+        title="${_escPersonHtml(label)} — ${n} holder${n===1?'':'s'}">
+        ${_escPersonHtml(label)} <b>×${n}</b>
+      </span>`
+    ).join('');
+    const catLabel = cat[0].toUpperCase() + cat.slice(1);
+    return `<div style="display:flex;align-items:flex-start;gap:8px;padding:3px 0;">
+      <div style="min-width:50px;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:1px;padding-top:3px;">${catLabel}</div>
+      <div style="flex:1;">${chips}</div>
+    </div>`;
+  }).filter(Boolean).join('');
+
+  if(!sections){
+    return `<div style="margin-top:8px;font-size:.75rem;color:var(--muted);">No certifications held by anyone at this station yet.</div>`;
+  }
+
+  return `<div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border-radius:4px;border:1px solid var(--border);">
+    <div style="font-size:.74rem;color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px;">
+      Certifications at this Station
+    </div>
+    ${sections}
+  </div>`;
+}
+
+// Legacy export kept so older call sites don't break. Returns just the summary
+// header (the tab bar + body are now rendered by `_renderManageBody`).
+function renderManageStationPersonnelHTML(s){
+  return renderStationPersonnelSummaryHTML(s);
+}
+
+// Roster tab body — hire/manage controls plus an inline list of every person
+// at this station with a CAREER/VOL chip and Details/Train/Reassign/Delete
+// shortcuts. Mirrors the global Personnel-tab rows but scoped to this station.
+function _renderStationRosterTab(stationId, careerCount){
+  const roster = getPersonnelByStation(stationId);
+  const reassignOpts = stations
+    .filter(s => s.id !== stationId)
+    .map(s => `<option value="${s.id}">${_escPersonHtml(s.name)}</option>`).join('');
+  const list = roster.length ? roster.map(p => `
+    <div class="scard" style="margin-bottom:3px;padding:4px 8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:240px;">${_renderPersonRowLabel(p)}</div>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;flex-shrink:0;">
+          <button class="btn-sm" style="padding:2px 6px;font-size:.7rem;" onclick="openPersonnelDetails('${p.id}')">Details</button>
+          <button class="btn-sm" style="padding:2px 6px;font-size:.7rem;" onclick="openTrainingModal('${p.id}')">Train</button>
+          ${reassignOpts ? `<select onchange="if(this.value){reassignPersonnel('${p.id}', this.value); _renderManageBody();}" style="font-size:.7rem;padding:2px 4px;">
+            <option value="">Reassign…</option>${reassignOpts}
+          </select>` : ''}
+          <button class="btn-sm danger" style="padding:2px 6px;font-size:.7rem;" onclick="_personnelTabDelete('${p.id}'); _renderManageBody();">Delete</button>
+        </div>
+      </div>
+    </div>`).join('') : '<div class="empty-msg">No personnel hired yet.</div>';
+
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+      <button class="btn-sm" onclick="openAddPersonnelModal('${stationId}', false)">+ Add Person</button>
+      <button class="btn-sm" onclick="openAddPersonnelModal('${stationId}', true)">+ Batch Hire</button>
+      <button class="btn-sm" onclick="topUpStationRoster('${stationId}')" title="Hire to fill any ideal-crew shortfall across this station's units">Auto-staff to ideal</button>
+      <button class="btn-sm" onclick="rerollStationStarterRoster('${stationId}')" title="Wipe auto-generated responders and re-roll their cert combinations. Player-edited responders are preserved.">🎲 Reroll Starter</button>
+      ${careerCount > 0 ? `<button class="btn-sm" onclick="convertStationRosterToVolunteers('${stationId}')" title="Mass-convert every career responder to volunteer (zeroes salary, clears shift, generates home/work)">Make all volunteer</button>` : ''}
+    </div>
+    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px;">
+      ${list}
+    </div>`;
+}
+
+// Training tab body — embedded simplified version of the training modal.
+// Single cert + bulk-train-this-roster flow. Eligibility chip is computed per
+// person against the chosen cert; the Train button is gated on funds + ≥1
+// eligible responder.
+function _renderStationTrainingTab(stationId){
+  const defs = BAM_CONFIG.certifications || {};
+  const roster = getPersonnelByStation(stationId);
+  // Group certs by category for a tidy <optgroup>.
+  const grouped = { fire:[], ems:[], police:[], shared:[] };
+  Object.entries(defs).forEach(([k,c]) => {
+    if(!grouped[c.category]) grouped[c.category] = [];
+    grouped[c.category].push({ id:k, ...c });
+  });
+  const certOptions = ['fire','ems','police','shared'].map(cat => {
+    const items = (grouped[cat] || []).slice().sort((a,b) => a.cost - b.cost);
+    if(!items.length) return '';
+    const opts = items.map(c => `<option value="${c.id}"${_msmTrainCert===c.id?' selected':''}>${_escPersonHtml(c.label)} — $${calcTrainingCostFor(c.id).toLocaleString()}</option>`).join('');
+    return `<optgroup label="${cat[0].toUpperCase()+cat.slice(1)}">${opts}</optgroup>`;
+  }).join('');
+
+  const certDef = defs[_msmTrainCert];
+  const evalRow = (p) => {
+    if(!certDef) return { ok:false, label:'(pick a cert)', cls:'muted' };
+    if(personHasCert(p, _msmTrainCert)) return { ok:false, label:'already holds', cls:'muted' };
+    const have = expandCertSet(p.certs || []);
+    const missing = (certDef.prereqs || []).filter(pr => !have.has(pr));
+    if(missing.length){
+      const labels = missing.map(c => defs[c]?.label || c).join(', ');
+      return { ok:false, label:'needs ' + labels, cls:'accent' };
+    }
+    return { ok:true, label:'eligible', cls:'green' };
+  };
+  // Persisted selection so toggling checkboxes survives a re-render.
+  if(!Array.isArray(_msmTrainSelectedIds)) _msmTrainSelectedIds = [];
+  const rosterRows = roster.length ? roster.map(p => {
+    const ev = evalRow(p);
+    const cls = ev.cls === 'accent' ? 'var(--accent)' : ev.cls === 'green' ? 'var(--green)' : 'var(--muted)';
+    const checked = _msmTrainSelectedIds.includes(p.id);
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.78rem;">
+      <input type="checkbox" ${checked?'checked':''} onchange="_msmTrainToggle('${p.id}', this.checked)"/>
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);">· ${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="color:${cls};font-size:.72rem;">${ev.label}</span>
+    </label>`;
+  }).join('') : '<div class="empty-msg">No personnel at this station.</div>';
+
+  const cost = certDef ? calcTrainingCostBatch(_msmTrainSelectedIds, _msmTrainCert) : { perPerson:0, count:0, total:0 };
+  const canPay = cost.total <= money;
+
+  return `<div class="field-label">Certification</div>
+    <select onchange="_msmTrainSetCert(this.value)" style="width:100%;">
+      <option value="">— pick a cert —</option>${certOptions}
+    </select>
+    ${certDef ? `<div style="font-size:.72rem;color:var(--muted);margin-top:4px;">
+      Prereqs: ${(certDef.prereqs || []).map(c => defs[c]?.label || c).join(', ') || '(none)'}.
+    </div>` : ''}
+    <div style="display:flex;gap:6px;margin:6px 0;">
+      <button class="btn-sm" onclick="_msmTrainSelectAll('${stationId}', true)">Select All</button>
+      <button class="btn-sm" onclick="_msmTrainSelectAll('${stationId}', false)">Clear</button>
+    </div>
+    <div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;">
+      ${rosterRows}
+    </div>
+    <div style="margin-top:10px;padding:6px 10px;background:rgba(255,255,255,0.04);border-radius:4px;font-size:.8rem;">
+      <div style="display:flex;justify-content:space-between;">
+        <span style="color:var(--muted);">Eligible (will train)</span>
+        <span>${cost.count}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-weight:700;margin-top:2px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;">
+        <span>Total</span>
+        <span style="color:${canPay?'var(--green)':'var(--accent)'};">$${cost.total.toLocaleString()}</span>
+      </div>
+    </div>
+    <button class="btn-sm" style="margin-top:8px;width:100%;" ${(canPay && cost.count > 0) ? '' : 'disabled'} onclick="_msmTrainConfirm()">
+      Train ${cost.count} — $${cost.total.toLocaleString()}
+    </button>`;
+}
+let _msmTrainCert = '';
+let _msmTrainSelectedIds = [];
+function _msmTrainSetCert(c){ _msmTrainCert = c || ''; if(typeof _renderManageBody === 'function') _renderManageBody(); }
+function _msmTrainToggle(id, on){
+  _msmTrainSelectedIds = on
+    ? Array.from(new Set([..._msmTrainSelectedIds, id]))
+    : _msmTrainSelectedIds.filter(x => x !== id);
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+function _msmTrainSelectAll(stationId, on){
+  _msmTrainSelectedIds = on ? getPersonnelByStation(stationId).map(p => p.id) : [];
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+function _msmTrainConfirm(){
+  if(!_msmTrainCert || !_msmTrainSelectedIds.length) return;
+  const res = trainPersonnel(_msmTrainSelectedIds, _msmTrainCert);
+  if(res.ok){
+    _msmTrainSelectedIds = [];
+    if(typeof _renderManageBody === 'function') _renderManageBody();
+  }
+}
+
+// Shifts tab body — embedded simplified shift editor: list templates,
+// add a custom shift, assign personnel to a shift. Mirrors openStationShiftEditor's
+// modal but lives inline.
+function _renderStationShiftsTab(stationId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return '';
+  const shifts = (typeof getStationShifts === 'function') ? getStationShifts(stationId) : [];
+  const roster = getPersonnelByStation(stationId).filter(p => p.type !== 'volunteer');
+  const shiftRow = (sh) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+    <div>
+      <div style="font-weight:600;font-size:.82rem;">${_escPersonHtml(sh.label)}${sh.isCustom ? ' <span style="font-size:.66rem;color:var(--gold);">custom</span>' : ''}</div>
+      <div style="font-size:.7rem;color:var(--muted);">Cycle: ${sh.cycleDays} day(s) · ${typeof _describeShiftPattern === 'function' ? _describeShiftPattern(sh) : ''}</div>
+    </div>
+    ${sh.isCustom ? `<button class="btn-sm danger" onclick="_deleteCustomShift('${sh.id}'); _renderManageBody();">Delete</button>` : ''}
+  </div>`;
+  const shiftOpts = ['<option value="">— always on duty —</option>']
+    .concat(shifts.map(sh => `<option value="${sh.id}">${_escPersonHtml(sh.label)}</option>`))
+    .join('');
+  const personRows = roster.length ? roster.map(p => {
+    const cur = p.shiftId || '';
+    const onDuty = (typeof isOnDutyNow === 'function') ? isOnDutyNow(p) : true;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.8rem;">
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);font-size:.7rem;">${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="font-size:.7rem;color:${onDuty ? 'var(--green)' : 'var(--muted)'};">${onDuty ? 'on duty' : 'off duty'}</span>
+      <select onchange="_assignPersonShift('${p.id}', this.value); _renderManageBody();" style="font-size:.74rem;">
+        ${shiftOpts.replace(`value="${cur}"`, `value="${cur}" selected`)}
+      </select>
+    </div>`;
+  }).join('') : '<div class="empty-msg">No career personnel at this station.</div>';
+
+  return `<div class="field-label">Templates</div>
+    <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 8px;">
+      ${shifts.map(shiftRow).join('') || '<div class="empty-msg">No shifts.</div>'}
+    </div>
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <input id="msm-shift-label-${stationId}" type="text" placeholder="Shift name (e.g. C-Platoon)" style="flex:1;min-width:140px;"/>
+      <input id="msm-shift-cycle-${stationId}" type="number" min="1" max="14" value="3" style="width:60px;" title="Cycle days"/>
+      <input id="msm-shift-pattern-${stationId}" type="text" placeholder="On hours per day (e.g. 0-24;;)"
+             value="0-24;;" style="flex:1;min-width:160px;font-family:var(--mono),monospace;"/>
+      <button class="btn-sm" onclick="_msmAddCustomShift('${stationId}')">+ Add</button>
+    </div>
+    <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+      Pattern: semicolons separate cycle days; each day = comma-separated <code>start-end</code> windows (24-hour time). Empty day = off.
+    </div>
+    <div class="field-label" style="margin-top:14px;">Personnel Assignments</div>
+    <div style="max-height:240px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;">
+      ${personRows}
+    </div>`;
+}
+
+// Inline add-custom-shift handler that reads from the tab's input fields and
+// delegates to the existing data layer (same code path as the modal version).
+function _msmAddCustomShift(stationId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return;
+  const label = document.getElementById('msm-shift-label-'+stationId)?.value?.trim();
+  const cycle = parseInt(document.getElementById('msm-shift-cycle-'+stationId)?.value || '1', 10);
+  const pat   = document.getElementById('msm-shift-pattern-'+stationId)?.value || '';
+  if(!label){ setStatus('Enter a shift name.'); return; }
+  if(!cycle || cycle < 1){ setStatus('Cycle days must be ≥ 1.'); return; }
+  const onPattern = [];
+  for(let i = 0; i < cycle; i++){
+    const dayChunks = (pat.split(';')[i] || '').trim();
+    if(!dayChunks){ onPattern.push([]); continue; }
+    const wins = dayChunks.split(',').map(w => {
+      const [a,b] = w.split('-').map(x => parseFloat(x.trim()));
+      return (isFinite(a) && isFinite(b)) ? [a,b] : null;
+    }).filter(Boolean);
+    onPattern.push(wins);
+  }
+  s.shifts = s.shifts || [];
+  s.shifts.push({
+    id: 'sh_' + Date.now().toString(36),
+    label, cycleDays: cycle, onPattern
+  });
+  setStatus(`Added custom shift "${label}".`);
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+}
+
+// Wraps generateStarterRoster(_,{mode:'topup'}) and refreshes the modal.
+function topUpStationRoster(stationId){
+  const hired = generateStarterRoster(stationId, { mode:'topup' });
+  // Refresh open modals so chips and counts update.
+  if(typeof _renderManageBody === 'function') _renderManageBody();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  if(typeof renderStationList === 'function') renderStationList();
+  return hired;
+}
+
+// Persists the player's station-type choice. When switching FROM/TO volunteer
+// or career, cascades the change across the entire roster (per-bug: changing
+// the station type should immediately flip every person at the station). The
+// 'combination' type is a mixed roster — switching INTO it leaves everyone's
+// existing type alone so the player can curate the mix; switching OUT of it
+// to volunteer or career converts everyone to match.
+function setStationStaffingType(stationId, type){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return;
+  const prev = s.stationType || 'career';
+  s.stationType = type;
+  let converted = 0;
+  if(type === 'volunteer' && prev !== 'volunteer'){
+    converted = _convertStationRosterToType(stationId, 'volunteer');
+  } else if(type === 'career' && prev !== 'career'){
+    converted = _convertStationRosterToType(stationId, 'career');
+  }
+  if(typeof _renderManageBody === 'function')  _renderManageBody();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
+  if(converted){
+    setStatus(`${s.name} → ${type}. Converted ${converted} personnel to ${type}.`);
+  } else {
+    setStatus(`${s.name} set to ${type}.`);
+  }
+}
+
+// Internal: flips every roster member at a station to the target type.
+// Volunteer conversion: zero salary + clear shift + seed home/work if missing.
+// Career conversion: re-derive salary from rank. Returns the count of personnel
+// whose type actually changed.
+function _convertStationRosterToType(stationId, newType){
+  const roster = getPersonnelByStation(stationId);
+  const justConverted = [];
+  roster.forEach(p => {
+    if(p.type === newType) return;
+    p.type = newType;
+    if(newType === 'volunteer'){
+      p.salaryAnnual = 0;
+      p.shiftId      = null;
+    } else {
+      p.salaryAnnual = _deriveSalaryAnnual(p.rankKey);
+    }
+    p.playerEdited = true;
+    justConverted.push(p);
+  });
+  // Volunteer locations are no longer tracked (abstract assembly refactor).
+  // Nothing to seed — the conversion is complete.
+  return justConverted.length;
+}
+
+// Public: mass-convert every roster member at a station to volunteer status.
+// Exposed as a UI shortcut (the "Make all volunteer" button on the station
+// modal) so the player doesn't have to flip the station's staffing type just
+// to fix a roster that got hired as career by mistake.
+function convertStationRosterToVolunteers(stationId){
+  const s = stations.find(x => x.id === stationId);
+  if(!s) return 0;
+  const career = getPersonnelByStation(stationId).filter(p => p.type !== 'volunteer').length;
+  if(!career){
+    setStatus('No career personnel to convert.');
+    return 0;
+  }
+  if(!confirm(`Convert ${career} career personnel at ${s.name} to volunteers? Salaries stop immediately.`)) return 0;
+  const n = _convertStationRosterToType(stationId, 'volunteer');
+  if(typeof _renderManageBody === 'function')  _renderManageBody();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
+  setStatus(`Converted ${n} personnel at ${s.name} to volunteers.`);
+  return n;
+}
+
+// Opens the Operations Modal Personnel tab and pre-filters by station. Used
+// from the "View Roster" button so the player can drill into the full list.
+function openStationPersonnelList(stationId){
+  _personnelTabStationFilter = stationId;
+  closeManageStation?.();
+  // Phase 5D bug-fix — the Manage Station modal sits over a (usually) closed
+  // Ops modal, so just switching the tab leaves the user staring at the map.
+  // Open the Ops modal on the Personnel tab; _populatePersonnelFilters now
+  // rebuilds the station dropdown each render so the filter shows current
+  // stations including any just-placed.
+  if(typeof openOpsModal === 'function'){
+    openOpsModal('personnel');
+  } else if(typeof switchOpsTab === 'function'){
+    switchOpsTab('personnel');
+  }
+}
+
+// =============================================================================
+// RENDERING — Unit Details crew roster
+// =============================================================================
+
+// Phase 5 bugfix v2 — replaces the generic "busy" tag with a human-readable
+// reason that the player can act on. Returns { label, color } where label is
+// already HTML-escaped and color is a CSS var name. Statuses:
+//
+//   On call: <unit name>     — currentAssignment.unitId is set
+//   Responding to station    — status === 'responding'
+//   Off shift                — career personnel currently not on duty
+//   Unavailable              — volunteer currentState === 'unavailable'
+//   Out of area              — volunteer currentState === 'roaming'
+//   Available                — fallback for available volunteers/career on duty
+//   Busy                     — fallback only when none of the above apply
+function describePersonStatus(p){
+  if(!p) return { label: '—', color: 'var(--muted)' };
+  // Active call assignment takes precedence over everything else.
+  if(p.currentAssignment?.unitId){
+    let unitName = null;
+    for(const s of (typeof stations !== 'undefined' ? stations : [])){
+      const u = s.units?.find(x => x.id === p.currentAssignment.unitId);
+      if(u){
+        unitName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
+        break;
+      }
+    }
+    if(p.status === 'responding'){
+      return { label: `Responding → ${_escPersonHtml(unitName || 'station')}`, color: 'var(--gold)' };
+    }
+    return { label: `On call: ${_escPersonHtml(unitName || p.currentAssignment.unitId)}`, color: 'var(--gold)' };
+  }
+  if(p.status === 'responding'){
+    return { label: 'Responding to station', color: 'var(--gold)' };
+  }
+  if(p.status === 'busy'){
+    return { label: 'Busy', color: 'var(--gold)' };
+  }
+  // status === 'available' (or similar) — distinguish off-shift vs availability state.
+  if(p.type !== 'volunteer'){
+    if(typeof isOnDutyNow === 'function' && !isOnDutyNow(p)){
+      return { label: 'Off shift', color: 'var(--muted)' };
+    }
+    return { label: 'On duty · available', color: 'var(--green)' };
+  }
+  // Volunteer — read the hourly state model.
+  const a = p.availability || {};
+  if(a.currentState === 'roaming')     return { label: 'Out of area · available', color: 'var(--green)' };
+  if(a.currentState === 'unavailable') return { label: 'Unavailable', color: 'var(--muted)' };
+  if(a.currentState === 'home')        return { label: 'At home · available', color: 'var(--green)' };
+  return { label: 'Available', color: 'var(--green)' };
+}
+
+// Compact one-line label for a personnel row used in the Unit Details modal
+// and the Personnel tab. Shows name · rank · cert chips (limited to first 4).
+function _renderPersonRowLabel(p){
+  const defs = BAM_CONFIG.certifications || {};
+  const certList = (p.certs || []).slice(0, 4)
+    .map(c => `<span style="background:rgba(255,255,255,0.06);padding:0 5px;border-radius:8px;font-size:.66rem;margin-right:3px;">${_escPersonHtml(defs[c]?.label || c)}</span>`)
+    .join('');
+  const more = (p.certs?.length || 0) > 4 ? ` <span style="color:var(--muted);font-size:.66rem;">+${p.certs.length - 4}</span>` : '';
+  // Phase 5D bug-fix — show a CAREER / VOLUNTEER chip on every row so the
+  // player can verify hiring type at a glance.
+  const isVol = p.type === 'volunteer';
+  const typeChip = `<span style="font-size:.62rem;font-weight:700;background:${isVol?'rgba(34,197,94,.18)':'rgba(46,168,255,.18)'};color:${isVol?'var(--green)':'#2ea8ff'};border:1px solid ${isVol?'var(--green)':'#2ea8ff'};padding:0 6px;border-radius:9px;letter-spacing:.5px;">${isVol?'VOL':'CAREER'}</span>`;
+  // Phase 5 bugfix v2 — granular status display replacing the old generic
+  // "busy" pill. See describePersonStatus().
+  const st = describePersonStatus(p);
+  return `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="font-weight:600;">${_escPersonHtml(p.name)}</span>
+    ${typeChip}
+    <span style="font-size:.7rem;color:var(--muted);">${_escPersonHtml(p.rank || '')}</span>
+    <span style="font-size:.66rem;color:${st.color};">● ${st.label}</span>
+    <span style="display:inline-flex;flex-wrap:wrap;">${certList}${more}</span>
+  </div>`;
+}
+
+// Retired — the Unit Details modal now renders crew inline per-seat directly
+// from units.js (`_renderUnitSeatingSection`). This stub is preserved so any
+// legacy caller that hasn't been updated still works without a JS error.
+function renderUnitCrewRosterHTML(/* unitId */){ return ''; }
+
+// Handler used by the Unit Details modal's "Pin" button.
+function _unitDetailsPinFromPool(unitId){
+  const sel = document.getElementById('udm-pin-select');
+  if(!sel || !sel.value) return;
+  pinPersonnelToUnit(sel.value, unitId);
+  if(typeof _renderUnitDetails === 'function') _renderUnitDetails();
+}
+
+// Handler for the Unit Details reassign dropdown. If the person is currently
+// busy on a call, confirms before reassigning so the player doesn't accidentally
+// pull crew off an active incident.
+function _reassignFromUnitDetails(personnelId, newStationId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  if(p.status === 'busy'){
+    if(!confirm(`${p.name} is currently on a call. Reassign anyway? They'll finish the current call from their new station's roster.`)){
+      if(typeof _renderUnitDetails === 'function') _renderUnitDetails();
+      return;
+    }
+  }
+  reassignPersonnel(personnelId, newStationId);
+  if(typeof _renderUnitDetails === 'function')   _renderUnitDetails();
+  if(typeof _renderManageBody === 'function')    _renderManageBody();
+  if(typeof renderPersonnelTab === 'function')   renderPersonnelTab();
+  if(typeof renderStationList === 'function')    renderStationList();
+}
+
+// =============================================================================
+// PERSONNEL DETAILS MODAL  (Phase 5D)
+// =============================================================================
+// Full per-person view + editor. Career personnel see: name, rank, certs,
+// salary, shift assignment, train/promote/reassign. Volunteers ALSO see:
+// home + work (with regenerate + set-via-map-click), PPE toggle (fire only),
+// super-responder toggle, reliability slider, auto-migrated badge with ack.
+
+let _personDetailsId = null;
+
+function openPersonnelDetails(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p){ setStatus('Personnel record not found.'); return; }
+  _personDetailsId = personnelId;
+  let modal = document.getElementById('person-details-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'person-details-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closePersonnelDetails(); });
+    document.body.appendChild(modal);
+  }
+  _renderPersonnelDetails();
+  modal.classList.add('open');
+}
+
+function closePersonnelDetails(){
+  const modal = document.getElementById('person-details-modal');
+  if(modal) modal.classList.remove('open');
+  _personDetailsId = null;
+}
+
+function _renderPersonnelDetails(){
+  const modal = document.getElementById('person-details-modal');
+  if(!modal) return;
+  const p = getPersonnelById(_personDetailsId);
+  if(!p){ closePersonnelDetails(); return; }
+  const defs = BAM_CONFIG.certifications || {};
+  const station = stations.find(s => s.id === p.stationId);
+
+  // Cert chips with category-color hint.
+  const certColor = { fire:'rgba(224,92,26,.4)', ems:'rgba(46,168,255,.4)', police:'rgba(88,101,242,.4)', shared:'rgba(180,180,180,.3)' };
+  const certHTML  = (p.certs || []).map(c => {
+    const def = defs[c];
+    const bg  = certColor[def?.category] || 'rgba(255,255,255,.08)';
+    return `<span style="background:${bg};padding:2px 7px;border-radius:9px;font-size:.72rem;margin:0 4px 4px 0;display:inline-block;">${_escPersonHtml(def?.label || c)}</span>`;
+  }).join('') || '<span style="color:var(--muted);font-size:.78rem;">(no certifications)</span>';
+
+  // Shift assignment dropdown (career only).
+  const shiftOpts = (p.type !== 'volunteer' && station)
+    ? `<select onchange="_personDetailsSetShift('${p.id}', this.value)" style="font-size:.78rem;">
+        <option value=""${!p.shiftId?' selected':''}>— always on duty —</option>
+        ${getStationShifts(station.id).map(sh =>
+          `<option value="${sh.id}"${p.shiftId===sh.id?' selected':''}>${_escPersonHtml(sh.label)}</option>`
+        ).join('')}
+      </select>`
+    : '';
+
+  // Volunteer block: PPE, super-responder, availability state.
+  // Volunteers no longer have physical home locations (abstract assembly refactor).
+  let volBlock = '';
+  if(p.type === 'volunteer'){
+    const ppeShow    = (p.certs || []).some(c => c === 'ff1' || c === 'ff2' || c === 'fire_exterior' || c === 'fire_support');
+    // Current availability state — rolled hourly. Player can force-available
+    // for the next 1/4/8 hours; clearing the override lets the next hourly
+    // roll decide again.
+    const a = p.availability || {};
+    const stateText = a.currentState === 'home'       ? '<span style="color:var(--green);">At Home — available</span>'
+                    : a.currentState === 'roaming'    ? '<span style="color:var(--gold);">Out of Area — available</span>'
+                    : a.currentState === 'at_station' ? '<span style="color:var(--green);">At Station — already on site</span>'
+                    : a.currentState === 'unavailable' ? '<span style="color:var(--muted);">Unavailable</span>'
+                    : '<span style="color:var(--muted);">—</span>';
+    const nowAbs = (typeof gameDay !== 'undefined' && typeof gameSeconds !== 'undefined')
+      ? (gameDay * 86400) + gameSeconds : 0;
+    const overrideActive = a.forceAvailableUntil != null && nowAbs < a.forceAvailableUntil;
+    const overrideRemHr = overrideActive
+      ? Math.max(0, (a.forceAvailableUntil - nowAbs) / 3600).toFixed(1) : null;
+
+    volBlock = `
+      <div class="section-title" style="margin-top:14px;">Volunteer Settings</div>
+      <div style="display:grid;grid-template-columns:80px 1fr;gap:6px 10px;font-size:.82rem;align-items:center;">
+        ${ppeShow ? `
+        <div style="color:var(--muted);">PPE in vehicle</div>
+        <div>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;">
+            <input type="checkbox" ${p.hasPpeInVehicle?'checked':''} onchange="_personDetailsSetPpe('${p.id}', this.checked)"/>
+            Carries turnout gear in POV (enables interior tasks on direct-to-scene)
+          </label>
+        </div>` : ''}
+        <div style="color:var(--muted);">Super responder</div>
+        <div>
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;">
+            <input type="checkbox" ${p.isSuperResponder?'checked':''} onchange="_personDetailsSetSuper('${p.id}', this.checked)"/>
+            Ignores availability rolls and auto-migration (player-curated)
+          </label>
+        </div>
+        <div style="color:var(--muted);">Availability</div>
+        <div>
+          ${stateText}
+          ${overrideActive ? `<div style="font-size:.72rem;color:var(--gold);margin-top:2px;">Player override active — ${overrideRemHr}h remaining</div>` : ''}
+          <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">
+            <button class="btn-sm" style="padding:2px 8px;font-size:.7rem;" onclick="_personDetailsForceAvailable('${p.id}', 1)" title="Mark available for the next 1 game-hour">+1h</button>
+            <button class="btn-sm" style="padding:2px 8px;font-size:.7rem;" onclick="_personDetailsForceAvailable('${p.id}', 4)" title="Mark available for the next 4 game-hours">+4h</button>
+            <button class="btn-sm" style="padding:2px 8px;font-size:.7rem;" onclick="_personDetailsForceAvailable('${p.id}', 8)" title="Mark available for the next 8 game-hours">+8h</button>
+            ${overrideActive ? `<button class="btn-sm danger" style="padding:2px 8px;font-size:.7rem;" onclick="_personDetailsClearForceAvailable('${p.id}')" title="Clear the player override; next hourly roll decides">Clear</button>` : ''}
+          </div>
+          <div style="font-size:.7rem;color:var(--muted);margin-top:3px;">Availability re-rolls every game-hour. Use the buttons above to override.</div>
+        </div>
+      </div>`;
+  }
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:580px;max-width:95vw;max-height:90vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">${_escPersonHtml(p.name)}</h2>
+        <div class="modal-sub">${_escPersonHtml(p.rank || '—')} · ${p.type === 'volunteer' ? 'Volunteer' : 'Career'} · ${_escPersonHtml(station?.name || '(no station)')}</div>
+      </div>
+      <button class="btn-sm danger" onclick="closePersonnelDetails()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+
+      <div class="field-label">Name</div>
+      <div style="display:flex;gap:6px;">
+        <input id="pd-name" type="text" value="${_escPersonHtml(p.name)}" style="flex:1;"/>
+        <button class="btn-sm" onclick="_personDetailsSaveName('${p.id}')">Rename</button>
+      </div>
+
+      <div style="display:grid;grid-template-columns:max-content 1fr;gap:6px 10px;font-size:.82rem;align-items:center;margin-top:10px;">
+        <div style="color:var(--muted);">Status</div>
+        <div><span style="color:${describePersonStatus(p).color};">${describePersonStatus(p).label}</span></div>
+        <div style="color:var(--muted);">Rank</div>
+        <div>${_escPersonHtml(p.rank || '—')}
+          <button class="btn-sm" style="margin-left:6px;" onclick="closePersonnelDetails(); openPromoteModal('${p.id}');">Promote…</button>
+        </div>
+        ${p.type !== 'volunteer' ? `
+        <div style="color:var(--muted);">Salary</div>
+        <div>$${(p.salaryAnnual || 0).toLocaleString()}/yr · $${Math.round(getSalaryDailyFor(p)).toLocaleString()}/day</div>
+        <div style="color:var(--muted);">Shift</div>
+        <div>${shiftOpts}</div>
+        ` : ''}
+        <div style="color:var(--muted);">Service pref</div>
+        <div>
+          <select onchange="_personDetailsSetPref('${p.id}', this.value)" style="font-size:.78rem;">
+            <option value="either"${p.preference==='either'?' selected':''}>Either</option>
+            <option value="fire"${p.preference==='fire'?' selected':''}>Fire</option>
+            <option value="ems"${p.preference==='ems'?' selected':''}>EMS</option>
+            <option value="police"${p.preference==='police'?' selected':''}>Police</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section-title" style="margin-top:14px;">Certifications</div>
+      <div>${certHTML}</div>
+      <div style="margin-top:6px;">
+        <button class="btn-sm" onclick="closePersonnelDetails(); openTrainingModal('${p.id}');">Train…</button>
+      </div>
+
+      ${volBlock}
+
+      <div class="section-title" style="margin-top:14px;">Stats</div>
+      ${(() => {
+        const sum = getCareerSummary(_personDetailsId);
+        const st  = sum?.stats || {};
+        const cells = [
+          ['Calls Responded', st.callsResponded || 0],
+          ['Fire Calls', st.fireCalls || 0],
+          ['EMS Calls', st.emsCalls || 0],
+          ['Police Calls', st.policeCalls || 0],
+          ['Transports', st.transports || 0],
+          ['Saves', st.saves || 0],
+          ['Missed Calls', st.missedCalls || 0],
+          ['Training Completed', st.trainingCompleted || 0],
+          ['Command Incidents', st.commandIncidents || 0]
+        ];
+        return `<div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:4px 10px;font-size:.78rem;">
+          ${cells.map(([l,v]) => `<div><span style="color:var(--muted);">${l}:</span> <b>${v}</b></div>`).join('')}
+        </div>
+        <button class="btn-sm danger" style="margin-top:8px;" onclick="_personDetailsResetStats('${_personDetailsId}')" title="Reset all counters and clear career history (irreversible)">Reset Stats…</button>`;
+      })()}
+
+      <div class="section-title" style="margin-top:14px;">Career History (${(getCareerSummary(_personDetailsId)?.totalEntries || 0)})</div>
+      ${(() => {
+        const sum = getCareerSummary(_personDetailsId);
+        const recent = sum?.recentHistory || [];
+        if(!recent.length) return '<div class="empty-msg">No history yet.</div>';
+        return `<div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:.74rem;">
+          ${recent.map(h => {
+            const sec = h.gameSec || 0;
+            const hh  = Math.floor((sec % 86400) / 3600).toString().padStart(2,'0');
+            const mm  = Math.floor((sec % 3600) / 60).toString().padStart(2,'0');
+            return `<div style="padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.04);">
+              <span style="color:var(--muted);">Day ${h.gameDay} ${hh}:${mm}</span>
+              · <span style="color:var(--gold);font-size:.7rem;">${_escPersonHtml(h.type)}</span>
+              ${_escPersonHtml(h.summary || '')}
+            </div>`;
+          }).join('')}
+        </div>`;
+      })()}
+
+      <div class="section-title" style="margin-top:14px;">Actions</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <select onchange="if(this.value){reassignPersonnel('${p.id}', this.value); _renderPersonnelDetails(); if(typeof renderPersonnelTab==='function') renderPersonnelTab();}" style="font-size:.78rem;">
+          <option value="">Reassign…</option>
+          ${stations.filter(s => s.id !== p.stationId).map(s => `<option value="${s.id}">${_escPersonHtml(s.name)}</option>`).join('')}
+        </select>
+        <button class="btn-sm danger" onclick="_personDetailsDelete('${p.id}')">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function _personDetailsSaveName(id){
+  const v = document.getElementById('pd-name')?.value?.trim();
+  if(!v) return;
+  updatePersonnel(id, { name: v });
+  _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+function _personDetailsSetPref(id, v){    updatePersonnel(id, { preference: v });    _renderPersonnelDetails(); }
+function _personDetailsSetShift(id, v){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.shiftId = v || null; p.playerEdited = true;
+  _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+function _personDetailsSetPpe(id, checked){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.hasPpeInVehicle = !!checked; p.isCustomized = true; p.playerEdited = true;
+}
+function _personDetailsSetSuper(id, checked){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  p.isSuperResponder = !!checked; p.isCustomized = true; p.playerEdited = true;
+}
+// Phase 5 bugfix — reliability slider deprecated; the new model rolls
+// availability hourly instead. Stub kept so any lingering reference doesn't
+// throw. (Old saves may still carry `availability.reliability`; we don't read
+// it anymore.)
+function _personDetailsSetReliability(){ /* removed in Phase 5 bugfix */ }
+
+// Phase 5 bugfix — player override. Marks a volunteer as forced-available for
+// the next N game-hours by setting `availability.forceAvailableUntil`. The
+// hourly roll honors this until the threshold passes.
+function _personDetailsForceAvailable(id, hours){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  if(!p.availability) p.availability = {
+    currentState: 'home', nextRollGameHour: 0,
+    schedule: [], forceAvailableUntil: null
+  };
+  const nowAbs = (typeof gameDay !== 'undefined' && typeof gameSeconds !== 'undefined')
+    ? (gameDay * 86400) + gameSeconds : 0;
+  p.availability.forceAvailableUntil = nowAbs + (hours * 3600);
+  // Immediately apply the forced state so the player doesn't have to wait for
+  // the next hourly tick to see the change reflected in the UI.
+  p.availability.currentState = 'home';
+  p.playerEdited = true;
+  if(typeof _renderPersonnelDetails === 'function') _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+// Phase 5 bugfix — clear the player override and let the next hourly roll decide.
+function _personDetailsClearForceAvailable(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  if(!p.availability) return;
+  p.availability.forceAvailableUntil = null;
+  if(typeof _renderPersonnelDetails === 'function') _renderPersonnelDetails();
+  if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+}
+
+// Volunteer home regeneration removed — volunteers no longer have physical
+// home locations under the abstract-assembly refactor. Stubs kept so any
+// lingering UI handler from an old layout doesn't throw on call.
+async function _volunteerRegenHome(){ /* removed — see volunteers.js refactor */ }
+async function _volunteerRegenWork(){ /* removed in earlier Phase 5 bugfix */ }
+function _acknowledgeAutoMigration(){ /* removed — auto-migration is gone */ }
+
+function _personDetailsResetStats(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  // Triple confirmation per Phase5.md line 275 — three independent prompts so
+  // accidental double-click can't wipe a career log.
+  if(!confirm(`Reset all stats and clear career history for ${p.name}?`)) return;
+  if(!confirm(`Really reset ${p.name}? Every counter and every history entry will be lost.`)) return;
+  const typed = prompt(`Type "RESET" to confirm — this cannot be undone:`);
+  if(typed !== 'RESET'){ setStatus('Reset cancelled.'); return; }
+  resetStats(id);
+  setStatus(`Stats reset for ${p.name}.`);
+  _renderPersonnelDetails();
+}
+
+function _personDetailsDelete(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  if(!confirm(`Delete ${p.name}? This cannot be undone.`)) return;
+  const res = deletePersonnel(id, { force: false });
+  if(res.ok){
+    closePersonnelDetails();
+    if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+    if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+    return;
+  }
+  if(res.conflicts?.includes('on_active_assignment')){
+    if(confirm(`${p.name} is on an active call. Force-delete anyway?`)){
+      deletePersonnel(id, { force: true });
+      closePersonnelDetails();
+      if(typeof renderPersonnelTab === 'function') renderPersonnelTab();
+      if(typeof refreshVolunteerLocationMarkers === 'function') refreshVolunteerLocationMarkers();
+    }
+  }
+}
+
+// =============================================================================
+// PERSONNEL TAB — Operations Modal
+// =============================================================================
+
+// Filter/sort/search setters. Each re-renders the table.
+function _personnelTabSetSearch(v){  _personnelTabSearch        = v; renderPersonnelTab(); }
+function _personnelTabSetStation(v){ _personnelTabStationFilter = v; renderPersonnelTab(); }
+function _personnelTabSetCert(v){    _personnelTabCertFilter    = v; renderPersonnelTab(); }
+function _personnelTabSetSort(v){    _personnelTabSort          = v; renderPersonnelTab(); }
+
+// Populates the station and cert filter dropdowns on first render.
+function _populatePersonnelFilters(){
+  const stSel = document.getElementById('personnel-filter-station');
+  if(stSel){
+    // Phase 5D bug-fix — rebuild the station list every render so newly-placed
+    // stations show up immediately. Cheap (one option per station) and lets the
+    // dropdown keep its selected value across the rebuild.
+    const desired = _personnelTabStationFilter || stSel.value || '';
+    stSel.innerHTML = '<option value="">All stations</option>'
+      + stations.map(s => `<option value="${s.id}">${_escPersonHtml(s.name)}</option>`).join('');
+    if(desired && stations.some(s => s.id === desired)) stSel.value = desired;
+  }
+  const ctSel = document.getElementById('personnel-filter-cert');
+  if(ctSel && !ctSel.dataset.populated){
+    const defs = BAM_CONFIG.certifications || {};
+    ctSel.innerHTML = '<option value="">All certs</option>'
+      + Object.entries(defs).map(([k,c]) =>
+          `<option value="${k}">${_escPersonHtml(c.label)}</option>`).join('');
+    ctSel.dataset.populated = '1';
+  }
+  if(ctSel && _personnelTabCertFilter) ctSel.value = _personnelTabCertFilter;
+  const srch = document.getElementById('personnel-search');
+  if(srch && srch.value !== _personnelTabSearch) srch.value = _personnelTabSearch;
+}
+
+// Renders the Personnel tab table — every responder across every station, with
+// active filters/sort applied.
+function renderPersonnelTab(){
+  const el = document.getElementById('personnel-list-scroll');
+  if(!el) return;
+  _populatePersonnelFilters();
+
+  // Phase 5C — career salary summary bar above the list.
+  const sumEl = document.getElementById('personnel-salary-summary');
+  if(sumEl){
+    const est = estimateNextSalaryCycle();
+    sumEl.innerHTML = est.totalDaily > 0
+      ? `💰 Career salaries: <b style="color:var(--text);">$${est.totalDaily.toLocaleString()}/day</b> across <b style="color:var(--text);">${est.count}</b> personnel · next cycle deducts at end of game-day`
+      : '💰 No career salaries — hire career personnel to add ongoing payroll.';
+  }
+
+  const defs = BAM_CONFIG.certifications || {};
+  // Apply filters.
+  let rows = personnel.slice();
+  if(_personnelTabStationFilter){
+    rows = rows.filter(p => p.stationId === _personnelTabStationFilter);
+  }
+  if(_personnelTabCertFilter){
+    rows = rows.filter(p => personHasCert(p, _personnelTabCertFilter));
+  }
+  if(_personnelTabSearch){
+    const q = _personnelTabSearch.toLowerCase();
+    rows = rows.filter(p =>
+         p.name.toLowerCase().includes(q)
+      || (p.rank || '').toLowerCase().includes(q)
+      || (p.certs || []).some(c => (defs[c]?.label || c).toLowerCase().includes(q))
+    );
+  }
+
+  // Sort.
+  const stNameOf = id => stations.find(s => s.id === id)?.name || '';
+  rows.sort((a, b) => {
+    switch(_personnelTabSort){
+      case 'name':   return a.name.localeCompare(b.name);
+      case 'rank':   return (a.rank || '').localeCompare(b.rank || '') || a.name.localeCompare(b.name);
+      case 'certs':  return (b.certs?.length || 0) - (a.certs?.length || 0) || a.name.localeCompare(b.name);
+      case 'status': return (a.status || '').localeCompare(b.status || '') || a.name.localeCompare(b.name);
+      case 'station':
+      default:       return stNameOf(a.stationId).localeCompare(stNameOf(b.stationId)) || a.name.localeCompare(b.name);
+    }
+  });
+
+  if(!rows.length){
+    el.innerHTML = '<div class="empty-msg">No personnel match the current filters.</div>';
+    return;
+  }
+
+  // Reassign station dropdown options (built once per render).
+  const reassignOpts = stations.map(s => `<option value="${s.id}">${_escPersonHtml(s.name)}</option>`).join('');
+
+  // Phase 5D bug-fix — slimmed card: single-line layout, smaller padding,
+  // station meta inline on the right so each row is ~one text line tall.
+  el.innerHTML = rows.map(p => {
+    const stName = stNameOf(p.stationId);
+    const pinnedUnit = p.pinnedUnitId
+      ? (typeof getUnitDisplayNameById === 'function' ? getUnitDisplayNameById(p.pinnedUnitId) : p.pinnedUnitId)
+      : null;
+    return `<div class="scard" style="margin-bottom:3px;padding:4px 8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:260px;">
+          ${_renderPersonRowLabel(p)}
+        </div>
+        <div style="font-size:.68rem;color:var(--muted);text-align:right;flex-shrink:0;">
+          ${_escPersonHtml(stName)}
+          ${pinnedUnit ? ` · 📌 <span style="color:var(--gold);">${_escPersonHtml(pinnedUnit)}</span>` : ''}
+          ${p.preference && p.preference !== 'either' ? ` · ${_escPersonHtml(p.preference)}` : ''}
+        </div>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;flex-shrink:0;">
+          <button class="btn-sm" style="padding:2px 6px;font-size:.7rem;" onclick="openPersonnelDetails('${p.id}')" title="Full details + volunteer settings">Details</button>
+          <button class="btn-sm" style="padding:2px 6px;font-size:.7rem;" onclick="openTrainingModal('${p.id}')" title="Train this responder in a new certification">Train</button>
+          <button class="btn-sm" style="padding:2px 6px;font-size:.7rem;" onclick="openPromoteModal('${p.id}')" title="Promote to an eligible rank (free; cert training gates eligibility)">Promote</button>
+          <select onchange="if(this.value){reassignPersonnel('${p.id}', this.value); renderPersonnelTab();}" style="font-size:.7rem;padding:2px 4px;">
+            <option value="">Reassign…</option>${reassignOpts}
+          </select>
+          <button class="btn-sm danger" style="padding:2px 6px;font-size:.7rem;" onclick="_personnelTabDelete('${p.id}')">Delete</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// =============================================================================
+// ADD / BATCH-ADD PERSONNEL MODAL
+// =============================================================================
+
+// Opens the Add Personnel modal targeted at a specific station. When batch=true,
+// the modal shows a count selector and the cert grid applies to every hire.
+function openAddPersonnelModal(stationId, batch = false){
+  _addPersonModalStationId = stationId;
+  _addPersonModalBatch     = !!batch;
+  _addPersonModalCerts     = new Set();
+  _addPersonModalCount     = batch ? 3 : 1;
+  _addPersonModalName      = '';
+  _addPersonModalPref      = 'either';
+  // Phase 5D — default hire type follows station's staffing type. Volunteer-only
+  // stations default to volunteer; combination defaults to volunteer for hires
+  // (career-only stations can't even pick volunteer).
+  const stRec = stations.find(x => x.id === stationId);
+  _addPersonModalType = (stRec?.stationType === 'volunteer' || stRec?.stationType === 'combination')
+    ? 'volunteer'
+    : 'career';
+
+  let modal = document.getElementById('add-person-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'add-person-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closeAddPersonnelModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderAddPersonnelModal();
+  modal.classList.add('open');
+}
+
+function closeAddPersonnelModal(){
+  const modal = document.getElementById('add-person-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+// Toggles a cert in the in-progress selection. When checking a cert, also
+// auto-selects its (transitive) prereqs so the player never pays for a half-
+// configured ladder. When unchecking, leaves prereqs alone (player intent).
+function _addPersonToggleCert(certId, checked){
+  const defs = BAM_CONFIG.certifications || {};
+  if(checked){
+    _addPersonModalCerts.add(certId);
+    // Walk prereqs transitively.
+    const walk = (id) => {
+      const def = defs[id];
+      if(!def) return;
+      (def.prereqs || []).forEach(p => {
+        if(!_addPersonModalCerts.has(p)){
+          _addPersonModalCerts.add(p);
+          walk(p);
+        }
+      });
+    };
+    walk(certId);
+  } else {
+    _addPersonModalCerts.delete(certId);
+  }
+  _renderAddPersonnelModal();
+}
+
+function _addPersonSetCount(n){
+  _addPersonModalCount = Math.max(1, Math.min(20, parseInt(n, 10) || 1));
+  _renderAddPersonnelModal();
+}
+function _addPersonSetName(v){ _addPersonModalName = v; _refreshAddPersonnelCost(); }
+function _addPersonSetPref(v){ _addPersonModalPref = v; }
+function _addPersonSetType(v){
+  _addPersonModalType = (v === 'volunteer') ? 'volunteer' : 'career';
+  _renderAddPersonnelModal();
+}
+
+// Light refresh: only updates the cost line so the player can type a name
+// without losing focus. Heavier rebuilds use _renderAddPersonnelModal().
+function _refreshAddPersonnelCost(){
+  const el = document.getElementById('apm-cost');
+  if(!el) return;
+  const certs = [..._addPersonModalCerts];
+  const count = _addPersonModalBatch ? _addPersonModalCount : 1;
+  const total = calcHireCost({ count, certs });
+  el.textContent = '$' + total.toLocaleString();
+  el.style.color = (total <= money) ? 'var(--green)' : 'var(--accent)';
+}
+
+// Renders the modal body. Always a full rebuild for cert checkbox toggles
+// (cheap; the modal has no dropdowns that lose state). Name input preserves
+// focus across the cost-only refresh path.
+function _renderAddPersonnelModal(){
+  const modal = document.getElementById('add-person-modal');
+  if(!modal) return;
+  const s = stations.find(x => x.id === _addPersonModalStationId);
+  if(!s){ closeAddPersonnelModal(); return; }
+  const defs = BAM_CONFIG.certifications || {};
+
+  // Group certs by category for a tidy checkbox grid.
+  const groups = { fire: [], ems: [], police: [], shared: [] };
+  Object.entries(defs).forEach(([k, c]) => {
+    if(!groups[c.category]) groups[c.category] = [];
+    groups[c.category].push({ id: k, ...c });
+  });
+  // Phase 5D bug-fix — cert checkbox grid was cramped and hard to read; switch
+  // to a wider min-column with label/cost on opposite ends of a flex row, and
+  // a colored left rule so the four categories visually separate.
+  const groupAccent = {
+    fire:   'rgba(224, 92, 26,.55)',
+    ems:    'rgba(46,168,255,.55)',
+    police: 'rgba( 88,101,242,.55)',
+    shared: 'rgba(180,180,180,.45)'
+  };
+  const groupHTML = (label, items, key) => {
+    if(!items.length) return '';
+    const sorted = items.slice().sort((a,b) => a.cost - b.cost);
+    const accent = groupAccent[key] || 'rgba(255,255,255,.2)';
+    return `<div style="margin-top:10px;border-left:3px solid ${accent};padding:4px 0 4px 10px;">
+      <div class="field-label" style="margin-bottom:6px;color:var(--text);font-weight:700;">${label}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:4px 12px;">
+        ${sorted.map(c => {
+          const checked = _addPersonModalCerts.has(c.id);
+          return `<label style="display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:4px;font-size:.78rem;cursor:pointer;background:${checked?'rgba(255,255,255,.05)':'transparent'};border:1px solid ${checked?'rgba(255,255,255,.12)':'transparent'};">
+            <input type="checkbox" ${checked?'checked':''}
+                   onchange="_addPersonToggleCert('${c.id}', this.checked)"
+                   style="flex-shrink:0;"/>
+            <span style="flex:1;min-width:0;line-height:1.25;">${_escPersonHtml(c.label)}</span>
+            <span style="color:var(--muted);font-size:.7rem;font-family:var(--mono);white-space:nowrap;">$${c.cost.toLocaleString()}</span>
+          </label>`;
+        }).join('')}
+      </div>
+    </div>`;
+  };
+
+  const count   = _addPersonModalBatch ? _addPersonModalCount : 1;
+  const certs   = [..._addPersonModalCerts];
+  const cost    = calcHireCost({ count, certs });
+  const canPay  = cost <= money;
+  const certSummary = certs.length
+    ? certs.map(c => defs[c]?.label || c).join(', ')
+    : 'no certifications (raw recruit)';
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:620px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">${_addPersonModalBatch ? 'Batch Hire' : 'Add Person'}</h2>
+        <div class="modal-sub">${_escPersonHtml(s.name)}</div>
+      </div>
+      <button class="btn-sm danger" onclick="closeAddPersonnelModal()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+
+      ${_addPersonModalBatch ? `
+        <div class="field-label">Number of hires</div>
+        <input type="number" min="1" max="20" value="${_addPersonModalCount}"
+               oninput="_addPersonSetCount(this.value)" style="width:90px;"/>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:2px;">Each hire receives the same certifications.</div>
+      ` : `
+        <div class="field-label">Name</div>
+        <input type="text" id="apm-name-input" placeholder="(auto from name pool)"
+               value="${_escPersonHtml(_addPersonModalName)}"
+               oninput="_addPersonSetName(this.value)" style="width:100%;"/>
+      `}
+
+      ${(s.stationType === 'combination' || s.stationType === 'volunteer') ? `
+        <div class="field-label" style="margin-top:10px;">Hire as</div>
+        <select onchange="_addPersonSetType(this.value)" style="width:160px;">
+          ${s.stationType !== 'volunteer' ? `<option value="career"${_addPersonModalType==='career'?' selected':''}>Career (salaried)</option>` : ''}
+          <option value="volunteer"${_addPersonModalType==='volunteer'?' selected':''}>Volunteer (unpaid)</option>
+        </select>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:2px;">
+          ${_addPersonModalType === 'volunteer'
+            ? 'Volunteers respond from home/work (OSM-derived). Auto-generated on hire — editable later.'
+            : 'Career personnel work a station shift and draw a daily salary based on their rank.'}
+        </div>
+      ` : ''}
+
+      <div class="field-label" style="margin-top:10px;">Service preference</div>
+      <select onchange="_addPersonSetPref(this.value)" style="width:160px;">
+        <option value="either"${_addPersonModalPref==='either'?' selected':''}>Either</option>
+        <option value="fire"${_addPersonModalPref==='fire'?' selected':''}>Fire</option>
+        <option value="ems"${_addPersonModalPref==='ems'?' selected':''}>EMS</option>
+        <option value="police"${_addPersonModalPref==='police'?' selected':''}>Police</option>
+      </select>
+
+      <div class="section-title" style="margin-top:14px;">Certifications</div>
+      <div style="font-size:.74rem;color:var(--muted);margin-bottom:4px;">
+        Selecting a cert auto-adds its prerequisites. Training cost is included in the hire price.
+      </div>
+      ${groupHTML('Fire',   groups.fire,   'fire')}
+      ${groupHTML('EMS',    groups.ems,    'ems')}
+      ${groupHTML('Police', groups.police, 'police')}
+      ${groupHTML('Shared', groups.shared, 'shared')}
+
+      <div style="margin-top:14px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:6px;font-size:.8rem;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <span style="color:var(--muted);">Hire base × ${count}</span>
+          <span>$${((BAM_CONFIG.personnelHireCostBase || 0) * count).toLocaleString()}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px;">
+          <span style="color:var(--muted);">Cert training × ${count} (${certs.length} cert${certs.length===1?'':'s'} each)</span>
+          <span>$${(cost - (BAM_CONFIG.personnelHireCostBase || 0) * count).toLocaleString()}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;font-weight:700;">
+          <span>Total</span>
+          <span id="apm-cost" style="color:${canPay ? 'var(--green)' : 'var(--accent)'};">$${cost.toLocaleString()}</span>
+        </div>
+        <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+          Selected: ${_escPersonHtml(certSummary)}
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn-sm" onclick="closeAddPersonnelModal()">Cancel</button>
+      <button class="btn-sm" ${canPay ? '' : 'disabled'} onclick="_confirmAddPersonnel()">
+        ${_addPersonModalBatch ? `Hire ${count}` : 'Hire'} — $${cost.toLocaleString()}
+      </button>
+    </div>
+  </div>`;
+
+  // Restore focus on the name input if the player was typing.
+  if(!_addPersonModalBatch){
+    const inp = document.getElementById('apm-name-input');
+    if(inp && document.activeElement === document.body && _addPersonModalName){
+      inp.focus();
+      inp.setSelectionRange(_addPersonModalName.length, _addPersonModalName.length);
+    }
+  }
+}
+
+// Performs the hire transaction and refreshes the modals/tabs.
+// Volunteer hires kick off async home/work generation (Phase 5D) — the modal
+// closes immediately and the new volunteer's home appears once Overpass (or
+// fallback) returns.
+function _confirmAddPersonnel(){
+  const stationId = _addPersonModalStationId;
+  if(!stationId) return;
+  const certs = [..._addPersonModalCerts];
+  const pref  = _addPersonModalPref;
+  const type  = _addPersonModalType;
+  let hired = [];
+  if(_addPersonModalBatch){
+    const res = batchAddPersonnel(stationId, { count: _addPersonModalCount, certs, preference: pref, type });
+    if(!res.ok) return;
+    hired = res.hired;
+  } else {
+    const rec = addPersonnel(stationId, {
+      name: _addPersonModalName, certs, preference: pref, type
+    });
+    if(!rec) return;
+    hired = [rec];
+  }
+  // Volunteer home seeding removed — abstract-assembly refactor dropped
+  // physical home locations.
+  closeAddPersonnelModal();
+  if(typeof _renderManageBody === 'function')   _renderManageBody();
+  if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();
+  if(typeof renderStationList === 'function')   renderStationList();
+  // Phase 5E bug-fix — keep Database Health's volunteer-station list current.
+  if(typeof refreshDatabaseHealthIfVisible === 'function') refreshDatabaseHealthIfVisible();
+}
+
+// Deletes a personnel record. If they're busy, asks for force-delete confirm.
+function _personnelTabDelete(id){
+  const p = getPersonnelById(id);
+  if(!p) return;
+  const res = deletePersonnel(id, { force: false });
+  if(res.ok){
+    setStatus(`Released ${p.name}.`);
+    renderPersonnelTab();
+    return;
+  }
+  if(res.conflicts?.includes('on_active_assignment')){
+    if(confirm(`${p.name} is on an active call. Force-delete anyway? The unit they're on will lose this crew member.`)){
+      deletePersonnel(id, { force: true });
+      setStatus(`Force-deleted ${p.name}.`);
+      renderPersonnelTab();
+    }
+  }
+}
+
+// =============================================================================
+// TRAINING + PROMOTE  (Phase 5C)
+// =============================================================================
+
+// Returns the trainable cert codes for a single person — every cert in the
+// taxonomy they don't already hold (directly OR via equivalency).
+function getTrainableCertsFor(person){
+  const defs = BAM_CONFIG.certifications || {};
+  if(!person) return [];
+  const have = expandCertSet(person.certs || []);
+  return Object.keys(defs).filter(c => !have.has(c));
+}
+
+// Returns the cost in $ to train ONE person in a single new cert. Mirrors
+// calcHireCost's cost source but applies the training-cost multiplier.
+function calcTrainingCostFor(certCode){
+  const defs = BAM_CONFIG.certifications || {};
+  const base = defs[certCode]?.cost || 0;
+  const mult = BAM_CONFIG.trainingCostMultiplier ?? 1.0;
+  return Math.round(base * mult);
+}
+
+// Returns the cost to train every person in `personnelIds` in `certCode` once.
+// Skips people who already hold (or satisfy) the cert — those get a $0 line.
+function calcTrainingCostBatch(personnelIds, certCode){
+  const per = calcTrainingCostFor(certCode);
+  let count = 0;
+  personnelIds.forEach(id => {
+    const p = getPersonnelById(id);
+    if(p && !personHasCert(p, certCode)) count++;
+  });
+  return { perPerson: per, count, total: per * count };
+}
+
+// Trains one or more existing personnel in a single new cert. Handles money,
+// cashflow, prereq enforcement, and equivalency dedupe. Returns
+// { ok, trained:[ids], skipped:[ids], cost, reason }.
+//
+// Rules:
+//   • Skips people who already hold (or satisfy) the cert — no cost for them.
+//   • Requires each person to hold every direct prereq of the new cert (after
+//     transitive expansion of what they already have). If a person is missing
+//     a prereq, the entire batch is refused — the player must train the
+//     missing prereq first.
+//   • Deducts a single consolidated cashflow line for the whole batch.
+function trainPersonnel(personnelIds, certCode){
+  const defs = BAM_CONFIG.certifications || {};
+  const certDef = defs[certCode];
+  if(!certDef) return { ok:false, reason:'unknown_cert' };
+
+  const trained = [];
+  const skipped = [];
+  // First pass — separate already-have vs needs-train, validate prereqs.
+  const toTrain  = [];
+  const missingPrereq = [];
+  personnelIds.forEach(id => {
+    const p = getPersonnelById(id);
+    if(!p){ skipped.push(id); return; }
+    if(personHasCert(p, certCode)){ skipped.push(id); return; }
+    // Prereqs must be in the person's expanded set.
+    const have = expandCertSet(p.certs || []);
+    const need = (certDef.prereqs || []).filter(pr => !have.has(pr));
+    if(need.length){ missingPrereq.push({ id, name:p.name, need }); return; }
+    toTrain.push(p);
+  });
+
+  if(missingPrereq.length){
+    const first = missingPrereq[0];
+    const needLabels = first.need.map(c => defs[c]?.label || c).join(', ');
+    setStatus(`Cannot train ${first.name} — missing prereq: ${needLabels}.`);
+    return { ok:false, trained, skipped, cost:0, reason:'missing_prereq', missingPrereq };
+  }
+
+  if(!toTrain.length){
+    setStatus('No personnel selected need this cert.');
+    return { ok:true, trained, skipped, cost:0 };
+  }
+
+  const perPerson = calcTrainingCostFor(certCode);
+  const cost      = perPerson * toTrain.length;
+  if(money < cost){
+    setStatus(`Training requires $${cost.toLocaleString()} — funds insufficient.`);
+    return { ok:false, trained, skipped, cost, reason:'insufficient_funds' };
+  }
+
+  updateMoney(-cost);
+  logCashflow(-cost, `[TRAINING] ${certDef.label} × ${toTrain.length}`);
+  toTrain.forEach(p => {
+    p.certs = Array.from(new Set([...(p.certs || []), certCode]));
+    p.playerEdited = true;
+    trained.push(p.id);
+    // Stats hook for 5E — record training event when stats system is live.
+    if(typeof recordPersonStat === 'function'){
+      recordPersonStat(p.id, 'trainingCompleted', 1, {
+        type: 'training', summary: `Trained: ${certDef.label}`
+      });
+    }
+  });
+  setStatus(`Trained ${toTrain.length} in ${certDef.label} — −$${cost.toLocaleString()}.`);
+  return { ok:true, trained, skipped, cost };
+}
+
+// Returns the rankConfig entries this person is eligible to be promoted into
+// based on their current cert holdings. Includes ranks they already hold
+// (so the picker can show "current" markers). Filtered to their service group
+// when known via `preference`; otherwise spans all services they qualify for.
+function getPromotableRanksFor(person){
+  if(!person) return [];
+  const allRanks = _allRankDefs();
+  const haveExpanded = expandCertSet(person.certs || []);
+
+  // Service group filter — if the person has a single clear preference, scope to it.
+  let allowedServices = null; // null = no filter
+  if(person.preference === 'fire')   allowedServices = ['fire'];
+  if(person.preference === 'ems')    allowedServices = ['ems'];
+  if(person.preference === 'police') allowedServices = ['police_local','police_county','police_state'];
+
+  return allRanks.filter(r => {
+    if(allowedServices && !allowedServices.includes(r.service)) return false;
+    // Eligibility: every prereq cert is in the person's expanded set.
+    return (r.prereqCerts || []).every(c => haveExpanded.has(c));
+  });
+}
+
+// Promotes a person to a new rank. Free — cost is in the cert training that
+// gates eligibility. Updates rank label, rankKey, and salaryAnnual.
+// Returns { ok, reason, person }.
+function promotePersonnel(personnelId, rankKey){
+  const p = getPersonnelById(personnelId);
+  if(!p) return { ok:false, reason:'not_found' };
+  const rankDef = getRankByKey(rankKey);
+  if(!rankDef) return { ok:false, reason:'unknown_rank' };
+  const have = expandCertSet(p.certs || []);
+  const missing = (rankDef.prereqCerts || []).filter(c => !have.has(c));
+  if(missing.length){
+    const defs = BAM_CONFIG.certifications || {};
+    const labels = missing.map(c => defs[c]?.label || c).join(', ');
+    setStatus(`${p.name} is not eligible — needs ${labels}.`);
+    return { ok:false, reason:'missing_prereq', missing };
+  }
+  const oldRank = p.rank;
+  p.rank        = rankDef.label;
+  p.rankKey     = rankDef.key;
+  // Career personnel re-derive salary on promotion; volunteers stay at 0.
+  if(p.type !== 'volunteer') p.salaryAnnual = _deriveSalaryAnnual(rankDef.key);
+  p.playerEdited = true;
+  // Stats hook for 5E.
+  if(typeof recordPersonStat === 'function'){
+    recordPersonStat(p.id, null, 0, {
+      type: 'promotion', summary: `Promoted: ${oldRank || '(none)'} → ${rankDef.label}`
+    });
+  }
+  setStatus(`${p.name} promoted to ${rankDef.label}.`);
+  return { ok:true, person:p };
+}
+
+// =============================================================================
+// TRAINING MODAL  (Phase 5C)
+// =============================================================================
+// Single modal handles BOTH single-person and multi-person training. Opened via:
+//   openTrainingModal([personnelId])         — single person, from row action
+//   openTrainingModal([id1, id2, ...])       — batch, from filtered list
+//   openTrainingModal('station', stationId)  — every available person at station
+// State lives in closure-style module variables for consistency with the
+// existing add-person modal.
+
+let _trainModalPersonIds = [];   // ids selected for training
+let _trainModalCert      = '';   // chosen cert code
+
+function openTrainingModal(personIdsOrScope, scopeId){
+  if(personIdsOrScope === 'station'){
+    _trainModalPersonIds = getPersonnelByStation(scopeId).map(p => p.id);
+  } else if(Array.isArray(personIdsOrScope)){
+    _trainModalPersonIds = personIdsOrScope.slice();
+  } else if(typeof personIdsOrScope === 'string'){
+    _trainModalPersonIds = [personIdsOrScope];
+  } else {
+    _trainModalPersonIds = [];
+  }
+  _trainModalCert = '';
+  let modal = document.getElementById('train-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'train-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closeTrainingModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderTrainingModal();
+  modal.classList.add('open');
+}
+
+function closeTrainingModal(){
+  const modal = document.getElementById('train-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _trainModalSetCert(certCode){
+  _trainModalCert = certCode || '';
+  _renderTrainingModal();
+}
+
+function _trainModalTogglePerson(id, checked){
+  if(checked){
+    if(!_trainModalPersonIds.includes(id)) _trainModalPersonIds.push(id);
+  } else {
+    _trainModalPersonIds = _trainModalPersonIds.filter(x => x !== id);
+  }
+  _renderTrainingModal();
+}
+
+function _renderTrainingModal(){
+  const modal = document.getElementById('train-modal');
+  if(!modal) return;
+  const defs = BAM_CONFIG.certifications || {};
+
+  // Group all certs by category for the picker.
+  const grouped = { fire:[], ems:[], police:[], shared:[] };
+  Object.entries(defs).forEach(([k,c]) => {
+    if(!grouped[c.category]) grouped[c.category] = [];
+    grouped[c.category].push({ id:k, ...c });
+  });
+  const certOptions = ['fire','ems','police','shared'].map(cat => {
+    const items = (grouped[cat] || []).slice().sort((a,b) => a.cost - b.cost);
+    if(!items.length) return '';
+    const opts = items.map(c => `<option value="${c.id}"${_trainModalCert===c.id?' selected':''}>${_escPersonHtml(c.label)} — $${calcTrainingCostFor(c.id).toLocaleString()}</option>`).join('');
+    return `<optgroup label="${cat[0].toUpperCase()+cat.slice(1)}">${opts}</optgroup>`;
+  }).join('');
+
+  // Roster picker — checkboxes for every person currently in the scope set,
+  // OR every person across all stations when the modal was opened wide.
+  // For now we render exactly the ids the player came in with.
+  const people = _trainModalPersonIds
+    .map(id => getPersonnelById(id))
+    .filter(Boolean);
+
+  const certDef = defs[_trainModalCert];
+  // Per-person eligibility for the chosen cert.
+  const evalRow = (p) => {
+    if(!certDef) return { ok:false, label:'(pick a cert)', cls:'muted' };
+    if(personHasCert(p, _trainModalCert)) return { ok:false, label:'already holds', cls:'muted' };
+    const have = expandCertSet(p.certs || []);
+    const missing = (certDef.prereqs || []).filter(pr => !have.has(pr));
+    if(missing.length){
+      const labels = missing.map(c => defs[c]?.label || c).join(', ');
+      return { ok:false, label:'needs ' + labels, cls:'accent' };
+    }
+    return { ok:true, label:'eligible', cls:'green' };
+  };
+  const rosterHTML = people.length ? people.map(p => {
+    const ev = evalRow(p);
+    const cls = ev.cls === 'accent' ? 'var(--accent)' : ev.cls === 'green' ? 'var(--green)' : 'var(--muted)';
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 4px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.78rem;">
+      <input type="checkbox" checked onchange="_trainModalTogglePerson('${p.id}', this.checked)"/>
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);">· ${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="color:${cls};font-size:.72rem;">${ev.label}</span>
+    </label>`;
+  }).join('') : '<div class="empty-msg">No personnel selected for training.</div>';
+
+  // Cost block + eligibility summary.
+  const costInfo = certDef ? calcTrainingCostBatch(_trainModalPersonIds, _trainModalCert) : { perPerson:0, count:0, total:0 };
+  const canPay   = costInfo.total <= money;
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:560px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Training</h2>
+        <div class="modal-sub">${people.length} selected</div>
+      </div>
+      <button class="btn-sm danger" onclick="closeTrainingModal()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+      <div class="field-label">Certification to train</div>
+      <select onchange="_trainModalSetCert(this.value)" style="width:100%;">
+        <option value="">— pick a cert —</option>${certOptions}
+      </select>
+      ${certDef ? `<div style="font-size:.74rem;color:var(--muted);margin-top:4px;">
+        Prereqs: ${(certDef.prereqs || []).map(c => defs[c]?.label || c).join(', ') || '(none)'}.
+        Equivalency satisfies: ${(certDef.satisfies || []).map(c => defs[c]?.label || c).join(', ') || '(none)'}.
+      </div>` : ''}
+
+      <div class="section-title" style="margin-top:12px;">Personnel</div>
+      <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:4px 6px;">
+        ${rosterHTML}
+      </div>
+
+      <div style="margin-top:14px;padding:8px 10px;background:rgba(255,255,255,0.04);border-radius:6px;font-size:.8rem;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <span style="color:var(--muted);">Per person</span>
+          <span>$${costInfo.perPerson.toLocaleString()}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:2px;">
+          <span style="color:var(--muted);">Eligible (will train)</span>
+          <span>${costInfo.count}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;border-top:1px solid rgba(255,255,255,0.08);padding-top:4px;font-weight:700;">
+          <span>Total</span>
+          <span style="color:${canPay ? 'var(--green)' : 'var(--accent)'};">$${costInfo.total.toLocaleString()}</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding:10px 16px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;">
+      <button class="btn-sm" onclick="closeTrainingModal()">Cancel</button>
+      <button class="btn-sm" ${(canPay && costInfo.count > 0) ? '' : 'disabled'} onclick="_confirmTraining()">
+        Train ${costInfo.count} — $${costInfo.total.toLocaleString()}
+      </button>
+    </div>
+  </div>`;
+}
+
+function _confirmTraining(){
+  if(!_trainModalCert || !_trainModalPersonIds.length) return;
+  const res = trainPersonnel(_trainModalPersonIds, _trainModalCert);
+  if(!res.ok) return;
+  closeTrainingModal();
+  if(typeof renderPersonnelTab === 'function')   renderPersonnelTab();
+  if(typeof _renderManageBody === 'function')    _renderManageBody();
+  if(typeof _renderUnitDetails === 'function')   _renderUnitDetails();
+  if(typeof renderStationList === 'function')    renderStationList();
+}
+
+// =============================================================================
+// PROMOTE MODAL  (Phase 5C)
+// =============================================================================
+// Lightweight picker: shows every rank eligible for this one person, plus the
+// current rank for context. Free + instant; the cert training is the gate.
+
+let _promoteModalPersonId = null;
+
+function openPromoteModal(personnelId){
+  _promoteModalPersonId = personnelId;
+  let modal = document.getElementById('promote-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'promote-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closePromoteModal(); });
+    document.body.appendChild(modal);
+  }
+  _renderPromoteModal();
+  modal.classList.add('open');
+}
+
+function closePromoteModal(){
+  const modal = document.getElementById('promote-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _renderPromoteModal(){
+  const modal = document.getElementById('promote-modal');
+  if(!modal) return;
+  const p = getPersonnelById(_promoteModalPersonId);
+  if(!p){ closePromoteModal(); return; }
+
+  const eligible = getPromotableRanksFor(p);
+  // Group by service for readable rendering.
+  const groups = {};
+  eligible.forEach(r => {
+    if(!groups[r.service]) groups[r.service] = [];
+    groups[r.service].push(r);
+  });
+  const serviceLabel = (s) => ({
+    fire:'Fire', ems:'EMS',
+    police_local:'Local Police', police_county:'County Sheriff', police_state:'State Police'
+  })[s] || s;
+
+  const base = BAM_CONFIG.salaryBaseAnnual || 0;
+  const rankRows = (rank) => {
+    const isCurrent = rank.key === p.rankKey;
+    const newSalary = Math.round(base * (rank.salaryMultiplier || 1.0));
+    const salaryDelta = newSalary - (p.salaryAnnual || 0);
+    const deltaStr = salaryDelta === 0 ? '' :
+      `<span style="color:${salaryDelta>0?'var(--accent)':'var(--green)'};font-size:.7rem;">(${salaryDelta>0?'+':''}$${Math.abs(salaryDelta).toLocaleString()}/yr)</span>`;
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 6px;border-bottom:1px solid rgba(255,255,255,0.04);">
+      <div>
+        <div style="font-weight:600;font-size:.84rem;">${_escPersonHtml(rank.label)}${isCurrent?' <span style="font-size:.7rem;color:var(--gold);">(current)</span>':''}</div>
+        <div style="font-size:.7rem;color:var(--muted);">$${newSalary.toLocaleString()}/yr ${deltaStr}</div>
+      </div>
+      ${isCurrent
+        ? ''
+        : `<button class="btn-sm" onclick="_confirmPromote('${rank.key}')">Promote</button>`}
+    </div>`;
+  };
+  const sections = Object.keys(groups).map(svc => `
+    <div class="section-title" style="margin-top:10px;">${serviceLabel(svc)}</div>
+    ${groups[svc].map(rankRows).join('')}
+  `).join('') || '<div class="empty-msg">No eligible ranks. Train them in additional certifications first.</div>';
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:480px;max-width:95vw;max-height:80vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Promote</h2>
+        <div class="modal-sub">${_escPersonHtml(p.name)} · current: ${_escPersonHtml(p.rank || '—')}</div>
+      </div>
+      <button class="btn-sm danger" onclick="closePromoteModal()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:10px 14px;">
+      <div style="font-size:.74rem;color:var(--muted);">Promotion is free — cert training is the cost gate. Eligibility shown is based on current certifications (transitive equivalency applied).</div>
+      ${sections}
+    </div>
+  </div>`;
+}
+
+function _confirmPromote(rankKey){
+  if(!_promoteModalPersonId || !rankKey) return;
+  const res = promotePersonnel(_promoteModalPersonId, rankKey);
+  if(!res.ok) return;
+  // Re-render the modal so eligibility + current marker update.
+  _renderPromoteModal();
+  if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();
+  if(typeof _renderManageBody === 'function')   _renderManageBody();
+  if(typeof _renderUnitDetails === 'function')  _renderUnitDetails();
+  if(typeof renderStationList === 'function')   renderStationList();
+}
+
+// =============================================================================
+// SHIFTS + ON-DUTY EVALUATION  (Phase 5C)
+// =============================================================================
+
+// Returns every shift template available for a station — the global built-ins
+// from BAM_CONFIG.shiftTemplates plus any custom shifts the station owns.
+// Each entry: { key|id, label, cycleDays, onPattern, isCustom }.
+function getStationShifts(stationId){
+  const station = stations.find(s => s.id === stationId);
+  const builtins = (BAM_CONFIG.shiftTemplates || []).map(t => ({ ...t, id: t.key, isCustom: false }));
+  const custom   = (station?.shifts || []).map(s => ({ ...s, isCustom: true }));
+  return [...builtins, ...custom];
+}
+
+// Looks up a shift template (built-in or station-custom) by id/key. Returns
+// null when no match — caller treats null as "always on duty".
+function _findShiftTemplate(shiftId, stationId){
+  if(!shiftId) return null;
+  return getStationShifts(stationId).find(s => (s.id || s.key) === shiftId) || null;
+}
+
+// True if the person is currently on-duty according to their shift schedule.
+//   • Volunteers always return true (5D adds volunteer availability separately).
+//   • Career personnel with no shiftId default to always-on (back-compat with
+//     5B records that never had a shift assigned).
+//   • Otherwise: walks the shift's cycleDay-of-N pattern against gameDay and
+//     gameSeconds, treating hours past 24 as carrying into the next day.
+function isOnDutyNow(person){
+  if(!person) return false;
+  if(person.type === 'volunteer') return true;
+  if(!person.shiftId) return true;
+  // Defensive — index.html owns gameDay/gameSeconds globals.
+  const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+  const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+  const tpl = _findShiftTemplate(person.shiftId, person.stationId);
+  if(!tpl || !tpl.cycleDays || !Array.isArray(tpl.onPattern)) return true;
+  const cycleIdx = ((day - 1) % tpl.cycleDays + tpl.cycleDays) % tpl.cycleDays;
+  const todayWindows = tpl.onPattern[cycleIdx] || [];
+  const hour = sec / 3600;
+  // Check today's windows (some may carry past midnight via endHour > 24).
+  for(const win of todayWindows){
+    const [start, end] = win;
+    if(hour >= start && hour < Math.min(end, 24)) return true;
+  }
+  // Carry-over: check previous cycle day's windows whose end exceeds 24.
+  const prevIdx = (cycleIdx - 1 + tpl.cycleDays) % tpl.cycleDays;
+  const prevWindows = tpl.onPattern[prevIdx] || [];
+  for(const win of prevWindows){
+    const [start, end] = win;
+    if(end > 24 && hour < (end - 24)) return true;
+  }
+  return false;
+}
+
+// =============================================================================
+// SALARY DEDUCTIONS  (Phase 5C)
+// =============================================================================
+// Tracks the last game-day on which salaries were deducted. _tickGameClock
+// invokes tickSalaryDeductions() on every tick; it returns immediately unless
+// gameDay has advanced past this marker.
+
+let _lastSalaryGameDay = null;
+
+// Returns an estimate of the next salary cycle: total $/day, per-station
+// breakdown, and the count of career personnel contributing. Powers all
+// three salary preview surfaces (cashflow header, personnel tab, station modal).
+function estimateNextSalaryCycle(){
+  let totalDaily = 0;
+  let count = 0;
+  const byStation = {};
+  personnel.forEach(p => {
+    const d = getSalaryDailyFor(p);
+    if(d <= 0) return;
+    totalDaily += d;
+    count++;
+    byStation[p.stationId] = (byStation[p.stationId] || 0) + d;
+  });
+  return { totalDaily: Math.round(totalDaily), count, byStation };
+}
+
+// Sums salary $/day for a single station's career personnel. Used by the
+// per-station salary preview line in the Manage Station modal.
+function estimateStationSalaryDaily(stationId){
+  let sum = 0;
+  getPersonnelByStation(stationId).forEach(p => {
+    sum += getSalaryDailyFor(p);
+  });
+  return Math.round(sum);
+}
+
+// Called from _tickGameClock every real second. Deducts salaries once per
+// game-day rollover and emits a single consolidated cashflow line.
+// Safe to call before salary system is initialized (no-ops when there are no
+// career personnel). First call after world load syncs _lastSalaryGameDay
+// without charging so an old save doesn't get back-billed.
+function tickSalaryDeductions(){
+  const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+  if(_lastSalaryGameDay == null){ _lastSalaryGameDay = day; return; }
+  if(day === _lastSalaryGameDay) return;
+  const daysAdvanced = day - _lastSalaryGameDay;
+  _lastSalaryGameDay = day;
+  if(daysAdvanced <= 0) return;
+  const est = estimateNextSalaryCycle();
+  if(est.totalDaily <= 0) return;
+  const total = est.totalDaily * daysAdvanced;
+  if(typeof updateMoney === 'function')  updateMoney(-total);
+  if(typeof logCashflow === 'function')  logCashflow(-total,
+    `[SALARIES] Day${daysAdvanced > 1 ? 's ' + (day - daysAdvanced + 1) + '–' + day : ' ' + day} · ${est.count} personnel`);
+}
+
+// Resets the salary-day marker. Called on world load so the first post-load
+// tick syncs to the loaded gameDay instead of back-billing.
+function resetSalaryCycleMarker(){
+  _lastSalaryGameDay = null;
+}
+
+// =============================================================================
+// SHIFT EDITOR MODAL  (Phase 5C)
+// =============================================================================
+// Per-station shift management. The Shift editor lets the player:
+//   • View built-in shift templates + this station's custom shifts.
+//   • Add a new custom shift (label + cycleDays + on-hour windows per cycle day).
+//   • Assign personnel at this station to a shift (or clear back to always-on).
+//   • Delete a custom shift (built-ins are read-only).
+
+let _shiftEditorStationId = null;
+
+function openStationShiftEditor(stationId){
+  _shiftEditorStationId = stationId;
+  let modal = document.getElementById('shift-editor-modal');
+  if(!modal){
+    modal = document.createElement('div');
+    modal.id = 'shift-editor-modal';
+    modal.className = 'modal-overlay';
+    modal.addEventListener('click', e => { if(e.target === modal) closeShiftEditor(); });
+    document.body.appendChild(modal);
+  }
+  _renderShiftEditor();
+  modal.classList.add('open');
+}
+
+function closeShiftEditor(){
+  const modal = document.getElementById('shift-editor-modal');
+  if(modal) modal.classList.remove('open');
+}
+
+function _renderShiftEditor(){
+  const modal = document.getElementById('shift-editor-modal');
+  if(!modal || !_shiftEditorStationId) return;
+  const s = stations.find(x => x.id === _shiftEditorStationId);
+  if(!s){ closeShiftEditor(); return; }
+
+  const shifts = getStationShifts(s.id);
+  const roster = getPersonnelByStation(s.id).filter(p => p.type !== 'volunteer');
+
+  const shiftRow = (sh) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+    <div>
+      <div style="font-weight:600;font-size:.84rem;">${_escPersonHtml(sh.label)}${sh.isCustom ? ' <span style="font-size:.66rem;color:var(--gold);">custom</span>' : ''}</div>
+      <div style="font-size:.7rem;color:var(--muted);">Cycle: ${sh.cycleDays} day(s) · Pattern: ${_describeShiftPattern(sh)}</div>
+    </div>
+    ${sh.isCustom
+      ? `<button class="btn-sm danger" onclick="_deleteCustomShift('${sh.id}')">Delete</button>`
+      : ''}
+  </div>`;
+
+  // Personnel assignment table: shift dropdown per person.
+  const shiftOpts = ['<option value="">— always on duty —</option>']
+    .concat(shifts.map(sh => `<option value="${sh.id}">${_escPersonHtml(sh.label)}</option>`))
+    .join('');
+
+  const personRows = roster.length ? roster.map(p => {
+    const cur = p.shiftId || '';
+    const onDuty = isOnDutyNow(p);
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.8rem;">
+      <span style="flex:1;">${_escPersonHtml(p.name)} <span style="color:var(--muted);font-size:.7rem;">${_escPersonHtml(p.rank || '')}</span></span>
+      <span style="font-size:.7rem;color:${onDuty ? 'var(--green)' : 'var(--muted)'};">${onDuty ? 'on duty' : 'off duty'}</span>
+      <select onchange="_assignPersonShift('${p.id}', this.value)" style="font-size:.74rem;">
+        ${shiftOpts.replace(`value="${cur}"`, `value="${cur}" selected`)}
+      </select>
+    </div>`;
+  }).join('') : '<div class="empty-msg">No career personnel at this station.</div>';
+
+  modal.innerHTML = `<div class="modal-box gold-top" style="width:640px;max-width:95vw;max-height:88vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 class="gold">Shifts — ${_escPersonHtml(s.name)}</h2>
+        <div class="modal-sub">Estimated daily salaries: $${estimateStationSalaryDaily(s.id).toLocaleString()}/day</div>
+      </div>
+      <button class="btn-sm danger" onclick="closeShiftEditor()">✕</button>
+    </div>
+    <div class="modal-body" style="flex:1;overflow-y:auto;padding:14px 16px;">
+      <div class="section-title">Templates</div>
+      ${shifts.map(shiftRow).join('')}
+      <div style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input id="se-new-label" type="text" placeholder="Shift name (e.g. C-Platoon)" style="flex:1;min-width:160px;"/>
+        <input id="se-new-cycle" type="number" min="1" max="14" value="3" style="width:70px;" title="Cycle days"/>
+        <input id="se-new-pattern" type="text" placeholder="On hours per day (e.g. 0-24;;)"
+               value="0-24;;" style="flex:1;min-width:200px;font-family:var(--mono),monospace;"
+               title="Semicolon-separated on-windows per cycle day. Each day: comma-separated 'start-end' (24h). Empty = off day. Example: 0-24;; = 24/48"/>
+        <button class="btn-sm" onclick="_addCustomShift()">+ Add</button>
+      </div>
+      <div style="font-size:.7rem;color:var(--muted);margin-top:4px;">
+        Pattern syntax: semicolons separate cycle days. Each day = comma-separated <code>start-end</code> windows in 24-hour time. An empty day = off. <code>end</code> > 24 carries past midnight (e.g. <code>18-30</code> = 18:00 today through 06:00 tomorrow).
+      </div>
+
+      <div class="section-title" style="margin-top:14px;">Personnel Assignments</div>
+      ${personRows}
+    </div>
+  </div>`;
+}
+
+// Returns a human-friendly description of a shift's onPattern.
+function _describeShiftPattern(sh){
+  if(!sh.onPattern) return '(custom)';
+  return sh.onPattern.map((day,i) => {
+    if(!day.length) return 'OFF';
+    return day.map(([a,b]) => `${a}-${b}`).join(',');
+  }).join(' / ');
+}
+
+function _addCustomShift(){
+  const s = stations.find(x => x.id === _shiftEditorStationId);
+  if(!s) return;
+  const label = document.getElementById('se-new-label')?.value?.trim();
+  const cycle = parseInt(document.getElementById('se-new-cycle')?.value || '1', 10);
+  const pat   = document.getElementById('se-new-pattern')?.value || '';
+  if(!label){ setStatus('Enter a shift name.'); return; }
+  if(!cycle || cycle < 1){ setStatus('Cycle days must be ≥ 1.'); return; }
+  // Parse pattern: semicolon-separated days. Each day: comma-separated start-end ranges.
+  const onPattern = [];
+  for(let i = 0; i < cycle; i++){
+    const dayChunks = (pat.split(';')[i] || '').trim();
+    if(!dayChunks){ onPattern.push([]); continue; }
+    const wins = dayChunks.split(',').map(w => {
+      const [a,b] = w.split('-').map(x => parseFloat(x.trim()));
+      return (isFinite(a) && isFinite(b)) ? [a,b] : null;
+    }).filter(Boolean);
+    onPattern.push(wins);
+  }
+  s.shifts = s.shifts || [];
+  s.shifts.push({
+    id: 'sh_' + Date.now().toString(36),
+    label,
+    cycleDays: cycle,
+    onPattern
+  });
+  setStatus(`Added custom shift "${label}".`);
+  _renderShiftEditor();
+}
+
+function _deleteCustomShift(shiftId){
+  // Phase 5D bug-fix — the embedded Shifts tab on Manage Station calls this
+  // without going through openStationShiftEditor, so `_shiftEditorStationId`
+  // may be null. Fall back to the Manage Station context.
+  const stationId = _shiftEditorStationId || (typeof _activeManageStation !== 'undefined' ? _activeManageStation : null);
+  const s = stations.find(x => x.id === stationId);
+  if(!s || !s.shifts) return;
+  // Unassign any personnel currently on this shift before removing.
+  getPersonnelByStation(s.id).forEach(p => {
+    if(p.shiftId === shiftId){ p.shiftId = null; p.playerEdited = true; }
+  });
+  s.shifts = s.shifts.filter(sh => sh.id !== shiftId);
+  setStatus('Custom shift deleted.');
+  if(typeof _renderShiftEditor === 'function')  _renderShiftEditor();
+  if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();
+}
+
+function _assignPersonShift(personnelId, shiftId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  p.shiftId = shiftId || null;
+  p.playerEdited = true;
+  if(typeof _renderShiftEditor === 'function')  _renderShiftEditor();
+  if(typeof renderPersonnelTab === 'function')  renderPersonnelTab();
+}
+
+// =============================================================================
+// STATS + CAREER HISTORY  (Phase 5E)
+// =============================================================================
+// Per-person counters live on person.stats. History (capped, oldest aged out)
+// lives on person.history as a list of { gameSec, gameDay, type, summary,
+// incidentId? } entries. recordPersonStat is the single entry point that
+// callers across dispatch, training, promotion, etc. use to push updates.
+
+// Returns the default-zero stats block. Used at hire time and as a safety
+// backfill when an older save is loaded.
+function _emptyStats(){
+  return {
+    callsResponded:    0,
+    fireCalls:         0,
+    emsCalls:          0,
+    policeCalls:       0,
+    transports:        0,
+    saves:             0,
+    missedCalls:       0,
+    trainingCompleted: 0,
+    driveTimeSec:      0,
+    commandIncidents:  0
+  };
+}
+
+// Public: increments a stat counter on a person AND optionally appends a
+// history entry. statKey may be null to record history only.
+// historyEntry shape: { type, summary, incidentId? } — gameSec/gameDay are
+// stamped here.
+//
+// History is capped at BAM_CONFIG.statsHistoryCapPerPerson (default 200);
+// oldest entries are dropped when the cap is exceeded.
+function recordPersonStat(personnelId, statKey, delta = 1, historyEntry = null){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  if(!p.stats) p.stats = _emptyStats();
+  if(!p.history) p.history = [];
+  if(statKey){
+    p.stats[statKey] = (p.stats[statKey] || 0) + delta;
+  }
+  if(historyEntry){
+    const sec = (typeof gameSeconds !== 'undefined') ? gameSeconds : 0;
+    const day = (typeof gameDay !== 'undefined') ? gameDay : 1;
+    p.history.unshift({
+      gameSec: sec, gameDay: day,
+      type: historyEntry.type || 'event',
+      summary: historyEntry.summary || '',
+      incidentId: historyEntry.incidentId || null
+    });
+    const cap = BAM_CONFIG.statsHistoryCapPerPerson || 200;
+    if(p.history.length > cap) p.history = p.history.slice(0, cap);
+  }
+}
+
+// Public: returns a summary block suitable for the personnel details modal.
+// { stats, recentHistory: [first N], totalEntries }.
+function getCareerSummary(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return null;
+  const stats = p.stats || _emptyStats();
+  const history = p.history || [];
+  return {
+    stats,
+    recentHistory: history.slice(0, 50),
+    totalEntries: history.length
+  };
+}
+
+// Public: resets every counter and clears the history log. Triple-confirmation
+// is the caller's responsibility (the Database Health panel + per-person
+// reset button both prompt before calling this).
+function resetStats(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  p.stats = _emptyStats();
+  p.history = [];
+}
+
+// =============================================================================
+// PATIENT STABILIZATION  (Phase 5E)
+// =============================================================================
+// Patient objects gain `stabilization: 0..1` and `assignedProviders: [pid]`.
+// Each game-second tick (called from _tickGameClock) accumulates progress
+// based on the assigned providers' EMS cert levels. Once stabilization >= 1,
+// the patient becomes transport-ready.
+//
+// Rules:
+//   • One provider can only be assigned to one patient at a time (slot rule).
+//   • Multiple providers can stack on a single patient (additive rate, capped
+//     by BAM_CONFIG.stabilizationMaxRate when set).
+//   • Provider rate comes from BAM_CONFIG.stabilizationRates keyed on the
+//     highest EMS cert the provider holds (paramedic > aemt > emt > emr).
+
+// Returns the per-game-second stabilization rate this provider contributes.
+// 0 when they hold no EMS cert. CCP / phrn both treated as ccp tier.
+// Sources rates from BAM_CONFIG.personnelStabilizationRates — distinct from
+// the older unit-on-scene `stabilizationRates` block (per-unit, not per-person).
+function _providerStabilizationRate(person){
+  if(!person) return 0;
+  const rates = BAM_CONFIG.personnelStabilizationRates || {};
+  const certs = expandCertSet(person.certs || []);
+  if(certs.has('ccp'))       return rates.ccp || 0;
+  if(certs.has('phrn'))      return rates.phrn || rates.ccp || 0;
+  if(certs.has('paramedic')) return rates.paramedic || 0;
+  if(certs.has('aemt'))      return rates.aemt || 0;
+  if(certs.has('emt'))       return rates.emt || 0;
+  if(certs.has('emr'))       return rates.emr || 0;
+  return 0;
+}
+
+// Public: returns the total per-second stabilization rate for a patient from
+// PERSONNEL contributions (separate from the unit-on-scene rate computed by
+// the existing tickPatientStabilization in index.html). Caps at
+// BAM_CONFIG.personnelStabilizationMaxRate when set (>0).
+function calcStabilizationRate(patient){
+  if(!patient || !patient.assignedProviders?.length) return 0;
+  let total = 0;
+  patient.assignedProviders.forEach(pid => {
+    const p = getPersonnelById(pid);
+    if(!p) return;
+    // Phase 5D bug-fix — personnel continuity. A provider does not contribute
+    // to patient stabilization while their unit is still enroute or while a
+    // volunteer is still responding to the station.
+    if(p.status === 'responding') return;
+    const uid = p.currentAssignment?.unitId;
+    if(uid){
+      let unitArrived = false;
+      for(const s of (typeof stations !== 'undefined' ? stations : [])){
+        const u = s.units?.find(x => x.id === uid);
+        if(u){ unitArrived = (u.status === 'on_scene'); break; }
+      }
+      if(!unitArrived) return;
+    }
+    total += _providerStabilizationRate(p);
+  });
+  const cap = BAM_CONFIG.personnelStabilizationMaxRate || 0;
+  if(cap > 0) total = Math.min(total, cap);
+  return total;
+}
+
+// =============================================================================
+// AUTO-ASSIGN ARRIVING PROVIDERS  (Phase 5 bugfix)
+// =============================================================================
+// Called from onUnitArrived in index.html. Walks the providers riding on the
+// arriving unit and distributes them across the incident's patients via
+// equal-distribution: each new provider goes to the patient with the fewest
+// currently-assigned providers (ties broken by injury severity).
+//
+// Notes:
+//   • Only providers (EMS-cert holders) are eligible. Drivers/EMTs both count.
+//   • Patients with status 'stabilized' or 'transported' are skipped.
+//   • Respects the existing 1-provider-per-patient invariant via assignPersonToPatient.
+//   • Personnel already assigned to a patient on this incident are not
+//     reshuffled — auto-assign only places newly-arrived crew.
+//   • Emits a setStatus + a logCall entry for player visibility.
+function autoAssignArrivingCrewToPatients(unit, inc){
+  if(!unit || !inc) return 0;
+  if(!Array.isArray(inc.patients) || !inc.patients.length) return 0;
+  // Eligible patients still need a provider.
+  const needyPatients = inc.patients.filter(pat =>
+       pat
+    && pat.status !== 'stabilized'
+    && pat.status !== 'transported'
+  );
+  if(!needyPatients.length) return 0;
+
+  // Severity ordering — used for tie-breaks. Critical > moderate > minor.
+  const severityRank = (pat) => {
+    const inj = (pat.injuryType || '').toLowerCase();
+    if(inj.includes('critical') || inj.includes('major')) return 3;
+    if(inj.includes('moderate'))                          return 2;
+    if(inj.includes('minor'))                             return 1;
+    return 0;
+  };
+
+  // Eligible providers riding on this unit who are not already on a patient.
+  const providers = (personnel || []).filter(p => {
+    if(p.currentAssignment?.unitId !== unit.id) return false;
+    if(p.assignedPatientId) return false;
+    const certs = expandCertSet(p.certs || []);
+    return certs.has('emr') || certs.has('emt') || certs.has('aemt')
+        || certs.has('paramedic') || certs.has('ccp') || certs.has('phrn');
+  });
+  if(!providers.length) return 0;
+
+  let assignedCount = 0;
+  providers.forEach(provider => {
+    // Pick the patient with the fewest assigned providers right now; ties
+    // broken by severity (most critical first), then patient order.
+    needyPatients.sort((a, b) => {
+      const ac = (a.assignedProviders || []).length;
+      const bc = (b.assignedProviders || []).length;
+      if(ac !== bc) return ac - bc;
+      return severityRank(b) - severityRank(a);
+    });
+    const target = needyPatients.find(pat => pat.status !== 'stabilized' && pat.status !== 'transported');
+    if(!target) return;
+    const res = assignPersonToPatient(provider.id, target);
+    if(res?.ok) assignedCount++;
+  });
+
+  if(assignedCount > 0){
+    if(typeof setStatus === 'function'){
+      setStatus(`🩺 ${unit.name || ''} crew assigned to ${assignedCount} patient${assignedCount===1?'':'s'}.`);
+    }
+    if(typeof logCall === 'function'){
+      try {
+        logCall(inc, `${unit.name || 'Unit'} crew auto-assigned to ${assignedCount} patient${assignedCount===1?'':'s'}.`);
+      } catch(_){}
+    }
+  }
+  return assignedCount;
+}
+
+// Public: assigns a provider to a patient. Enforces 1-provider-per-patient
+// invariant by clearing any prior assignment. Returns { ok, reason }.
+function assignPersonToPatient(personnelId, patient){
+  const p = getPersonnelById(personnelId);
+  if(!p) return { ok:false, reason:'not_found' };
+  if(!patient) return { ok:false, reason:'no_patient' };
+  if(p.assignedPatientId && p.assignedPatientId !== patient.id){
+    // Detach from previous patient first.
+    unassignPersonFromPatient(personnelId);
+  }
+  patient.assignedProviders = patient.assignedProviders || [];
+  if(!patient.assignedProviders.includes(personnelId)){
+    patient.assignedProviders.push(personnelId);
+  }
+  p.assignedPatientId = patient.id;
+  return { ok:true };
+}
+
+// Public: true when the unit's currently-assigned crew includes at least one
+// EMS provider (EMR / EMT / AEMT / Paramedic / CCP / PHRN). Phase 5 bugfix —
+// ambulances cannot transport without a provider on board.
+function unitHasOnboardProvider(unitId){
+  if(!unitId) return false;
+  const crew = (personnel || []).filter(p => p.currentAssignment?.unitId === unitId);
+  return crew.some(p => {
+    const certs = expandCertSet(p.certs || []);
+    return certs.has('emr') || certs.has('emt') || certs.has('aemt')
+        || certs.has('paramedic') || certs.has('ccp') || certs.has('phrn');
+  });
+}
+
+// Public: walks every crew member assigned to a unit and releases them from
+// any patient they're currently bound to. Phase 5 bugfix — called when a unit
+// leaves scene (return-to-station / cancel) so providers don't keep
+// stabilizing patients they've physically left.
+function releaseCrewPatientAssignments(unitId){
+  if(!unitId) return 0;
+  let released = 0;
+  (personnel || []).forEach(p => {
+    if(p.currentAssignment?.unitId !== unitId) return;
+    if(!p.assignedPatientId) return;
+    unassignPersonFromPatient(p.id);
+    released++;
+  });
+  return released;
+}
+
+// Public: removes the person from their currently-assigned patient (if any).
+// Caller doesn't need to know which patient — we look up via the back-ref.
+function unassignPersonFromPatient(personnelId){
+  const p = getPersonnelById(personnelId);
+  if(!p) return;
+  const pid = p.assignedPatientId;
+  if(!pid) return;
+  // Find the patient by id across active incidents.
+  if(typeof incidents !== 'undefined'){
+    for(const inc of incidents){
+      const pat = (inc.patients || []).find(x => x.id === pid);
+      if(pat){
+        pat.assignedProviders = (pat.assignedProviders || []).filter(x => x !== personnelId);
+        break;
+      }
+    }
+  }
+  p.assignedPatientId = null;
+}
+
+// Public: per-tick advance of PERSONNEL-driven patient stabilization across
+// every active incident. Adds to the existing per-unit stabilizeProgress
+// already maintained by the legacy tickPatientStabilization in index.html —
+// we contribute via the same `stabilizeProgress` field so the existing UI bars
+// and stabilized-status threshold (>=1) keep working uniformly.
+// Named distinctly from the legacy fn to avoid the global-scope collision.
+function tickPersonnelStabilization(deltaGameSec){
+  if(typeof incidents === 'undefined' || !deltaGameSec) return;
+  incidents.forEach(inc => {
+    if(inc.status === 'resolved') return;
+    (inc.patients || []).forEach(pat => {
+      // Use the existing legacy field name so both contribution sources stack
+      // onto a single progress value — UI bars and status flips already key on
+      // stabilizeProgress >= 1.
+      if(pat.stabilizeProgress == null) pat.stabilizeProgress = 0;
+      if(pat.stabilizeProgress >= 1) return;
+      const rate = calcStabilizationRate(pat);
+      if(rate <= 0) return;
+      pat.stabilizeProgress = Math.min(1, pat.stabilizeProgress + rate * deltaGameSec);
+      if(pat.stabilizeProgress >= 1 && pat.status === 'stabilizing') pat.status = 'stabilized';
+    });
+  });
+}
+
+// =============================================================================
+// SPAN OF CONTROL  (Phase 5E)
+// =============================================================================
+
+// Returns the on-scene span-of-control rating for an incident. Counts officers
+// (Fire Officer 1+, EMS Supervisor, Patrol Supervisor) vs subordinates among
+// every currently-busy responder assigned to the incident.
+//
+// Returns { officerCount, subordinateCount, ratio, tierKey, label, tooltip, color }.
+// The tier is universal — no per-incident-size scaling per player requirement.
+function getSpanOfControlForIncident(incidentId){
+  const officerCerts = BAM_CONFIG.spanOfControlOfficerCerts || [];
+  const tiers = BAM_CONFIG.spanOfControlTiers || {};
+  let officerCount = 0;
+  let totalOnScene = 0;
+  personnel.forEach(p => {
+    if(p.currentAssignment?.callId !== incidentId) return;
+    totalOnScene++;
+    const certs = expandCertSet(p.certs || []);
+    if(officerCerts.some(c => certs.has(c))) officerCount++;
+  });
+  const subordinateCount = Math.max(0, totalOnScene - officerCount);
+  const ratio = (officerCount > 0) ? (subordinateCount / officerCount) : Infinity;
+  // Classify into tier by ratio <= tier.max. Iteration order is bored → ideal
+  // → task_saturated → overwhelmed (insertion order of the object literal).
+  let tierKey = 'overwhelmed';
+  if(officerCount === 0 && subordinateCount === 0){
+    // No one on scene — return a neutral tier so the UI can hide the chip.
+    return { officerCount, subordinateCount, ratio:0, tierKey:'none', label:'', tooltip:'', color:'#6b7280' };
+  }
+  for(const [key, def] of Object.entries(tiers)){
+    if(ratio <= def.max){ tierKey = key; break; }
+  }
+  const def = tiers[tierKey] || {};
+  return {
+    officerCount, subordinateCount, ratio,
+    tierKey,
+    label:   def.label   || tierKey,
+    tooltip: def.tooltip || '',
+    color:   def.color   || '#6b7280'
+  };
+}
+
+// =============================================================================
+// ON-SCENE ROSTER  (Phase 5E)
+// =============================================================================
+
+// Returns a flat list of every responder currently on scene for an incident:
+//   { personId, name, rank, stationId, stationName, apparatusId, apparatusName, currentTask }
+// `currentTask` is derived from the person's assignment + role hints:
+//   • Pinned to a unit → 'Driver/Operator' if they hold the driver cert,
+//     else 'Crew member'
+//   • Assigned to a patient → 'Patient Care — PT <suffix>'
+//   • Otherwise → 'Standby'
+// Public: renders the call-window Personnel tab pane. Lists on-scene roster
+// with station/apparatus/task columns and a per-patient provider-assignment
+// section honoring the 1-provider-per-patient invariant.
+function _renderPersonnelDispatchTab(inc){
+  if(!inc) return '';
+  const roster = getOnSceneRoster(inc.id);
+  const rosterRows = roster.length ? roster.map(r => `
+    <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr auto;gap:8px;align-items:center;padding:4px 6px;border-bottom:1px solid rgba(255,255,255,0.04);font-size:.78rem;">
+      <span>${_escPersonHtml(r.name)} <span style="color:var(--muted);font-size:.7rem;">${_escPersonHtml(r.rank)}</span></span>
+      <span style="color:var(--muted);">${_escPersonHtml(r.stationName)}</span>
+      <span style="color:var(--muted);">${_escPersonHtml(r.apparatusName || '—')}</span>
+      <span style="color:var(--gold);font-size:.72rem;">${_escPersonHtml(r.currentTask)}</span>
+      <button class="btn-sm" onclick="openPersonnelDetails('${r.personId}')">Details</button>
+    </div>
+  `).join('') : '<div class="empty-msg">No personnel on scene yet. Personnel are credited automatically when their unit arrives.</div>';
+
+  // Phase 5D bug-fix — Patient/provider assignment moved to the Transport tab.
+  // This pane stays as a roster + task viewer. A pointer steers the player to
+  // the Transport tab when there are patients.
+  const patientLink = (inc.patients || []).length
+    ? `<div style="margin-top:10px;padding:6px 10px;background:rgba(46,168,255,.08);border:1px solid var(--ems);border-radius:4px;font-size:.78rem;">
+        🚑 Assign on-scene medical providers in the <a href="#" style="color:var(--ems);text-decoration:underline;" onclick="event.preventDefault(); switchDMTab('transport');">Transport tab</a>.
+      </div>`
+    : '';
+  return `<div class="section-title">On Scene (${roster.length})</div>
+    ${rosterRows}
+    ${patientLink}
+  `;
+}
+
+// Public: HTML block for assigning EMS-credentialed on-scene providers to each
+// patient on this incident. Phase 5D bug-fix — relocated from the Personnel
+// tab to the Transport tab per Bugs.md. Uniqueness invariant (one provider per
+// patient) is still enforced by `assignPersonToPatient`.
+function renderPatientProviderAssignmentHTML(inc){
+  if(!inc || !(inc.patients || []).length) return '';
+  let html = `<div class="section-title" style="margin-top:12px;">On-Scene Medical Providers</div>
+    <div style="font-size:.74rem;color:var(--muted);margin-bottom:6px;">
+      Assign EMS-certified responders currently on scene to each patient. Providers contribute to stabilization (rate scales with cert level) until the patient is loaded for transport.
+    </div>`;
+  // Only providers whose apparatus has arrived on scene count toward the pool —
+  // matches the personnel-continuity gate enforced by `calcStabilizationRate`.
+  const unitIsOnScene = (unitId) => {
+    if(!unitId) return false;
+    for(const s of (typeof stations !== 'undefined' ? stations : [])){
+      const u = s.units?.find(x => x.id === unitId);
+      if(u) return u.status === 'on_scene';
+    }
+    return false;
+  };
+  const candidatePool = personnel.filter(p =>
+       p.currentAssignment?.callId === inc.id
+    && _providerStabilizationRate(p) > 0
+    && p.status !== 'responding'
+    && unitIsOnScene(p.currentAssignment?.unitId)
+  );
+  inc.patients.forEach(pat => {
+    const assignedIds   = pat.assignedProviders || [];
+    const assignedNames = assignedIds.map(id => getPersonnelById(id)?.name).filter(Boolean).join(', ') || '(none)';
+    const totalRate     = calcStabilizationRate(pat);
+    const stabPct       = Math.round((pat.stabilizeProgress || 0) * 100);
+    const stabColor     = (pat.stabilizeProgress || 0) >= 1 ? 'var(--green)' : 'var(--ems)';
+    const injCfg        = BAM_CONFIG.injuryTypes?.[pat.injuryType];
+    const dropOpts = candidatePool
+      .filter(p => !assignedIds.includes(p.id))
+      .map(p => {
+        const conflict = p.assignedPatientId && p.assignedPatientId !== pat.id ? ' (will detach)' : '';
+        return `<option value="${p.id}">${_escPersonHtml(p.name)} — ${_escPersonHtml(p.rank || '')}${conflict}</option>`;
+      }).join('');
+    html += `<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:6px;font-size:.78rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span><b>${_escPersonHtml(injCfg?.label || pat.injuryType)}</b> · ${_escPersonHtml(pat.status || 'stabilizing')}</span>
+        <span style="color:var(--muted);font-size:.72rem;">+${totalRate.toFixed(4)}/sec from personnel</span>
+      </div>
+      <div class="res-bar-track" style="margin:6px 0;"><div style="width:${stabPct}%;background:${stabColor};height:100%;transition:width 1s linear;"></div></div>
+      <div style="margin-bottom:4px;"><span style="color:var(--muted);">Providers:</span> ${_escPersonHtml(assignedNames)}</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+        ${assignedIds.map(id => `<button class="btn-sm" onclick="_dispatchUnassignProvider('${id}', '${pat.id}', '${inc.id}')" title="Unassign this provider">✕ ${_escPersonHtml(getPersonnelById(id)?.name || 'provider')}</button>`).join('')}
+        ${dropOpts ? `<select id="ppa-${pat.id}" style="font-size:.74rem;">
+          <option value="">— assign provider —</option>${dropOpts}
+        </select>
+        <button class="btn-sm" onclick="_dispatchAssignProviderFromSelect('${pat.id}', '${inc.id}')">Assign</button>` : '<span style="color:var(--muted);font-size:.7rem;">No on-scene EMS-cert providers available.</span>'}
+      </div>
+    </div>`;
+  });
+  return html;
+}
+
+function _dispatchAssignProviderFromSelect(patientId, incidentId){
+  const sel = document.getElementById('ppa-' + patientId);
+  if(!sel || !sel.value) return;
+  const inc = (typeof incidents !== 'undefined') ? incidents.find(x => x.id === incidentId) : null;
+  if(!inc) return;
+  const pat = (inc.patients || []).find(x => x.id === patientId);
+  if(!pat) return;
+  assignPersonToPatient(sel.value, pat);
+  if(typeof renderDispatchBody === 'function'){
+    renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+function _dispatchUnassignProvider(personnelId, patientId, incidentId){
+  unassignPersonFromPatient(personnelId);
+  const inc = (typeof incidents !== 'undefined') ? incidents.find(x => x.id === incidentId) : null;
+  if(inc && typeof renderDispatchBody === 'function'){
+    renderDispatchBody(inc, BAM_CONFIG.missions[inc.missionKey]);
+  }
+}
+
+function getOnSceneRoster(incidentId){
+  // Phase 5D bug-fix — personnel continuity. "On scene" means the responder's
+  // apparatus has actually arrived at the scene. Showing a crew member on scene
+  // while their engine is still enroute (or while the volunteer is still
+  // responding to the station) violated the design's continuity rule. We treat
+  // any personnel whose assigned unit is not yet `on_scene` as not-on-scene
+  // for roster/UI purposes.
+  const _unitById = new Map();
+  (typeof stations !== 'undefined' ? stations : []).forEach(s => {
+    (s.units || []).forEach(u => _unitById.set(u.id, u));
+  });
+  return personnel
+    .filter(p => {
+      if(p.currentAssignment?.callId !== incidentId) return false;
+      // Volunteers responding to station are not on scene.
+      if(p.status === 'responding') return false;
+      const uid = p.currentAssignment.unitId;
+      if(!uid) return true; // direct-to-scene path — handled outside this gate
+      const u = _unitById.get(uid);
+      return !!u && u.status === 'on_scene';
+    })
+    .map(p => {
+      const station = stations.find(s => s.id === p.stationId);
+      const unitId = p.currentAssignment?.unitId;
+      let apparatusName = '';
+      let driverCert = null;
+      if(unitId){
+        for(const s of stations){
+          const u = s.units?.find(x => x.id === unitId);
+          if(u){
+            apparatusName = (typeof getUnitDisplayName === 'function') ? getUnitDisplayName(u, s) : u.name;
+            driverCert = getUnitDriverCert(u);
+            break;
+          }
+        }
+      }
+      // Task assignment derivation.
+      let currentTask = 'Standby';
+      if(p.assignedPatientId){
+        currentTask = `Patient Care — ${String(p.assignedPatientId).slice(-4)}`;
+      } else if(driverCert && personHasCert(p, driverCert)){
+        currentTask = 'Driver/Operator';
+      } else if(unitId){
+        currentTask = 'Crew Member';
+      }
+      return {
+        personId: p.id, name: p.name, rank: p.rank || '',
+        stationId: p.stationId, stationName: station?.name || '',
+        apparatusId: unitId || null, apparatusName,
+        currentTask
+      };
+    });
+}

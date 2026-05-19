@@ -12,6 +12,8 @@
   hospitals.js        — Hospital placement and management, patient transport
   prisons.js          — Jail and prison placement and management, prisoner transport
   stations.js         — Station, unit, and responder management
+  units.js            — Unit-level display layer: DC prefix resolution, Unit List tab, Unit Details modal (Phase 5A+)
+  personnel.js        — Career personnel: cert taxonomy + equivalency, crew matcher, Personnel tab, auto-staff/batch-hire, roster renderers (Phase 5B+)
   .gitignore          — Excludes server/.env and server/node_modules from git
   CLAUDE.md           — Project briefing and session instructions
   docs/               — Reference documentation (project-brief.md, history.md, roadmap.md, architecture.md, conventions.md, launch-guide.md, this file)
@@ -67,7 +69,9 @@ These will be created only when a system grows too large to logically live in an
 ### Phase 5 — Personnel
 
 ```
-  personnel.js        — Individual responder tracking, certifications, volunteer status
+  units.js            — ✅ LIVE (5A) — display layer + Unit List + Unit Details modal
+  personnel.js        — ✅ LIVE — career personnel, cert taxonomy, crew matcher, Personnel tab, volunteer-aware crew helpers (post-refactor: assembly-delay aware, no location)
+  volunteers.js       — ✅ LIVE — OSM building cache (dormant; retained for future POI features), volunteer hourly availability state, abstract assembly orchestration, direct-to-scene eligibility, force-out
 ```
 
 ### Phase 6 — CAD

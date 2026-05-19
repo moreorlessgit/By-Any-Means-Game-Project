@@ -30,7 +30,8 @@ See **docs/project-brief.md** for full project identity, design philosophy, and 
 
 ```
 Frontend (root):
-  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js
+  index.html, api.js, config.js, esn.js, criminals.js, hospitals.js, prisons.js, stations.js, units.js,
+  personnel.js, volunteers.js, dbhealth.js
   CLAUDE.md, docs/, .gitignore
 
 Backend (server/):
@@ -49,6 +50,7 @@ Launch + hosting reference:
 
 - **config.js is the single source of truth.** All tunable values live there; nothing is hardcoded in game logic.
 - **Unit capability uses tag arrays.** Never replace with direct type matching.
+- **Seats own apparatus capacity AND crew requirements.** `BAM_CONFIG.unitTypes[k].seats[]` is the authority — there is NO separate `crewDefaults` block or `maxTransportCapacity` field. Each seat is one of three roles: responder seat (with optional `requiredCert` / `preferredCerts[]` / `niceToHaveCerts[]` / `isDriver`), `isPatientSeat:true` (stretcher), or `isPrisonerSeat:true` (cell/cage). Patient and prisoner seats cannot hold responders. Apparatus rolls when every seat with `requiredCert` is filled.
 - **US customary units only.** Display miles/mph to the player; convert from OSRM before display.
 - **Never delete or overwrite player save data** without explicit confirmation.
 - **Station and unit costs are flat.** No scaling based on count.
@@ -84,3 +86,4 @@ Launch + hosting reference:
 - **docs/conventions.md** — Coding conventions, naming rules, ID prefixes, UI patterns. Pull when writing new code or establishing new patterns.
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.
 - **docs/launch-guide.md** — How to start the backend + frontend, connect from another computer on the LAN, and roll out updates. Pull when the player asks how to launch, host, or update the game.
+- **docs/data-lifecycle.md** — Cleanup, caching, retention, and cascade rules per entity. Pull when adding a new DB table, designing delete behavior, or building cache invalidation. Every new entity type should add an entry here.

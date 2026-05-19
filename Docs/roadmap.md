@@ -97,7 +97,21 @@ Goal: Open the game to strangers safely.
 
 ## Phase 5 — Personnel, Volunteer System, Certifications, Unit List Window, Unit Details Window.
 
-- See the Phase5.md file.
+Phase 5 introduces individual named personnel, certifications, crew composition rules, and the volunteer response system. It is the **substrate for a post-Phase 5 call resolution overhaul** — crew-cert composition will eventually drive resolution speed, escalation, and incident effectiveness.
+
+**Playtest cadence:** Full system ships before player playtests. Sub-phases below are engineering chunks, not delivery milestones.
+
+- **5A** — Unit List + Unit Details modals + dispatch center unit prefixes (pure UI) ✅
+- **5B** — Career personnel + cert taxonomy + crew slot rules + min/ideal crew dispatch gating ✅
+- **5C** — Training system + career shifts + ranks + cashflow integration ✅
+- **5D** — Volunteer system: OSM-cached home/work, direct-to-scene, PPE rules, availability, auto-migration on ESN edits ✅ *(later replaced by an abstract-assembly model — per-station mean ± spread delay window, no map travel. OSM cache retained dormant. See history.md.)*
+- **5E** — Stats, career history, NIMS/ICS officer ratios, Database Health panel, polish ✅
+
+**Phase 5 complete.** Personnel substrate ready for the post-Phase-5 call resolution overhaul. The volunteer subsystem was subsequently simplified to abstract assembly (no map locations / OSRM routing) — see history.md "Phase 5+ Volunteer Abstract-Assembly Refactor + Seat Schema Rework."
+
+**Multiplayer integration:** Personnel records stay private to the owning player. On shared calls (Phase 4C), only aggregated crew composition is broadcast (e.g. "Engine 5 with 4 crew: 1 D/O, 2 FF1, 1 FF1/EMT").
+
+See **docs/Phase5.md** for full design, **docs/data-lifecycle.md** for OSM cache and cleanup rules, **docs/backend-architecture.md** for planned schema.
 
 ## Phase 6 — CAD-Style Call List Overhaul
 
@@ -108,7 +122,7 @@ Goal: Open the game to strangers safely.
 
 ---
 
-## Phase 7 — Water Supply
+## Phase 7 — Water Supply and Incident Overhaul
 
 - Wet hydrant and dry hydrant placement by player
 - Tanker shuttle logic for areas without hydrant coverage
@@ -139,3 +153,15 @@ Goal: Open the game to strangers safely.
 - Major Feature - Police Units/stations Automatically Patrol ESNs they are assigned to. Car Numbers configurable per ESN. If unable to meet requirements, then split evenly. If still unable to meet requirements, then cars are allotted at random, and patrol between different ESNs assigned.
 - Major Feature - EMS Units can be staged at a location?
 - Bug - ALS PTs transportable by non-ALS units. Rendezvous System is the fix.
+
+---
+
+## Hosting Plan (Infrastructure)
+
+Not a feature phase, but tracked here for visibility.
+
+- **Current:** Local PC, LAN access only. See `docs/launch-guide.md` for daily operation.
+- **Near-term:** Migrate to **Railway Hobby plan** (~$5–10/mo) with a custom domain when ready — small-scale hosting for the player + a few friends. Backend + frontend + Postgres all on Railway. GitHub auto-deploys on push.
+- **Long-term / commercial:** Not committed. Significant architectural work would be needed before paying-customer scale — most notably **self-hosted OSRM and Overpass** (the public APIs aren't commercially usable). Other challenges: Redis adapter for Socket.IO horizontal scaling, sticky sessions, pgBouncer, payment processing, support overhead.
+
+Full detail (cost breakdown, scaling tiers, pre-flight checklist, decision criteria): **`docs/hosting-plan.md`**.

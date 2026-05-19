@@ -235,4 +235,160 @@
 
 *Phase 4A complete.* Next: Phase 4B (groups, global stations/units, Socket.IO).
 
-*Last updated: 2026-05-14. Phase 4A Session 4 complete — login overlay, world picker, server-backed save slots, settings auto-sync, one-shot importer.*
+---
+
+## Phase 5A — Unit List, Unit Details, DC Unit Prefixes ✅
+
+Pure-UI sub-phase of Phase 5. The personnel data model (Phase 5B) doesn't exist yet, so the staffing/personnel fields in this UI are intentionally stubbed with "Phase 5B" hints — the surfaces are wired and ready to consume that data once it lands.
+
+- **`units.js`** (new, root) — owns unit-centric display logic that spans stations: prefix resolution, Unit List rendering, and the Unit Details modal. Stations.js stays focused on station-level CRUD and the in-sidebar pill rendering.
+- **DC Unit Prefixes** — Each dispatch center has a `unitPrefix` (string, optional) and a `prefixFormat` (`bracket` | `dash` | `space`). DC create/edit modal exposes both fields. Units at any station whose ESN belongs to that DC display the prefix automatically (e.g. `[SUSQ] E-52`).
+- **Display-name pipeline** — A single helper `getUnitDisplayName(unit, station)` is applied at every visible surface: station-list pills, AVL map labels, map tooltips, dispatch modal (enroute rows + available rows), transport dropdowns, prisoner-transport dispatch rows, Manage Station unit rows, and the new Unit List + Unit Details modal. Internal `unit.name` is unchanged — prefix is purely a display layer.
+- **DC override + conflict notice** — When a station's ESNs are covered by multiple DCs, the Manage Station modal shows a "Dispatch Center for Unit Prefixes" picker; the chosen DC is persisted on `station.preferredDCId`. Until the player picks, a ⚠ DC conflict tag appears on the station in the Manage Station modal and the Unit List, and `getStationDC()` falls back to the first matching DC by creation order so prefixes still render. Clearing the override returns to auto-pick.
+- **Unit List tab** — New top-level tab in the Operations Modal (Stations | **Units** | Facilities | Operations). Filters: search (callsign / station / type / DC), unit type dropdown, status dropdown. Sort: by station, by type, by status, by callsign. Rows are clickable and show DC + prefix + conflict badge inline.
+- **Unit Details modal** — Opens from: station-list pills (left-click), Manage Station unit row (ℹ︎ button), AVL map labels (click the label), dispatch modal enroute row (click the name), dispatch modal available row (ℹ︎ button), prisoner-transport dispatch row (click the name), and Unit List rows. Shows: status with live ETAs (per phase: enroute / on-scene / transporting / offloading / returning), callsign with rename input + display preview, type / tags / provider / personnel placeholder / transport capacity, resolved DC + prefix, conflict notice if any, and actions (toggle service, jump to Manage Station, focus on map when animating).
+- **Station-pill click reassigned** — Pills in the sidebar station list now open Unit Details on left-click. Shift+click preserves the legacy OOS toggle shortcut.
+- **Save schema (private worlds)** — DC payload gains `unitPrefix` and `prefixFormat`; station payload gains `preferredDCId`. Older saves missing these fields default to `''` / `'bracket'` / `null` on load — backward compatible, no migration required.
+- **Live updates** — `_tickGameClock()` calls `_updateUnitDetailsModal()` (re-renders only when modal is open and the rename input isn't focused) and re-renders the Unit List only while the Units tab is visible.
+
+*Phase 5A is the UI skeleton.* No playtest yet — per agreement, Phase 5 ships as a whole at the end of 5E.
+
+*Last updated: 2026-05-15. Phase 5A complete — Unit List, Unit Details, DC prefixes, per-station DC override.*
+
+---
+
+## Phase 5B — Career Personnel, Certifications, Crew Slot Gating ✅
+
+Personnel data model and crew gating layer. Volunteers are still 5D; this sub-phase is career-only. Per agreement, no mid-phase playtest — the staffing surfaces shipped here will be evaluated as part of the full Phase 5 whole.
+
+- **`personnel.js`** (new, root, ~1,185 lines) — owns the `personnel[]` top-level array, cert taxonomy helpers, the greedy crew matcher, auto-staff/batch-hire economics, the Personnel tab in the Operations Modal, and the per-station / per-unit roster summary renderers. Loaded after `units.js`, before `esn.js`.
+- **Cert taxonomy expanded in `config.js`** — `BAM_CONFIG.certifications` rebuilt from the 8-entry Phase 5A stub into the full fire / EMS / police / shared ladder from Phase5.md. Each cert now carries `label`, `category`, `cost`, `prereqs[]`, and `satisfies[]`. `satisfies` is walked transitively by `expandCertSet()` so Paramedic counts as AEMT/EMT/EMR, FF2 counts as FF1/Exterior/Support, Large EVOC counts as Small EVOC, HazMat Tech counts as Ops/Awareness, etc.
+- **Crew defaults in `config.js`** — New `BAM_CONFIG.crewDefaults` keyed by `unitTypes` id. Each entry has `driverCert` (hard gate cert that must be held by at least one crew member or the apparatus literally cannot move), `min` (slot map required to dispatch), and `ideal` (slot map for normal staffing). One person fills exactly one slot — even multi-cert responders count once — and the greedy matcher handles equivalency. Per-unit overrides via `unit.crewMin` / `unit.crewIdeal` take precedence.
+- **Policy defaults** — Added `idealCrewWaitMs` (global default 10 min), `stationStaffingTypes` (`career` / `combination` / `volunteer` — volunteer behavior lands in 5D), and `personnelHireCostBase` ($2,000 flat per career responder, on top of cert training costs). Name pools (`firstNames` / `lastNames`) added for auto-generated rosters; players can rename any responder anytime.
+- **Station schema additions** — `station.stationType` (`career` default), `station.idealCrewWaitMs` (null = inherit global). Cascaded into save/load and `recreateStation()` with legacy-save defaults so pre-5B saves load unchanged.
+- **Unit schema additions** — `unit.crewMin`, `unit.crewIdeal`, `unit.pinnedPersonnelIds[]`, `unit.idealCrewWaitMs`, `unit.staffingPolicy` (default `wait_then_min`). All default to inherit; nulls mean "use crewDefaults / station / global". Save/load round-trip clean.
+- **Starter roster on station create** — `generateStarterRoster()` auto-staffs newly built stations to ideal across all their units at no extra charge (player-confirmed flow). Cashflow modal logs the hire count. Volunteer/combination behavior lands in 5D.
+- **Personnel tab** — New top-level tab in the Operations Modal (Stations | Units | **Personnel** | Facilities | Operations). Filters: search (name/rank/cert), station dropdown, cert dropdown. Sort: by station, name, rank, certs, status.
+- **Add Person modal** — Single-hire and batch-hire flows. Cost = `personnelHireCostBase` + Σ selected cert costs. Hire is blocked if money is short. Player picks station, name (or auto-generate from name pools), preferred service (`fire` / `ems` / `either`), and starting certs.
+- **Crew matcher (`hasMinimumCrew` / `hasIdealCrew`)** — Greedy bipartite slot matcher. Returns `{ ok, hasDriver, missing }`. Equivalency-aware. Used everywhere staffing is evaluated.
+- **Dispatch modal staffing gate** — Each available unit row now shows a staffing badge: 🚫 No driver / 🔴 Needs (missing slots) / 🟡 Min only / 🟢 Ideal. **Driver missing is a hard block.** Below-min crew shows an "Override (respond understaffed)" checkbox per row that lets the player force-dispatch one unit at a time — auto-dispatch never auto-overrides. Mid-call redirects (units already `dispatched` / `returning`) skip the gate because their crew is already committed. `executeDispatch()` enforces the same gate as a pre-flight check.
+- **Auto-dispatch behavior** — Filters out understaffed and no-driver units. Surfaces `⚠️ N unit slot(s) could not be auto-filled` when nearby coverage is short on crew, so the player knows to crew up or override manually.
+- **Crew lifecycle hooks** — `assignPersonnelToUnit()` runs at dispatch and marks the matched crew `status='busy'` on the incident; `releasePersonnelFromUnit()` runs in `onUnitReturned()` and flips them back to `available`. Save data flushes busy → available on persist so save/reload doesn't strand crew.
+- **Manage Station modal additions** — Per-station personnel summary block (rendered via `renderManageStationPersonnelHTML()`) plus a per-unit staffing chip on every unit row. Unit Details modal now embeds the actual crew roster (via `renderUnitCrewRosterHTML()`), replacing the Phase-5A "(staffing in Phase 5B)" placeholder.
+- **Cascade on station delete** — `cascadeDeletePersonnelForStation(stationId, { force:true })` removes all personnel attached to the station and the status line reports the count alongside the refund. Lines up with the force-delete escape hatch in docs/data-lifecycle.md.
+- **Save schema (private worlds)** — `buildSaveData()` adds a top-level `personnel` array; `loadFromSlot()` hydrates it. Pre-5B saves load with `personnel = []` (back-compat). Station/unit staffing fields and `preferredDCId` now round-trip explicitly.
+
+*Phase 5B complete.* Next: 5C (training UI, career shifts, ranks, salary/training cashflow).
+
+---
+
+## Phase 5C — Training, Career Shifts, Ranks, Cashflow Integration ✅
+
+Economic and lifecycle layer for career personnel. Player-confirmed planning decisions: salary blob persistence (no new Prisma tables), per-game-day deduction, manual + free promotions (cert training is the cost gate), salary preview in three places (cashflow modal header, personnel tab summary bar, Manage Station modal).
+
+- **Rank ladders in `config.js`** — `BAM_CONFIG.rankConfig` per service: fire, ems, police_local, police_county, police_state. Each rank carries `key`, `label`, `service`, `prereqCerts[]`, `salaryMultiplier`. Salary derives from `salaryBaseAnnual × multiplier` (defaults to $50,000 base; player can override per-person via the details modal).
+- **Shift templates in `config.js`** — `BAM_CONFIG.shiftTemplates` ships with 24/48, 48/96, Day (06–18), Night (18–06, carries past midnight), and Weekday Daytime. Stations also keep a per-station `shifts: []` array for custom templates (created in the Shift editor).
+- **Training + promote helpers in `personnel.js`** — `trainPersonnel(ids, certCode)` with cost = `cert.cost × trainingCostMultiplier`, prereq enforcement, equivalency dedupe, consolidated `[TRAINING] …` cashflow line. `promotePersonnel(id, rankKey)` is free, validates cert prereqs against the person's expanded cert set, updates rank label + key + derived salary. `getPromotableRanksFor(p)` powers the picker.
+- **Training modal** — Single + batch. Cert picker grouped by category. Per-row eligibility chips ("eligible" / "needs X" / "already holds"). Live cost block.
+- **Promote modal** — Lists every eligible rank by service group with salary delta vs current. Current rank flagged. Manual + instant.
+- **Shift editor modal** — Opens from Manage Station ("Shifts" button). Lists built-in + custom templates with parsed pattern descriptions. Per-station "add custom" form (label, cycle days, semicolon-separated on-windows). Personnel assignment dropdowns alongside on-duty/off-duty indicators.
+- **On-duty gating in dispatch** — `isOnDutyNow(person)` walks the shift's `onPattern[(day-1) % cycleDays]`, supports past-midnight carry-over via `end > 24`. `getCrewForUnit` filters career personnel by `isOnDutyNow`; volunteers stay always-available until 5D.
+- **Salary tick** — `tickSalaryDeductions()` called from `_tickGameClock` on each game-day rollover. Emits one consolidated `[SALARIES] Day N · N personnel` cashflow line (or `Days A–B · …` if multiple days advanced between ticks). `resetSalaryCycleMarker()` runs on world load so legacy saves aren't back-billed.
+- **Salary preview surfaces (3)** — (1) Cashflow modal header banner with next-cycle total + headcount, (2) Personnel tab summary bar (`💰 Career salaries: $X/day across N personnel`), (3) Manage Station modal personnel block (`Salaries: $Y/day · $Y×365/yr`).
+
+---
+
+## Phase 5D — Volunteer System, OSM Cache, Direct-to-Scene ✅
+
+Heaviest sub-phase. Volunteers respond from OSM-derived home/work locations, with hybrid Overpass-first + road-snapped fallback per the planning session. ESN polygon edits invalidate the cache and auto-migrate stranded volunteers.
+
+- **New module: `volunteers.js`** (root) — owns the OSM building cache, home/work generation, availability rolls, direct-to-scene eligibility, ESN-edit auto-migration, the three map-layer toggles, and a self-contained volunteer-dot animator. Loaded after `personnel.js`.
+- **5D config in `config.js`** — `overpassEndpoint` (public Overpass), `overpassTimeoutMs` (10s with AbortController), `osrmNearestEndpoint` for road-snap fallback, `osmCacheTtlMs` (**30 real-life days** — calendar time, `Date.now()`-based), `osmRebuildCooldownSec` (30s soft per-ESN throttle), `volunteerDefaultReliability` (0.8), `directToSceneAllowedRoles[]` (chiefs / officers / fire police / LEOs / EMS), `ambulanceDriverOnlyDefault` (**false** per player requirement — ambulances complete crew at station by default).
+- **OSM building cache** — Lives on `esn.osmBuildingCache = { fetchedAt, fallbackMode, houses[], commercial[], industrial[], retail[] }`. Saved with ESN through `getESNSaveData`. Distinct field name from the pre-existing `esn._osmCache` (incident spawn — different purpose, intentionally non-clashing).
+- **Hybrid fetch** — `fetchBuildingsForESN(esnId, force)` runs one bounded Overpass query per ESN (houses + commercial/office/retail + industrial in a union). On any failure or timeout, the cache is marked `fallbackMode: true` and `pickRandomBuildingInESN` falls through to `_randomPointInPolygon` (reused from esn.js) snapped to the nearest road via OSRM `/nearest`. Setting status messages distinguish the two paths.
+- **Volunteer hire path** — `Add Person` modal now shows a "Hire as: Career | Volunteer" toggle when the station's `stationType` is `combination` or `volunteer`. On confirm, every new volunteer gets `generateVolunteerHome` + `generateVolunteerWork` kicked off async; markers appear on the map once the fetch settles.
+- **Personnel details modal** — Replaces the 5B stub. Editable name, rank + Promote launcher, certs grid + Train launcher, service preference, salary (career), shift assignment (career). For volunteers: home/work display + Regenerate buttons + **"Set via map click"** buttons that swap to a pick-on-map mode and consume the next map click; PPE-in-vehicle toggle (fire personnel only); super-responder toggle; reliability slider (0–100%); auto-migrated alert banner with an Acknowledge button.
+- **Three independent map-layer toggles** — Added to the existing Leaflet layer panel: "Volunteer Responders" (transient response dots, default ON), "Volunteer Home Locations" (persistent green circle markers, default OFF), "Volunteer Work Locations" (persistent gold circle markers, default OFF). Visibility persists via the Phase 4A settings autosync.
+- **ESN-edit hooks** — Shape edits at `_finishDrawESN` purge `osmBuildingCache` and trigger `autoMigrateVolunteersForESN(esnId)` (skips `isCustomized` + `isSuperResponder` per Phase5.md). Assignment edits at `confirmESNModal` trigger migration only (no purge — coords didn't change). New "Rebuild Building Cache" button in the ESN modal footer for manual refresh.
+- **Dispatch gate** — `getCrewForUnit` now filters volunteers by `isVolunteerAvailableNow` (schedule windows + reliability roll + super-responder + defaultAvailable). Volunteers without a schedule/customization are available subject to the reliability gate.
+- **Volunteer dispatch animator** — `dispatchVolunteer(person, toLatLng, opts)` provides a substrate hook for the post-Phase-5 call resolution overhaul — straight-line scale by `gameSpeed`, marker honors the responder layer toggle, cleans up on arrival, returns a cancellable handle.
+
+---
+
+## Phase 5E — Stats, History, NIMS/ICS, Personnel-Driven Stabilization, Database Health ✅
+
+- **Per-person stats + history** — `person.stats` block (`callsResponded`, `fireCalls`, `emsCalls`, `policeCalls`, `transports`, `saves`, `missedCalls`, `trainingCompleted`, `driveTimeSec`, `commandIncidents`), `person.history[]` (capped to `BAM_CONFIG.statsHistoryCapPerPerson`, default 200). `recordPersonStat(id, key, delta, historyEntry?)` is the single mutation point — called from `onUnitArrived` (credit responders + category counter), `trainPersonnel` (training history), `promotePersonnel` (promotion history).
+- **Personnel details modal — Stats + History sections** — Counters grid + reset-stats button (triple confirm — two prompts plus typed "RESET"). Recent-history viewer with timestamps.
+- **Call window — Personnel tab + Span-of-Control banner** — Third tab on the dispatch modal (Dispatch / 🚑 Transport / 🧑‍🚒 Personnel). Lists every on-scene responder via `getOnSceneRoster`: name, station, apparatus, current task (Driver/Operator, Crew Member, Patient Care — PT XXXX). SoC banner spans all tabs whenever any responder is on scene; chip color + label come from `BAM_CONFIG.spanOfControlTiers` (flat thresholds: ≤3 Bored / 4–5 Ideal / 6–7 Task Saturated / >7 Overwhelmed — universal, not size-scaled). Tooltip explains the tier and how to fix it in plain English.
+- **Patient stabilization (personnel-driven)** — Added `BAM_CONFIG.personnelStabilizationRates` keyed by EMS cert tier (emr / emt / aemt / paramedic / ccp / phrn). New per-tick `tickPersonnelStabilization()` stacks onto the existing `pat.stabilizeProgress` field (legacy per-unit tick still applies) so UI bars and the >=1 stabilized threshold work uniformly across both contribution sources. `assignPersonToPatient(id, patient)` enforces the 1-provider-per-patient invariant; multi-provider stacking on one patient is allowed up to `personnelStabilizationMaxRate`. Per-patient assignment UI on the call-window Personnel tab.
+- **New module: `dbhealth.js`** — Database Health panel rendered as a new sub-tab under Operations Modal → Operations tab (joining DCs / ESNs / Plans / Box Alarms). Four sections, every button labeled with a one-line descriptor: (1) **OSM Cache** with per-ESN row counts, age, fallback-mode badge, per-row Rebuild + Rebuild All with progress feedback, (2) **Orphan Inspector** read-only sweep that should always be empty, (3) **Volunteer Locations** bulk reset for selected stations (skips customized + super), (4) **World Reset** triple-confirmation wipe (two prompts + typed "WIPE WORLD") that clears every entity in the current world but leaves save slots intact.
+- **CLAUDE.md file list** — `volunteers.js` and `dbhealth.js` added.
+
+*Phase 5 complete.* Personnel substrate ready for the post-Phase-5 call resolution overhaul.
+
+---
+
+## Phase 5+ Crew-Select Dispatch, Seating Layouts, Continuity Fixes ✅
+
+- **Seating layouts as a first-class config concept** — Each apparatus' cab layout lives inline on `BAM_CONFIG.unitTypes[typeKey].seats` (alongside `tags`/`cost`/`personnel`/`maxTransportCapacity`). Each seat: `{ id, label, isDriver?, preferredCerts[] }`. Fire apparatus default to Driver/Operator + Officer + Cab Seats; ambulances to Driver + Front Passenger + Captain's Chair + Bench; police to Driver + Front Passenger; helicopters to Pilot + Flight Medics. Capacity (seat count) is decoupled from the dispatch staffing gate (`crewDefaults.min`/`ideal`) — seats define the cab, min/ideal define what the matcher demands.
+- **"Dispatch w/ Crew…" button + Crew-Select modal** — Second primary footer button on the call window, beside `Dispatch Selected`. Opens a 1100px modal that surfaces one card per selected *available* apparatus (returning/dispatched units skip — their crew is already committed). Each card has:
+  - Live staffing banner (🟢 Ideal · 🟡 Min only · 🔴 Below min · 🚫 No driver) that updates as crew is swapped.
+  - Seats column with per-seat dropdown + clear button + preferred-cert hint.
+  - Roster column listing every available responder for the station (career on-duty + volunteers at home/roaming), each with location chip (`Station` / `Home · X.X mi · ~Nm` / `Roaming · X.X mi · ~Nm`), rank, and cert chips (green when the cert fits a seat, gold for driver-cert).
+  - Per-unit `Override (respond understaffed)` checkbox — same gate behavior as the auto path.
+  - Confirm button blocks when any apparatus is missing a driver or below-min without override; mirrors `executeDispatch`'s pre-flight gate.
+- **Auto-seed best fit on open** — Seats pre-populate by driver-first then preferred-cert match; player swaps freely from there.
+- **Quick-assign roster clicks** — Clicking a responder in the roster drops them into the best-fit empty seat (driver seat first if cert-qualified, then preferred-cert match, then first empty seat).
+- **Backend integration** — Four new helpers in `personnel.js`: `getSeatingLayoutForUnit(unit)`, `getCrewCandidatesForUnit(unitId)` (returns career on-duty + volunteer home/roaming, each annotated with `_pickerMeta: { state, distanceMi, etaMin }`), `evaluateCrewSelection(unitId, personIds)` (pure analyzer — returns `{ ok, hasDriver, minMet, missing, idealMet, idealMissing }`), `assignSpecificCrewToUnit(unitId, callId, personIds)` (commits manual crew with the same status mutations as the auto path — career→busy, volunteer→responding).
+- **`executeDispatch` accepts `opts = { preassigned, keepCallModalOpen }`** — When preassigned crew exists for `(unitId, callId)`, the auto-matcher is skipped and the existing assignments are used (volunteer station-response gate still fires via `respondingVolunteers`). Pre-flight gate evaluates against preassigned crew via `evaluateCrewSelection` rather than the station pool (whose available list now excludes the just-assigned crew). `keepCallModalOpen` keeps the dispatch modal open after dispatch + re-renders to show units enroute. Defensive cleanup releases preassigned personnel if their unit gets blocked at the gate.
+- **Crew continuity on mid-cycle redispatch — two bug fixes:**
+  - *Stale `callId`:* Redispatching a `returning` (or `dispatched`) unit to a new call now re-points every crew member's `currentAssignment.callId` to the new incident. Previously the cab's crew rode to the new scene but `getOnSceneRoster(newIncId)` (which filters by `callId`) wouldn't find them, breaking the Personnel tab + patient-provider pickers on the new call.
+  - *Stale post-call release timer:* `unit._releasePersonnelAtAbsSec` (the post-arrival grace-window timer set in `onUnitReturned`) is cleared at the top of every redispatch path. Previously, redispatching a unit within the 5-minute grace window left the timer set, and `_tickPostCallRelease` would strip the entire crew mid-call when the threshold passed.
+- **Unit Details modal — informational seating section** — New "Seating Layout (N seats)" section between Type & Capability and the existing crew roster. Each seat lists position number, label, ★ Driver flag, driver-cert chip (gold), preferred-cert chips, or "No cert preference" hint. Sub-card surfaces dispatch crew standards (driver cert, min crew, ideal crew) side-by-side so it's easy to cross-reference seating with `crewDefaults`. Read-only for now; same data drives the picker, and the same `seats[]` array will host assigned-seat persistence + per-seat equipment in the future.
+- **Call spawn rate** — `spawn.intervalMinMs` / `intervalMaxMs` retuned from 90s–180s to 240s–360s (~1 call every 5 minutes on average).
+
+*Last updated: 2026-05-18. Crew-Select Dispatch, seating layouts moved into unit configs, Unit Details seating section, two crew-continuity bug fixes on mid-cycle redispatch, call spawn rate retuned.*
+
+---
+
+## Phase 5+ Volunteer Abstract-Assembly Refactor + Seat Schema Rework ✅
+
+Post-Phase-5 cleanup. The 5D volunteer system shipped with OSM-derived home/work locations, OSRM-routed map travel, and live response markers. In practice it produced too many failure modes (OSRM stalls, marker churn, awkward map clutter, save bloat from per-person lat/lons) for the modest gameplay payoff. This batch tears that out and replaces it with an **abstract assembly** model, and simultaneously reworks the seat schema so the dispatch gate is easier to reason about.
+
+### Volunteer abstract-assembly model (`volunteers.js` ~halved in size)
+
+- **Removed entirely.** `person.home`, `person.work`, `person.currentLocation`, `person.isCustomized`. Functions: `generateVolunteerHome`, `generateVolunteerWork`, `_pickRoamingLocationFor`, `dispatchVolunteer` (the OSRM-routed responder animation), `_snapToNearestRoad`, `autoMigrateVolunteersForESN`, `refreshVolunteerLocationMarkers`, `_volunteerHomeMarkers`, `_volunteerLiveMarkers`, `setVolunteerLayerVisible`, `beginVolunteerLocationPick` and the entire map-click home-pick toolbar flow. Map layer toggles for Volunteer Responders / Homes / Works are gone.
+- **No-op stubs retained.** `generateVolunteerHome`, `generateVolunteerWork`, `autoMigrateVolunteersForESN`, `refreshVolunteerLocationMarkers`, `setVolunteerLayerVisible`, `beginVolunteerLocationPick`, `cancelVolunteerLocationPick` all return safely so any lingering external caller doesn't throw. Will be deleted once every call site is cleaned.
+- **Per-station assembly window.** Each volunteer station carries `station.volunteerAssembly = { meanGameMin, spreadGameMin }`. Defaults from `BAM_CONFIG.volunteerAssemblyMeanGameMin` (5) and `volunteerAssemblySpreadGameMin` (2). `ensureStationAssemblyDefaults(station)` seeds when the station is first volunteer-flagged; player edits the window from the station modal.
+- **Personal assembly timer.** `rollVolunteerAssemblyDelaySec(person, station)` draws a uniform delay in `[mean-spread, mean+spread]` minutes (floor 30 game-sec). Roaming responders multiply by `BAM_CONFIG.volunteerOutOfAreaMultiplier` (default 1.5). `at_station` responders skip the timer entirely.
+- **New hourly availability state — `at_station`.** Hourly roll (`recomputeVolunteerAvailabilityHour`) adds a rare outcome (`volunteerAtStationHourlyChance`, default 0.02) where the volunteer is already at the station for the whole hour. Plus the existing `home`, `roaming`, `unavailable` outcomes.
+- **Per-call status flow.** `available → responding` (paged, personal timer running) → `at_station` (timer elapsed, counted toward the crew gate). The apparatus rolls when every required seat has an `at_station` responder.
+- **`triggerVolunteerStationResponse()` rewritten.** Now drives per-volunteer timers via a single 250ms poller. Resolution shape gains `leftBehind` (responders whose timer hadn't elapsed when the apparatus rolled at the timeout cap — they continue running their timer and enter linger when it elapses, rather than being counted as no-shows). `tickVolunteerStationLinger()` runs every game-tick to handle late arrivals + clear expired linger stamps.
+- **Force-out simplified.** `forceVolunteerCrewDeparture` no longer does a positional radius check. "At station" means: career on-duty here, OR a volunteer in per-call status `at_station`.
+- **Direct-to-scene is cert-based.** `evaluateDirectToSceneEligibility` no longer uses location at all — eligibility is purely cert + incident type + PPE-in-vehicle flag.
+- **Save-load migration.** `purgeLegacyVolunteerFields(person)` strips `home`, `work`, `currentLocation`, `isCustomized`, `wayId`, `isFallback`, `availability.currentLocation` from pre-refactor saves so they rehydrate cleanly.
+- **Config additions.** `volunteerAssemblyMeanGameMin`, `volunteerAssemblySpreadGameMin`, `volunteerOutOfAreaMultiplier`, `volunteerAssemblyFailGameMin`, `volunteerFailedAssemblyLingerGameMin`, `volunteerAtStationHourlyChance`. Legacy aliases `volunteerAssemblyMaxGameMin` (10) and `volunteerStationLingerGameMin` (30) retained so saves predating the rename still load.
+- **Config removed.** `osrmNearestEndpoint`, `volunteerDefaultReliability`, `volunteerResponseSpeedMph`, `volunteerOriginFreezeWatchdogGameSec`.
+
+### OSM building cache — retained dormant
+- The per-ESN `osmBuildingCache` is still built and persisted in the save blob. It has no live consumer under the abstract-assembly model. Kept because future POI-driven call generation (structure fires at real commercial buildings, MVAs at known intersections) is the cheapest plug-in point. "Rebuild Building Cache" buttons in the ESN modal + Database Health panel still work. 30-real-day TTL + 30-sec per-ESN rebuild cooldown unchanged.
+
+### Seat schema rework (`config.js`)
+
+- **`preferredCerts` retired.** Replaced by **`interchangeableCerts: string[]`** — an array of certs that ALSO satisfy a seat's `requiredCert` hard gate. Use when several certs are equally acceptable (e.g., a fire cab seat that accepts `fire_support` OR `fire_exterior` OR `ff1` OR `ff2`). Eliminates the prior soft/hard distinction confusion — every gate-relevant cert now lives on `requiredCert + interchangeableCerts`, and `niceToHaveCerts` is pure scoring bonus.
+- **New per-unit-type flag — `autoFillOptionalSeats`.** `true` (fire apparatus) means default-dispatch auto-fill should fill EVERY responder seat, and ideal-crew status requires every seat filled. `false` (ambulances, patrol cars, K9, fly cars, paddy wagons, helicopters) means default-dispatch fills only required seats + driver; optional seats stay empty. Ambulances ride 2-person, single-officer patrol is normal, etc.
+- **Most fire seats gained a hard gate.** Officer / Cab Seat 1 / Cab Seat 2 on engines, ladders, tankers, brush trucks, rescues, and rescue-engines now carry `requiredCert: 'fire_support'` with `interchangeableCerts` covering FF1/FF2/Exterior/Wildland/Fire Officer/Rescue Tech etc. as appropriate. Pure spectator fire seats are gone — every fire seat that's expected to do work has at least the fireground-support floor.
+- **Driver seats unchanged.** Driver hard gate is still `evoc_small` or `evoc_large`. `niceToHaveCerts` on driver seats reorganized — `pump_ops_1`, `aerial_operator`, fire support certs all moved off `preferredCerts` and onto `niceToHaveCerts`.
+- **Air medical seat — `medic_2` is optional.** `medic_1` keeps its `paramedic` hard gate with `interchangeableCerts` `[ccp, phrn]`. `medic_2` is now a pure-bonus seat. Combined with `autoFillOptionalSeats: false`, flight ops launch with a pilot + one medic + stretcher; second medic is optional.
+- **Police seats restructured.** Driver hard-gate cert is EVOC; `interchangeableCerts` carries `patrol_officer` / `patrol_supervisor` / `k9_handler` so the EVOC requirement doesn't accidentally exclude a tenured officer. Front-passenger seats are pure-bonus (single-officer patrol is the default).
+- **Dispatch gate semantics unchanged.** Apparatus rolls when every seat with `requiredCert` is filled by someone whose certs satisfy it (direct hit, `interchangeableCerts` hit, or `satisfies` chain). Optional seats do NOT block dispatch.
+
+### Crew-Select modal — seats start empty
+- `openCrewSelectModal()` no longer auto-seeds seats with best-fit candidates. The player picks every seat manually. `_csAutoSeedAssignments()` is retained in case a future "Auto-fill" button wants it, but is no longer wired into modal open.
+- New helper `_csCollectAllUsedIds()` ensures a responder placed on apparatus A disappears from apparatus B's pool — the same person can't ride two trucks at once.
+- Picker's `_pickerMeta` shape changed: `distanceMi` is always 0 (no physical position); `etaMin` carries the per-station assembly delay with the out-of-area multiplier applied for roaming responders.
+
+### Adjacent fixes bundled in this batch
+- **Crew scoring tunable.** `crewScorePreferredHit` is now the points awarded for satisfying the hard gate (was for any `preferredCerts` hit). Other scoring tunables unchanged.
+
+*Last updated: 2026-05-19. Volunteer system collapsed to abstract assembly; seat schema reworked to `requiredCert + interchangeableCerts + niceToHaveCerts`; per-unit-type `autoFillOptionalSeats` flag added; OSM cache retained dormant for future POI/call-generation features.*

@@ -126,11 +126,19 @@
 
 ## OSM data cache (per-ESN)
 
-- Each ESN has `_osmCache: { fetched, fetching, fetchedAt, buildings[], majorNodes[], minorNodes[] }`
+Two distinct caches live on the ESN. Their names don't collide intentionally; their lifecycles are independent.
+
+**Call-spawn cache** — `esn._osmCache: { fetched, fetching, fetchedAt, buildings[], majorNodes[], minorNodes[] }`
 - Populated lazily via Overpass API on first spawn attempt; cached for `osmCacheTTLMs` (default 1 hour)
 - Road node weighting: `majorRoadWeight * (1 + (intersectionCount - 1) * intersectionWeight)`
 - Fallback: random polygon point + OSRM nearest snap if cache is empty or mode is `random`
 - `inc.address` populated from OSRM nearest `waypoint.name` (road name)
+
+**Building cache (volunteer-system legacy, retained dormant)** — `esn.osmBuildingCache: { fetchedAt, fallbackMode, houses[], commercial[], industrial[], retail[] }`
+- Was populated for volunteer home/work generation in pre-refactor 5D. No live system consumes it under the abstract-assembly model.
+- Retained because future POI-driven call generation (structure fires at real commercial buildings, MVAs at known intersections) is the cheapest plug-in point.
+- 30-real-day TTL; 30-second per-ESN rebuild cooldown. "Rebuild Building Cache" button still in the ESN modal and Database Health panel.
+- See docs/data-lifecycle.md §3 for the full lifecycle.
 
 ---
 
@@ -169,6 +177,90 @@
 - In `executeDispatch()`, each unit in a batch gets a staggered departure: unit N leaves after `N * 3` game-seconds
 - Departure delay is `departureGameSec * 1000 / Math.max(1, gameSpeed)` real milliseconds
 - OSRM route fetch happens at departure time
+
+---
+
+## Crew-Select Dispatch
+
+- The call modal footer has TWO primary buttons. `Dispatch Selected` runs the auto-matcher (`assignPersonnelToUnit`). `👥 Dispatch w/ Crew…` opens the Crew-Select modal (`#crew-select-modal`, z-index 10001) layered above the call modal.
+- `executeDispatch(opts = {})` — when called with `opts.preassigned: true`, the auto-matcher is skipped for any unit that already has personnel with `currentAssignment.unitId === uid && currentAssignment.callId === inc.id`. When called with `opts.keepCallModalOpen: true`, the call modal stays open after dispatch and is re-rendered so the player sees units transition to enroute (used by the crew-select path).
+- The pre-flight crew gate inside `executeDispatch` evaluates against preassigned crew via `evaluateCrewSelection(uid, personIds)` rather than `hasMinimumCrew(uid)` whenever preassigned crew exists for the call. Reason: `hasMinimumCrew` calls `getCrewForUnit` which filters by `status === 'available'`, and the just-assigned crew has already been flipped to `busy`/`responding`. Falling back to `hasMinimumCrew` would falsely block the dispatch.
+- Defensive cleanup: when a preassigned unit is filtered out at the pre-flight gate, `releasePersonnelFromUnit(uid)` runs so the crew doesn't stay stuck busy on a dispatch that never happened.
+- Volunteers picked via the modal go to `status='responding'` (not `busy`). `executeDispatch` discovers them via the same `respondingVolunteers` filter the auto path uses, so the `awaiting_crew` station-response animation kicks in identically.
+
+### Crew-Select picker — `personnel.js` helpers
+
+- `getSeatingLayoutForUnit(unit)` — returns `{ label, seats[] }` from `unitTypes[typeKey].seats`. Falls back to a single driver-seat layout when not configured.
+- `getCrewCandidatesForUnit(unitId)` — returns every responder eligible to ride: station personnel (career on-duty + volunteers passing `isVolunteerAvailableNow`), `status === 'available'`, not pinned to a different unit. Each candidate is annotated with `_pickerMeta: { state: 'station'|'home'|'roaming', distanceMi:0, etaMin, fitsSeats:null }`. `distanceMi` is always 0 under the abstract-assembly model — `etaMin` carries the per-station assembly delay (with `out-of-area` multiplier for roaming responders, 0 for `at_station`). Cert-eligibility is NOT enforced here — the picker shows everyone so the player can cross-staff.
+- `evaluateCrewSelection(unitId, personIdsOrSeatMap)` — pure analyzer. Accepts EITHER a Person[] or a `{seatId: personId}` map. Returns `{ ok, hasDriver, driverCert, minMet, missing, idealMet, idealMissing, crew, assignments, unfilledRequired, unfilledOptional }`. When given a seat map the evaluator scores per-seat; when given a flat list it runs the seat-based matcher. `minMet` ≡ every required seat filled; `idealMet` ≡ semantics depend on the unit-type's `autoFillOptionalSeats` flag — `true` (fire apparatus) means every responder seat filled; `false` (ambulance, patrol, fly car) means only the required floor.
+- `assignSpecificCrewToUnit(unitId, callId, personIdsOrSeatMap)` — commits the manual crew. The Crew-Select picker passes the full seat map so each person rides in their chosen seat (`person.currentAssignment.seatId` is persisted). Mirrors `assignPersonnelToUnit`'s status mutations (career→busy, volunteer→responding).
+- `estimateVolunteerAssemblyMin(person, station)` — volunteers only. Returns `{ distanceMi:0, etaMin }` where `etaMin` is the per-station mean delay (`station.volunteerAssembly.meanGameMin`), multiplied by `BAM_CONFIG.volunteerOutOfAreaMultiplier` when the volunteer is `roaming`. Returns `0` for `at_station` responders. Replaces the retired `_estimateResponderTravel` (which used `haversineKm` + `volunteerResponseSpeedMph` against `person.home`).
+- **Crew-Select modal seeding:** Seats start EMPTY on modal open — the player picks manually. `_csAutoSeedAssignments()` is retained for a possible future "Auto-fill" button but is no longer wired into `openCrewSelectModal()`.
+
+### Seating layouts — config shape (single source of truth)
+
+Seats own capacity, crew requirements, and patient/prisoner transport capacity. The legacy `crewDefaults` block has been retired — every constraint lives on the seat itself.
+
+Seat schema (`BAM_CONFIG.unitTypes[typeKey].seats[]`):
+
+- `id`, `label` — unique slot key + display name
+- `isDriver: bool` — label-only flag (drives the ★ DRIVER badge in pickers; the actual hard gate is `requiredCert` on this same seat)
+- `requiredCert: 'cert_id'` — HARD cert gate. Seat MUST be filled by someone holding this cert (or an equivalent via the cert hierarchy's `satisfies` chain, OR any cert listed in `interchangeableCerts`). Setting `requiredCert` also marks the seat as required-to-roll.
+- `interchangeableCerts: string[]` — array of certs that ALSO satisfy this seat's hard gate. Use when several certs are equally acceptable (e.g., a fire cab seat that accepts `fire_support` OR `fire_exterior` OR `ff1` OR `ff2`). Replaces the retired `preferredCerts` concept.
+- `niceToHaveCerts: string[]` — additive scoring bonus per cert held (`+BAM_CONFIG.crewScoreNiceToHaveHit` each, stacks). Pure soft-preference; no eligibility effect.
+- `isPatientSeat: bool` — stretcher; counts toward unit's patient transport capacity. Responders cannot occupy.
+- `isPrisonerSeat: bool` — cell/cage; counts toward unit's prisoner transport capacity. Responders cannot occupy.
+
+A seat is mutually-exclusive: responder OR patient OR prisoner.
+
+Per-unit-type flag — `autoFillOptionalSeats`:
+- `true` — default-dispatch auto-fill should fill EVERY responder seat (fire apparatus). Ideal-crew status requires every seat filled.
+- `false` — default-dispatch auto-fill fills only `requiredCert` seats + the driver seat; optional seats stay empty (ambulances ride 2-person minimum, single-officer patrol is normal). Ideal-crew status only needs the required floor.
+
+Dispatch gate: apparatus rolls when every seat with `requiredCert` is filled by someone whose certs satisfy it (direct hit, `interchangeableCerts` hit, or `satisfies` chain). Optional seats do NOT block dispatch. The assembly timer (`BAM_CONFIG.volunteerAssemblyFailGameMin`, default 10 game-min — legacy alias `volunteerAssemblyMaxGameMin`) caps how long the apparatus holds for required seats to fill.
+
+Mission/box-alarm requirements:
+
+- Tag-array slots remain (`['engine']`, `['bls','als']`).
+- Patient transport is `{ needs: 'isPatientSeat' }` — replaces the retired `'transport'` tag.
+- Prisoner transport is `{ needs: 'isPrisonerSeat' }` — replaces the retired `'transport_prisoner'` tag.
+- Legacy `'transport'`/`'transport_prisoner'` tags in older saves are interpreted by `unitMatchesRequirement` as the seat-needs equivalents.
+
+Capacity helpers (in `personnel.js`):
+
+- `unitPatientCapacity(unit)` / `unitCanTransportPatient(unit)`
+- `unitPrisonerCapacity(unit)` / `unitCanTransportPrisoner(unit)`
+- `getResponderSeats(unit)` / `getRequiredSeats(unit)` / `getUnitDriverCert(unit)`
+- `_matchCrewToSeats(crew, unit)` — greedy seat assigner; scores per the config tunables above.
+
+Read by the Crew-Select picker AND the Unit Details modal's merged Seating &amp; Crew section (`_renderUnitSeatingSection` in `units.js`).
+
+### Assembly timer — abstract-assembly model
+
+When an apparatus is dispatched with volunteer crew, each paged volunteer runs a **personal** assembly timer drawn from `station.volunteerAssembly = { meanGameMin, spreadGameMin }` (per-station defaults seeded from `BAM_CONFIG.volunteerAssemblyMeanGameMin` / `volunteerAssemblySpreadGameMin`). Roaming responders multiply by `BAM_CONFIG.volunteerOutOfAreaMultiplier`. `at_station` responders skip the timer entirely. Volunteers transition `available → responding` (timer running) → `at_station` (counted toward the gate). There is no map travel, no OSRM call, no live position — assembly is purely time-based.
+
+When the global cap (`BAM_CONFIG.volunteerAssemblyFailGameMin`, default 10 game-min — legacy alias `volunteerAssemblyMaxGameMin`) fires:
+
+- **Required seats filled** → apparatus rolls with whoever's at the station. Late arrivals — responders whose personal timer hadn't elapsed yet — are tracked in `result.leftBehind` and continue running their timer; when it elapses, `tickVolunteerStationLinger()` parks them in the post-assembly linger window rather than counting them as no-shows.
+- **Required seats short** → dispatch is ABORTED. `showCrewFailureToast()` raises a prominent "CREW ASSEMBLY FAILED" toast (bottom-center, red border, 12-second dismiss). Responders already at the station enter linger immediately; responders still in `responding` finish their timer normally, then enter linger. Linger lasts `BAM_CONFIG.volunteerFailedAssemblyLingerGameMin` game-min (default 30 — legacy alias `volunteerStationLingerGameMin`), stamped on `availability.lingerAtStationUntilGameSec`. The unit returns to `available`; the incident drops to `needs_dispatch`.
+
+`triggerVolunteerStationResponse()` resolves with `{ arrived, noShows, forced, aborted, requiredMet, leftBehind }`. The `leftBehind` field is new in the refactor.
+
+Force-out (`forceVolunteerCrewDeparture`) bypasses the watchdog. Driver-cert gate still applies — the player can't force out a unit that has no driver at the station. "At station" for force-out means: career on-duty here, OR a volunteer whose per-call status is `at_station` (the old radius-based position check was retired — no positions to check).
+
+### Per-seat assignment storage
+
+`person.currentAssignment.seatId` is persisted alongside `unitId`/`callId`. The Unit Details modal renders each person inside their seat row. Legacy saves without `seatId` show their crew under an "Riding (no seat)" subgroup; the next dispatch reassigns seats cleanly.
+
+---
+
+## Crew continuity on mid-cycle redispatch
+
+- A `returning` unit's crew stays attached: `personnel.currentAssignment.unitId` still points to the unit, status is `busy`/`responding`. `hasMinimumCrew` correctly evaluates against the assigned crew via `getAssignedCrewForUnit` because `returning` is in the `_unitIsOnCall` list (`personnel.js`).
+- An `available` unit retains its crew for a configurable grace window (`BAM_CONFIG.volunteerPostCallReleaseGameSec`, default 300 game-seconds). `onUnitReturned` sets `unit._releasePersonnelAtAbsSec`; `_tickPostCallRelease` releases when the threshold is hit.
+- Two redispatch rules enforced inside `executeDispatch` to preserve continuity:
+  1. **`callId` re-point on mid-cycle redispatch** — when `isReturning || isDispatched`, every person with `currentAssignment.unitId === uid` has their `currentAssignment.callId` updated to the new incident. Without this, `getOnSceneRoster(newIncId)` (and any other `callId`-filtered query) misses the crew that's physically in the cab.
+  2. **Clear post-call release timer on redispatch** — `unit._releasePersonnelAtAbsSec = null` at the top of every redispatch path. Without this, a unit grabbed during the grace window would have its crew stripped mid-call when the timer fires.
 
 ---
 
@@ -213,6 +305,33 @@
 - `playerSpawnRate` (default `1`, range `0.25`–`3×`), `avlColors`, and `avlStyle` are persisted to localStorage key `bam_settings`
 - `loadSettings()` is called at startup; `saveSettings()` is called immediately on any settings change
 - Settings are separate from save slots — they persist across all save games
+
+---
+
+## Unit display names — DC prefix system (Phase 5A)
+
+- `unit.name` is the **internal callsign** (e.g. `E-52`). Never include a prefix here — prefixes are purely a display concern.
+- Every user-visible surface uses `getUnitDisplayName(unit, stationHint)` from `units.js` instead of `unit.name`. The helper resolves the unit's station's dispatch center and applies the DC's `unitPrefix` using `prefixFormat` (`'bracket' | 'dash' | 'space'`). When no DC applies or `unitPrefix` is empty, the raw callsign is returned.
+- DC-to-station resolution lives in `getStationDC(stationOrId)`:
+  - Returns the DC whose `assignedESNs` contain any ESN whose `assignments` (fire/ems/police) include the station id.
+  - If multiple DCs qualify and the station has a `preferredDCId`, that DC wins.
+  - Otherwise the first matching DC by creation order wins.
+- `hasStationDCConflict(station)` is true when ≥2 DCs qualify and no `preferredDCId` is set. The Manage Station modal surfaces a picker; the Unit List surfaces a ⚠ badge. Setting the override resolves the conflict.
+- After any DC edit, ESN-assignment change, or station-DC override change, call:
+  - `renderStationList()` — sidebar pills
+  - `renderUnitList()` — Units tab in the Operations Modal
+  - `refreshAllUnitMapLabels()` — rebuilds every moving unit's AVL label icon so the prefix appears immediately on the map
+- New unit display surfaces should pull from `getUnitDisplayName()`. The only place `unit.name` is read directly is the rename input (so the player edits the raw callsign).
+
+---
+
+## Unit List and Unit Details modal (Phase 5A)
+
+- **Unit List** is a top-level tab in the Operations Modal (Stations | Units | Facilities | Operations). Rendered by `renderUnitList()` in `units.js`. Filters: search / type / status. Sort: station / type / status / callsign. Updated each game-tick only while the Units tab is visible (`_activeOpsTab === 'units'`).
+- **Unit Details** is a single dynamically-created modal (`#unit-details-modal`, built lazily on first `openUnitDetails(unitId)` call). The modal body is fully re-rendered each tick by `_updateUnitDetailsModal()`, EXCEPT when the rename input has focus — that guard prevents clobbering the player's edit.
+- **Open triggers** — Unit Details opens from: sidebar station-list pills (left-click), Manage Station unit row (ℹ︎ button), AVL map labels (click the prefixed callsign), dispatch modal enroute row (click the name), dispatch modal available row (ℹ︎ button), prisoner-transport dispatch row (click the name), and Unit List rows.
+- **Station-pill click was reassigned** from "toggle OOS" to "open Unit Details". Shift+click preserves the legacy OOS shortcut. New OOS toggle lives inside the Unit Details modal.
+- Personnel/staffing fields in the Unit Details modal are intentionally stubbed with "(staffing in Phase 5B)" — the surface is ready, the data isn't yet.
 
 ---
 
