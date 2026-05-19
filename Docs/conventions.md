@@ -43,3 +43,20 @@ All game distances, speeds, and measurements displayed to the player must use US
 ## On Introducing New Tools or Dependencies
 
 If a new library, framework, or tool would meaningfully improve the project, suggest it and explain why before adding it. Free only. The player is not a developer — keep the local setup as simple as possible to run even if the code itself is complex.
+
+---
+
+## Keeping the Config Editor in Sync
+
+The visual config editor at `tools/config-editor/` is schema-driven. Each editable section of `BAM_CONFIG` is described once in `tools/config-editor/schemas.js`; the renderer, validator, and output formatter all flow from that schema.
+
+**When changing the shape of any `BAM_CONFIG` section, update the schema in the same commit.** Specifically:
+
+- **Adding a field to an existing section** → add the field to the section's `fields:` array in `schemas.js`. Choose a `type:` that matches the value (`string`, `number`, `boolean`, `select`, `multiSelect`, `color`, `emoji`, `stringArray`, `arrayOf`, `object`, `json`, etc.).
+- **Renaming a field** → rename in `schemas.js` to match. Old saves still load fine since the editor reads whatever is in `BAM_CONFIG`, but new edits will write the new name.
+- **Removing a field** → remove from `schemas.js`. The formatter omits unknown fields from output, so leaving a stale entry silently drops user edits.
+- **Changing a value type** (e.g. string → array) → change `type:` in `schemas.js`. If the field is referenced by `validators.js` or by dynamic dropdowns elsewhere (e.g. cert keys feeding seat dropdowns), update those too.
+- **Adding a new top-level section** → add a new entry to `SECTIONS` in `schemas.js`. Pick the right `kind:` (`keyedDict` for dicts of entries, `singleObject` for one nested object, `objectArray` for an array, `syntheticScalars` for loose top-level scalars grouped under one tab). No HTML/CSS/app.js edits are needed.
+- **Adding a cross-field rule** (e.g. "this cert must exist", "these two seats can't both be drivers") → add a function to `validators.js` and reference it from the section schema's `validate:` field.
+
+If you skip this step, the editor will silently strip new fields the next time someone edits an entry through the UI. See `tools/config-editor/README.md` for the full field-type reference and worked examples.

@@ -37,6 +37,17 @@
       settings.js          — GET/PUT /api/settings (auto-sync, debounced from client)
     middleware/
       auth.js         — requireAuth: JWT Bearer verification, attaches req.user
+
+  tools/              — Local admin tools. NOT shipped with the game. index.html does not load anything in here.
+    config-editor/    — Schema-driven visual editor for BAM_CONFIG. Reads ../../config.js, emits copy-paste JS snippets.
+      index.html        — Page shell. Loaded via Live Server or file:// directly.
+      style.css         — Dark admin theme.
+      formatter.js      — Serializes JS back to config.js style (2-space, single quotes, trailing commas).
+      widgets.js        — Generic input renderers (string, number, multiSelect, color, arrayOf, etc.).
+      validators.js     — Per-section cross-field checks (cert references, seat-ID uniqueness, etc.).
+      schemas.js        — ONE entry per editable BAM_CONFIG section. The only file you usually edit to extend the tool.
+      app.js            — Orchestrator: tabs, lists, draft state, copy/revert.
+      README.md         — How to launch, how to add a new section.
 ```
 
 ---
@@ -88,3 +99,4 @@ These will be created only when a system grows too large to logically live in an
 - Before creating a new .js file, explain to the player why separation is better than expanding an existing file
 - Avoid file bloat — logical cohesion matters more than line count
 - Existing features CAN and SHOULD be rewritten when improvements, bug fixes, or additions require it
+- The `tools/` folder is reserved for local admin utilities that read from but never modify the live game files at runtime. Anything under `tools/` must remain decoupled from the shipped game — `index.html` should never load a `tools/*` file.

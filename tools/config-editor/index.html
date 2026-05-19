@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>BAM Config Editor</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-title">
+    <span class="brand">BAM</span> Config Editor
+    <span class="subtitle" id="loadStatus">loading config.js…</span>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+
+<main class="workspace">
+
+  <aside class="entry-list" id="entryList">
+    <div class="entry-list-header">
+      <input type="search" id="entrySearch" placeholder="Search…">
+    </div>
+    <div class="entry-list-actions">
+      <button id="btnNew"       title="Add a new entry">+ New</button>
+      <button id="btnDuplicate" title="Duplicate selected entry">⎘ Duplicate</button>
+      <button id="btnDelete"    title="Delete selected entry">🗑 Delete</button>
+    </div>
+    <ul class="entries" id="entries"></ul>
+  </aside>
+
+  <section class="form-pane" id="formPane">
+    <div class="form-header">
+      <h2 id="formTitle">Select an entry on the left</h2>
+      <div class="form-actions">
+        <button id="btnRevert" title="Discard your edits and reload from the live config">↺ Revert</button>
+      </div>
+    </div>
+    <div class="form-body" id="formBody"></div>
+  </section>
+
+  <section class="output-pane">
+    <div class="output-header">
+      <h2>Output</h2>
+      <label class="radio">
+        <input type="radio" name="outputMode" value="entry" checked> Just this entry
+      </label>
+      <label class="radio">
+        <input type="radio" name="outputMode" value="block"> Full section block
+      </label>
+      <button id="btnCopy" class="btn-primary">📋 Copy</button>
+    </div>
+    <textarea id="output" readonly spellcheck="false"></textarea>
+    <div class="output-hint">
+      Paste this into <code>config.js</code> to replace the existing entry/block.
+      Surrounding comments stay untouched.
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" class="toast"></div>
+
+<!-- Load the live game config as a global. Tool is one folder deep:
+     tools/config-editor/ → ../../config.js -->
+<script src="../../config.js"></script>
+
+<!-- Editor modules. Order matters: helpers first, then schemas, then app. -->
+<script src="formatter.js"></script>
+<script src="widgets.js"></script>
+<script src="validators.js"></script>
+<script src="schemas.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>

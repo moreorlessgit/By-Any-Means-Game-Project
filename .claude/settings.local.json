@@ -46,7 +46,9 @@
       "Bash(cd /d)",
       "Read(//d//**)",
       "Bash(Get-ChildItem -Path 'd:\\\\By-Any-Means-Game-Project' -Recurse -Filter '*.js' -Exclude 'node_modules')",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(git check-ignore *)",
+      "Bash(grep \":\\\\s*{$\" \"D:\\\\By-Any-Means-Game-Project\\\\config.js\")"
     ]
   }
 }

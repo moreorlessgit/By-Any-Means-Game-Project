@@ -40,6 +40,9 @@ Backend (server/):
   routes/auth.js, routes/privateWorlds.js, routes/privateWorldSaves.js, routes/settings.js
   prisma/schema.prisma, prisma/migrations/
 
+Admin tools (tools/):
+  config-editor/         ← schema-driven visual editor for BAM_CONFIG. Standalone, never shipped with the game.
+
 Launch + hosting reference:
   docs/launch-guide.md   ← how to run, host, connect remotely, push updates
 ```
@@ -49,6 +52,7 @@ Launch + hosting reference:
 ## Always-On Rules
 
 - **config.js is the single source of truth.** All tunable values live there; nothing is hardcoded in game logic.
+- **Config Editor must stay in sync.** `tools/config-editor/` is the visual editor for `BAM_CONFIG`. Any time the shape of a config section changes — new fields, renamed keys, new sections, changed value types, new validation rules — update `tools/config-editor/schemas.js` (and `validators.js` if needed) in the same change. The editor is schema-driven; an out-of-date schema silently drops fields when the player edits. See `tools/config-editor/README.md` for how to extend.
 - **Unit capability uses tag arrays.** Never replace with direct type matching.
 - **Seats own apparatus capacity AND crew requirements.** `BAM_CONFIG.unitTypes[k].seats[]` is the authority — there is NO separate `crewDefaults` block or `maxTransportCapacity` field. Each seat is one of three roles: responder seat (with optional `requiredCert` / `preferredCerts[]` / `niceToHaveCerts[]` / `isDriver`), `isPatientSeat:true` (stretcher), or `isPrisonerSeat:true` (cell/cage). Patient and prisoner seats cannot hold responders. Apparatus rolls when every seat with `requiredCert` is filled.
 - **US customary units only.** Display miles/mph to the player; convert from OSRM before display.
@@ -87,3 +91,4 @@ Launch + hosting reference:
 - **docs/glossary.md** — Terms, acronyms, abbreviations, and mechanics definitions. Reference when reading documentation or discussing game concepts if unsure what a meaning could be.
 - **docs/launch-guide.md** — How to start the backend + frontend, connect from another computer on the LAN, and roll out updates. Pull when the player asks how to launch, host, or update the game.
 - **docs/data-lifecycle.md** — Cleanup, caching, retention, and cascade rules per entity. Pull when adding a new DB table, designing delete behavior, or building cache invalidation. Every new entity type should add an entry here.
+- **tools/config-editor/README.md** — How to launch and extend the config editor. Pull when changing the shape of any `BAM_CONFIG` section or adding a new one.

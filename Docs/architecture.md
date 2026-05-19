@@ -8,6 +8,7 @@
 - When adding a new mission type: add ONLY to `config.js` missions block — including the `spawnMode` field
 - When adding a new unit type: add ONLY to `config.js` unitTypes block
 - `config.js` also has a `ui` section for AVL label color/style defaults
+- **`tools/config-editor/` is the visual editor for this file.** It's schema-driven — every editable section is declared once in `tools/config-editor/schemas.js`. Whenever the shape of a config section changes (new field, renamed key, new section, changed value type, new validation rule), the matching schema MUST be updated in the same change. The editor reads `config.js` at load and emits copy-paste JS snippets; it never writes back. See `docs/conventions.md` § "Keeping the Config Editor in Sync" and `tools/config-editor/README.md`.
 
 ---
 
