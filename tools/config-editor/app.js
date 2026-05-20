@@ -40,11 +40,15 @@ const App = (() => {
     tabsEl.innerHTML = '';
     for (const [key, schema] of Object.entries(Schemas.SECTIONS)) {
       const btn = document.createElement('button');
-      btn.textContent = schema.label || key;
+      // Label first, then the dirty marker (added/removed by updateDirtyMarkers)
+      const labelSpan = document.createElement('span');
+      labelSpan.textContent = schema.label || key;
+      btn.appendChild(labelSpan);
       btn.dataset.tab = key;
       btn.addEventListener('click', () => activateTab(key));
       tabsEl.appendChild(btn);
     }
+    updateDirtyMarkers();
   }
 
   function activateTab(key) {
@@ -57,6 +61,113 @@ const App = (() => {
     renderEntryList();
     renderForm();
     renderOutput();
+  }
+
+  // ── Dirty-state detection ────────────────────────────────────────────────
+  // Compares state.draft against the live BAM_CONFIG to flag entries/tabs
+  // the user has edited but not yet pasted back into config.js.
+  function isEntryDirty(sectionKey, entryKey) {
+    const schema = Schemas.SECTIONS[sectionKey];
+    if (!schema) return false;
+    if (schema.kind === 'syntheticScalars') {
+      return stableStringify(state.draft[entryKey]) !== stableStringify(BAM_CONFIG[entryKey]);
+    }
+    if (schema.kind === 'singleObject') {
+      return stableStringify(getAtPath(state.draft, schema.configPath)) !==
+             stableStringify(getAtPath(BAM_CONFIG, schema.configPath));
+    }
+    const draftData = getAtPath(state.draft, schema.configPath);
+    const liveData = getAtPath(BAM_CONFIG, schema.configPath);
+    if (schema.kind === 'keyedDict') {
+      const a = draftData ? draftData[entryKey] : undefined;
+      const b = liveData ? liveData[entryKey] : undefined;
+      return stableStringify(a) !== stableStringify(b);
+    }
+    if (schema.kind === 'objectArray') {
+      const a = draftData ? draftData[entryKey] : undefined;
+      const b = liveData ? liveData[entryKey] : undefined;
+      return stableStringify(a) !== stableStringify(b);
+    }
+    return false;
+  }
+
+  function isTabDirty(sectionKey) {
+    const schema = Schemas.SECTIONS[sectionKey];
+    if (!schema) return false;
+    if (schema.kind === 'syntheticScalars') {
+      return schema.scalars.some(s =>
+        stableStringify(state.draft[s.path]) !== stableStringify(BAM_CONFIG[s.path]));
+    }
+    if (schema.kind === 'singleObject' || schema.kind === 'objectArray') {
+      return stableStringify(getAtPath(state.draft, schema.configPath)) !==
+             stableStringify(getAtPath(BAM_CONFIG, schema.configPath));
+    }
+    if (schema.kind === 'keyedDict') {
+      const draftData = getAtPath(state.draft, schema.configPath) || {};
+      const liveData = getAtPath(BAM_CONFIG, schema.configPath) || {};
+      const draftKeys = Object.keys(draftData);
+      const liveKeys = Object.keys(liveData);
+      if (draftKeys.length !== liveKeys.length) return true;
+      // Set membership differs OR any entry differs
+      for (const k of draftKeys) {
+        if (!(k in liveData)) return true;
+        if (stableStringify(draftData[k]) !== stableStringify(liveData[k])) return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // Stringify with sorted object keys so two equivalent objects compare equal
+  // regardless of property insertion order.
+  function stableStringify(v) {
+    return JSON.stringify(v, function (k, val) {
+      if (val && typeof val === 'object' && !Array.isArray(val)) {
+        const sorted = {};
+        for (const key of Object.keys(val).sort()) sorted[key] = val[key];
+        return sorted;
+      }
+      return val;
+    });
+  }
+
+  // Apply dirty dots to tab buttons, entry list rows, and the global pill.
+  // Called from ctx.onChange and after structural changes.
+  function updateDirtyMarkers() {
+    let totalDirtyTabs = 0;
+
+    // Tabs
+    for (const btn of document.querySelectorAll('#tabs button')) {
+      const dirty = isTabDirty(btn.dataset.tab);
+      btn.classList.toggle('dirty', dirty);
+      // Re-create the dot span so we don't accumulate them
+      const existingDot = btn.querySelector('.dirty-dot');
+      if (existingDot) existingDot.remove();
+      if (dirty) {
+        const dot = document.createElement('span');
+        dot.className = 'dirty-dot';
+        dot.title = 'Unsaved changes — copy + paste into config.js';
+        btn.appendChild(dot);
+        totalDirtyTabs++;
+      }
+    }
+
+    // Entry list rows
+    for (const li of document.querySelectorAll('#entries li[data-key]')) {
+      const dirty = isEntryDirty(state.activeTab, li.dataset.key);
+      li.classList.toggle('dirty', dirty);
+    }
+
+    // Global pill in the top bar
+    const pill = document.getElementById('unsavedPill');
+    if (pill) {
+      if (totalDirtyTabs > 0) {
+        pill.textContent = '● Unsaved changes in ' + totalDirtyTabs + ' tab' + (totalDirtyTabs === 1 ? '' : 's');
+        pill.classList.add('show');
+      } else {
+        pill.classList.remove('show');
+      }
+    }
   }
 
   // ── Entry list (left rail) ───────────────────────────────────────────────
@@ -174,6 +285,9 @@ const App = (() => {
 
   // ── Form pane (center) ───────────────────────────────────────────────────
   function renderForm() {
+    // Refresh dirty dots on every navigation. ctx.onChange handles in-flight
+    // edits; this handles list/tab/entry switches.
+    updateDirtyMarkers();
     const schema = Schemas.SECTIONS[state.activeTab];
     const titleEl = document.getElementById('formTitle');
     const bodyEl  = document.getElementById('formBody');
@@ -502,7 +616,11 @@ const App = (() => {
   function makeCtx() {
     return {
       draft: state.draft,
-      onChange: () => { renderOutput(); /* re-run validation on next form render */ rerunValidation(); },
+      onChange: () => {
+        renderOutput();
+        rerunValidation();
+        updateDirtyMarkers();
+      },
       rerenderForm: () => renderForm(),
     };
   }

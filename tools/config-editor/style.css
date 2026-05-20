@@ -80,6 +80,41 @@ html, body {
   font-weight: 600;
 }
 
+/* Dirty markers — entries/tabs with edits not yet pasted into config.js. */
+.dirty-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(255, 107, 53, 0.6);
+  flex-shrink: 0;
+}
+.tabs button .dirty-dot {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.tabs button.active .dirty-dot {
+  background: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.7);
+}
+
+.unsaved-pill {
+  display: none;
+  margin-left: 8px;
+  padding: 3px 9px;
+  background: rgba(255, 107, 53, 0.15);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  cursor: default;
+}
+.unsaved-pill.show { display: inline-block; }
+
 /* ─── Main workspace grid ────────────────────────────────────────────────── */
 .workspace {
   display: grid;
@@ -150,6 +185,28 @@ html, body {
   background: var(--bg-3);
   border-left-color: var(--accent);
   font-weight: 600;
+}
+/* Dirty marker on entry rows — pseudo-element keeps the dot in the row gutter
+   without requiring JS to mutate row contents per render. */
+.entries li.dirty::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 4px rgba(255, 107, 53, 0.6);
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+/* Reserve gutter space on non-dirty rows so labels don't shift when dot appears */
+.entries li[data-key]:not(.dirty)::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  flex-shrink: 0;
 }
 .entries li .entry-icon { font-size: 14px; }
 .entries li .entry-key { color: var(--text); }
@@ -261,6 +318,44 @@ html, body {
   margin-top: 4px;
 }
 
+/* Copy/paste toolbar that appears under collection-type field controls */
+.clipboard-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  justify-content: flex-end;
+}
+.cb-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  width: 22px;
+  height: 20px;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0;
+  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity 0.15s, background 0.15s;
+}
+.cb-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+  opacity: 1;
+}
+.cb-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.25;
+}
+.cb-paste:not(:disabled) {
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+  opacity: 0.9;
+}
+
 /* ─── Specialized widgets ────────────────────────────────────────────────── */
 .color-row { display: flex; align-items: center; gap: 8px; }
 .color-row input[type=color] {
@@ -326,7 +421,7 @@ html, body {
 }
 .chips .chip-add input:focus { outline: none; border-bottom-color: var(--accent-2); }
 
-/* Multi-select popup (for cert pickers) */
+/* Multi-select popup (for cert pickers) and single-select searchable popup. */
 .multiselect {
   position: relative;
 }
@@ -337,11 +432,30 @@ html, body {
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 3px;
-  max-height: 260px;
-  overflow-y: auto;
+  max-height: 320px;
   z-index: 100;
+  padding: 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+}
+.multiselect-popup .popup-search {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12px;
+  outline: none;
+  flex-shrink: 0;
+}
+.multiselect-popup .popup-search:focus { background: var(--bg-3); }
+.multiselect-popup .popup-list {
+  overflow-y: auto;
   padding: 4px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  min-height: 40px;
 }
 .multiselect-popup .option {
   padding: 4px 8px;
@@ -353,7 +467,42 @@ html, body {
   border-radius: 2px;
 }
 .multiselect-popup .option:hover { background: var(--bg-hover); }
-.multiselect-popup .option .check { width: 14px; }
+.multiselect-popup .option .check { width: 14px; color: var(--good); }
+.multiselect-popup .popup-empty {
+  padding: 12px 8px;
+  font-size: 11px;
+  color: var(--text-mute);
+  text-align: center;
+  font-style: italic;
+}
+
+/* Searchable single-select — the trigger button mimics a <select> input */
+.searchable-trigger {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+.searchable-trigger:hover { background: var(--bg-3); }
+.searchable-trigger:focus { outline: none; border-color: var(--accent-2); }
+.searchable-trigger .searchable-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.searchable-trigger .searchable-label.placeholder { color: var(--text-mute); font-style: italic; }
+.searchable-trigger .caret { color: var(--text-mute); font-size: 10px; flex-shrink: 0; }
 
 /* Sub-array editor (seats, patients, etc.) */
 .subarray {
@@ -399,19 +548,29 @@ html, body {
   padding: 0;
 }
 .subarray-item-header button:hover { background: var(--bg-hover); color: var(--text); }
+/* Fields inside a sub-array item stack vertically. Each .field carries its
+   own internal label/control grid; the container is just a block. Earlier
+   versions made this a 2-col grid too, which jammed fields into half-width
+   cells. */
 .subarray-item-fields {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 6px 10px;
+  display: block;
   font-size: 11px;
 }
 .subarray-item-fields .field {
-  grid-template-columns: 120px 1fr;
-  padding: 3px 0;
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  padding: 4px 0;
+  gap: 10px;
 }
 .subarray-item-fields .field-label {
   font-size: 11px;
-  padding-top: 4px;
+  padding-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subarray-item-fields .field-hint {
+  white-space: normal;
 }
 .subarray-add {
   background: var(--bg-3);

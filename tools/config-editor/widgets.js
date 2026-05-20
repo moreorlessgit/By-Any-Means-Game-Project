@@ -9,6 +9,52 @@
 //   stringArray, arrayOf (objects), object (nested single), json (escape hatch),
 //   requirementSlots (mission requirements union)
 
+// ── In-app clipboard ──────────────────────────────────────────────────────
+// Type-aware copy/paste for field values. Each entry is { kind, value };
+// `kind` is a short tag like 'multiSelect:certList' that gates which fields
+// can paste it. Listeners refresh paste-button enabled state when the
+// clipboard changes.
+const Clipboard = (() => {
+  let current = null;
+  const listeners = new Set();
+  function notify() { for (const l of listeners) try { l(); } catch (e) { console.error(e); } }
+  return {
+    set(kind, value) {
+      current = { kind, value: JSON.parse(JSON.stringify(value)) };
+      notify();
+    },
+    get() { return current; },
+    canPaste(kind) { return !!current && current.kind === kind; },
+    summary() {
+      if (!current) return '';
+      const v = current.value;
+      if (Array.isArray(v)) return current.kind + ' (' + v.length + ' item' + (v.length === 1 ? '' : 's') + ')';
+      if (v && typeof v === 'object') return current.kind + ' (' + Object.keys(v).length + ' field' + (Object.keys(v).length === 1 ? '' : 's') + ')';
+      return current.kind;
+    },
+    subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  };
+})();
+
+// Field-type → clipboard kind. Keep cert-bearing multiSelect fields under
+// one umbrella so interchangeable/niceToHave/prereqs/satisfies can interop.
+// Same for unit-tag fields, mission patients, charge tiers, etc.
+function clipboardKindFor(field) {
+  if (field.clipboardKind) return field.clipboardKind;
+  if (field.type === 'multiSelect') {
+    if (['requiredCert','interchangeableCerts','niceToHaveCerts','prereqs','satisfies',
+         'prereqCerts','directToSceneAllowedRoles','spanOfControlOfficerCerts'].includes(field.key)) {
+      return 'multiSelect:certList';
+    }
+    if (['tags','unlocks'].includes(field.key)) return 'multiSelect:' + field.key;
+    return 'multiSelect:' + field.key;
+  }
+  if (field.type === 'stringArray') return 'stringArray:' + field.key;
+  if (field.type === 'arrayOf') return 'arrayOf:' + (field.itemSchema && field.itemSchema.label || field.key);
+  if (field.type === 'json') return 'json:' + field.key;
+  return null;
+}
+
 const Widgets = (() => {
 
   // ── Small DOM helpers ────────────────────────────────────────────────────
@@ -74,12 +120,90 @@ const Widgets = (() => {
     }
     control.appendChild(inputEl);
 
+    // Add a copy/paste toolbar for collection-type fields where repetition
+    // across entries is common (cert lists, tag lists, seats array, etc.).
+    const cbKind = clipboardKindFor(field);
+    if (cbKind && ['multiSelect','stringArray','arrayOf','json'].includes(field.type)) {
+      control.appendChild(buildClipboardToolbar({
+        kind: cbKind,
+        getValue: () => parent[field.key],
+        setValue,
+        label: field.label || field.key,
+        ctx,
+      }));
+    }
+
     if (field.hint) {
       control.appendChild(el('div', { class: 'field-hint' }, field.hint));
     }
 
     const row = el('div', { class: 'field' }, label, control);
     return row;
+  }
+
+  // ── Clipboard toolbar — small copy / paste icons under a control ─────────
+  // Subtle by default; the paste button becomes active when the in-app
+  // clipboard holds something with a matching `kind`.
+  function buildClipboardToolbar({ kind, getValue, setValue, label, ctx }) {
+    const bar = el('div', { class: 'clipboard-actions' });
+
+    const copyBtn = el('button', {
+      type: 'button',
+      class: 'cb-btn cb-copy',
+      title: 'Copy ' + label,
+    }, '📋');
+    copyBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const v = getValue();
+      if (v === undefined || v === null) {
+        toast('Nothing to copy', true);
+        return;
+      }
+      Clipboard.set(kind, v);
+      toast('Copied ' + label);
+    });
+
+    const pasteBtn = el('button', {
+      type: 'button',
+      class: 'cb-btn cb-paste',
+      title: 'Paste compatible value',
+    }, '📥');
+    pasteBtn.disabled = !Clipboard.canPaste(kind);
+    if (!pasteBtn.disabled) pasteBtn.title = 'Paste ' + Clipboard.summary();
+    pasteBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!Clipboard.canPaste(kind)) return;
+      setValue(JSON.parse(JSON.stringify(Clipboard.get().value)));
+      toast('Pasted into ' + label);
+      // Force the form to repaint so widgets reflect the new value
+      if (ctx && ctx.rerenderForm) ctx.rerenderForm();
+    });
+
+    // Subscribe to clipboard changes to enable/disable paste button live
+    const unsubscribe = Clipboard.subscribe(() => {
+      if (!document.body.contains(pasteBtn)) { unsubscribe(); return; }
+      const can = Clipboard.canPaste(kind);
+      pasteBtn.disabled = !can;
+      pasteBtn.title = can ? 'Paste ' + Clipboard.summary() : 'Paste compatible value';
+    });
+
+    bar.appendChild(copyBtn);
+    bar.appendChild(pasteBtn);
+    return bar;
+  }
+
+  // Lightweight toast for clipboard ops. Reuses the existing #toast element
+  // if the app has wired one; otherwise falls back to console.
+  function toast(msg, isError = false) {
+    const t = document.getElementById('toast');
+    if (!t) { console.log('[clipboard]', msg); return; }
+    t.textContent = msg;
+    t.classList.toggle('error', isError);
+    t.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => t.classList.remove('show'), 1500);
   }
 
   // ── Primitives ───────────────────────────────────────────────────────────
@@ -122,8 +246,15 @@ const Widgets = (() => {
     return row;
   }
 
+  // Threshold for swapping the native <select> for a searchable popup.
+  // Short lists (stationType, providerLevel, etc.) stay native.
+  const SEARCHABLE_THRESHOLD = 8;
+
   function renderSelect(value, setValue, field, ctx) {
     const opts = resolveOptions(field, ctx);
+    if (opts.length >= SEARCHABLE_THRESHOLD) {
+      return renderSearchableSelect(value, setValue, field, ctx);
+    }
     const sel = el('select');
     // Allow null/empty as first option if nullable
     if (field.nullable || field.optional) {
@@ -147,6 +278,116 @@ const Widgets = (() => {
       }
     });
     return sel;
+  }
+
+  // ── Searchable single-select — used when option count is high ────────────
+  // Visual: a button that looks like a <select>, opening a popup with a
+  // search input at the top and a filtered list below.
+  function renderSearchableSelect(value, setValue, field, ctx) {
+    // `value` is the initial prop; the live selection is tracked locally so
+    // paintTrigger / paintList don't keep re-reading the stale closure value
+    // after the user picks something.
+    let currentValue = value;
+    const wrap = el('div', { class: 'multiselect' });
+    const trigger = el('button', { type: 'button', class: 'searchable-trigger' });
+    const caret = el('span', { class: 'caret' }, '▾');
+
+    function paintTrigger() {
+      trigger.innerHTML = '';
+      const opts = resolveOptions(field, ctx);
+      const label = currentValue == null ? '(none)' : labelFor(currentValue, opts);
+      const span = el('span', { class: 'searchable-label' }, label);
+      if (currentValue == null) span.classList.add('placeholder');
+      trigger.appendChild(span);
+      trigger.appendChild(caret);
+    }
+
+    let popup = null;
+    function showPopup() {
+      if (popup) { popup.remove(); popup = null; return; }
+      const freshOpts = resolveOptions(field, ctx);
+      popup = el('div', { class: 'multiselect-popup' });
+
+      const search = el('input', { type: 'text', class: 'popup-search', placeholder: 'Search…' });
+      const listBox = el('div', { class: 'popup-list' });
+      popup.appendChild(search);
+      popup.appendChild(listBox);
+
+      function paintList() {
+        listBox.innerHTML = '';
+        const q = search.value.trim().toLowerCase();
+        // "(none)" option for nullable/optional fields
+        if (field.nullable || field.optional) {
+          if (!q || '(none)'.includes(q)) {
+            const row = el('div', { class: 'option' });
+            row.appendChild(el('span', { class: 'check' }, currentValue == null ? '✓' : ''));
+            row.appendChild(document.createTextNode('(none)'));
+            row.addEventListener('click', () => choose(null));
+            listBox.appendChild(row);
+          }
+        }
+        let shown = 0;
+        for (const opt of freshOpts) {
+          const v = typeof opt === 'object' ? opt.value : opt;
+          const label = typeof opt === 'object' ? opt.label : (opt == null ? '(none)' : String(opt));
+          if (q && !label.toLowerCase().includes(q) && !String(v).toLowerCase().includes(q)) continue;
+          const row = el('div', { class: 'option' });
+          row.appendChild(el('span', { class: 'check' }, v === currentValue ? '✓' : ''));
+          row.appendChild(document.createTextNode(label));
+          row.addEventListener('click', () => choose(v));
+          listBox.appendChild(row);
+          shown++;
+        }
+        if (shown === 0 && !(field.nullable || field.optional)) {
+          listBox.appendChild(el('div', { class: 'popup-empty' }, 'No matches'));
+        }
+      }
+
+      function choose(v) {
+        // Numeric coercion mirroring the native-select path
+        const numeric = freshOpts.length > 0 && freshOpts.every(o =>
+          typeof (typeof o === 'object' ? o.value : o) === 'number');
+        const finalValue = v == null
+          ? (field.nullable ? null : undefined)
+          : (numeric ? Number(v) : v);
+        currentValue = finalValue;
+        setValue(finalValue);
+        popup.remove();
+        popup = null;
+        paintTrigger();
+      }
+
+      search.addEventListener('input', paintList);
+      search.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          // Choose first visible option
+          const first = listBox.querySelector('.option');
+          if (first) first.click();
+        } else if (e.key === 'Escape') {
+          popup.remove(); popup = null;
+        }
+      });
+
+      wrap.appendChild(popup);
+      paintList();
+      setTimeout(() => search.focus(), 0);
+
+      // Click-outside dismiss
+      setTimeout(() => {
+        const handler = (ev) => {
+          if (popup && !wrap.contains(ev.target)) {
+            popup.remove(); popup = null;
+            document.removeEventListener('click', handler);
+          }
+        };
+        document.addEventListener('click', handler);
+      }, 0);
+    }
+
+    trigger.addEventListener('click', (e) => { e.stopPropagation(); showPopup(); });
+    wrap.appendChild(trigger);
+    paintTrigger();
+    return wrap;
   }
 
   // ── multiSelect — chip-based picker with dropdown popup ──────────────────
@@ -185,28 +426,61 @@ const Widgets = (() => {
       if (popup) { popup.remove(); popup = null; return; }
       const freshOpts = resolveOptions(field, ctx);
       popup = el('div', { class: 'multiselect-popup' });
-      for (const opt of freshOpts) {
-        const v = typeof opt === 'object' ? opt.value : opt;
-        const label = typeof opt === 'object' ? opt.label : String(opt);
-        const row = el('div', { class: 'option' });
-        const checked = arr.includes(v);
-        row.appendChild(el('span', { class: 'check' }, checked ? '✓' : ''));
-        row.appendChild(document.createTextNode(label));
-        row.addEventListener('click', () => {
-          if (checked) {
-            const i = arr.indexOf(v);
-            if (i >= 0) arr.splice(i, 1);
-          } else {
-            arr.push(v);
-          }
-          setValue(arr.slice());
-          popup.remove();
-          popup = null;
-          rerender();
-        });
-        popup.appendChild(row);
+
+      // Search input at top — autofocused, filters as you type.
+      const search = el('input', { type: 'text', class: 'popup-search', placeholder: 'Search…' });
+      const listBox = el('div', { class: 'popup-list' });
+      popup.appendChild(search);
+      popup.appendChild(listBox);
+
+      function paintList() {
+        listBox.innerHTML = '';
+        const q = search.value.trim().toLowerCase();
+        let shown = 0;
+        for (const opt of freshOpts) {
+          const v = typeof opt === 'object' ? opt.value : opt;
+          const label = typeof opt === 'object' ? opt.label : String(opt);
+          if (q && !label.toLowerCase().includes(q) && !String(v).toLowerCase().includes(q)) continue;
+          const row = el('div', { class: 'option' });
+          const checked = arr.includes(v);
+          row.appendChild(el('span', { class: 'check' }, checked ? '✓' : ''));
+          row.appendChild(document.createTextNode(label));
+          row.addEventListener('click', () => {
+            if (checked) {
+              const i = arr.indexOf(v);
+              if (i >= 0) arr.splice(i, 1);
+            } else {
+              arr.push(v);
+            }
+            setValue(arr.slice());
+            // Stay open so the user can pick multiple in a row; just repaint
+            // to update the checks and the chip list.
+            paintList();
+            rerender();
+          });
+          listBox.appendChild(row);
+          shown++;
+        }
+        if (shown === 0) {
+          listBox.appendChild(el('div', { class: 'popup-empty' }, 'No matches'));
+        }
       }
+
+      search.addEventListener('input', paintList);
+      search.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          // Toggle first visible option
+          const first = listBox.querySelector('.option');
+          if (first) first.click();
+        } else if (e.key === 'Escape') {
+          popup.remove(); popup = null;
+        }
+      });
+
       wrap.appendChild(popup);
+      paintList();
+      setTimeout(() => search.focus(), 0);
+
       // Click-outside dismiss
       setTimeout(() => {
         const handler = (ev) => {
@@ -319,7 +593,11 @@ const Widgets = (() => {
 
         const header = el('div', { class: 'subarray-item-header' });
         header.appendChild(el('span', { class: 'idx' }, '#' + (i + 1)));
-        header.appendChild(el('span', { class: 'item-summary' }, summarize(item, field.itemSchema)));
+        // Hold a reference to the summary span so child-field edits can
+        // refresh it (otherwise the seat header shows stale data after a
+        // cert pick).
+        const summarySpan = el('span', { class: 'item-summary' }, summarize(item, field.itemSchema));
+        header.appendChild(summarySpan);
 
         const upBtn = el('button', { title: 'Move up', disabled: i === 0 }, '↑');
         const downBtn = el('button', { title: 'Move down', disabled: i === arr.length - 1 }, '↓');
@@ -333,14 +611,52 @@ const Widgets = (() => {
         delBtn.addEventListener('click', () => {
           arr.splice(i, 1); setValue(arr); rerender();
         });
+
+        // Per-item copy/paste — kind is scoped to the itemSchema's label so a
+        // seat can paste into another seat but not into a patient slot, etc.
+        const itemKind = 'arrayItem:' + (field.itemSchema && field.itemSchema.label || 'item');
+        const copyItemBtn = el('button', { title: 'Copy this ' + (field.itemSchema && field.itemSchema.label || 'item') }, '📋');
+        const pasteItemBtn = el('button', { title: 'Paste compatible value' }, '📥');
+        pasteItemBtn.disabled = !Clipboard.canPaste(itemKind);
+        if (!pasteItemBtn.disabled) pasteItemBtn.title = 'Paste ' + Clipboard.summary();
+        copyItemBtn.addEventListener('click', () => {
+          Clipboard.set(itemKind, item);
+          toast('Copied ' + (field.itemSchema && field.itemSchema.label || 'item') + ' #' + (i + 1));
+        });
+        pasteItemBtn.addEventListener('click', () => {
+          if (!Clipboard.canPaste(itemKind)) return;
+          arr[i] = JSON.parse(JSON.stringify(Clipboard.get().value));
+          setValue(arr);
+          toast('Pasted into ' + (field.itemSchema && field.itemSchema.label || 'item') + ' #' + (i + 1));
+          rerender();
+        });
+        const unsub = Clipboard.subscribe(() => {
+          if (!document.body.contains(pasteItemBtn)) { unsub(); return; }
+          const can = Clipboard.canPaste(itemKind);
+          pasteItemBtn.disabled = !can;
+          pasteItemBtn.title = can ? 'Paste ' + Clipboard.summary() : 'Paste compatible value';
+        });
+
+        header.appendChild(copyItemBtn);
+        header.appendChild(pasteItemBtn);
         header.appendChild(upBtn);
         header.appendChild(downBtn);
         header.appendChild(delBtn);
         itemEl.appendChild(header);
 
+        // Wrap ctx so each field change repaints this card's summary header.
+        // Pass through the original ctx.onChange so output + validation still fire.
+        const itemCtx = {
+          ...ctx,
+          onChange: () => {
+            summarySpan.textContent = summarize(item, field.itemSchema);
+            ctx.onChange();
+          },
+        };
+
         const fieldsBox = el('div', { class: 'subarray-item-fields' });
         for (const f of field.itemSchema.fields) {
-          const row = renderField(f, item[f.key], item, ctx);
+          const row = renderField(f, item[f.key], item, itemCtx);
           if (row) fieldsBox.appendChild(row);
         }
         itemEl.appendChild(fieldsBox);
@@ -474,8 +790,11 @@ const Widgets = (() => {
     const rerender = () => {
       wrap.innerHTML = '';
       for (let i = 0; i < arr.length; i++) {
-        const slot = arr[i];
-        const mode = slotMode(slot);
+        // `current()` reads the live slot every time, since mode changes
+        // and inner widget callbacks rewrite arr[i] in place. Capturing
+        // `arr[i]` once leads to stale-data bugs on subsequent edits.
+        const current = () => arr[i];
+        const mode = slotMode(current());
         const row = el('div', { class: 'req-slot' });
 
         const modeSel = el('select');
@@ -490,20 +809,21 @@ const Widgets = (() => {
         function paintBody() {
           body.innerHTML = '';
           const m = modeSel.value;
+          const slot = current();
           if (m === 'tags') {
             // Plain tag array: ['engine','tanker']
-            const tags = Array.isArray(slot) ? slot.slice() : (slot.tags || []).slice();
+            const tags = Array.isArray(slot) ? slot.slice() : (slot && slot.tags ? slot.tags.slice() : []);
             const ms = renderMultiSelect(tags, (newTags) => {
               arr[i] = newTags.slice();
               setValue(arr);
-              header(arr[i]);
             }, { options: tagOptions }, ctx);
             body.appendChild(ms);
           } else if (m === 'needs') {
             const needsSel = el('select');
+            const initialNeeds = (slot && slot.needs) || 'isPatientSeat';
             for (const v of ['isPatientSeat','isPrisonerSeat']) {
               const o = el('option', { value: v }, v);
-              if (slot && slot.needs === v) o.selected = true;
+              if (initialNeeds === v) o.selected = true;
               needsSel.appendChild(o);
             }
             needsSel.addEventListener('change', () => {
@@ -517,33 +837,40 @@ const Widgets = (() => {
             }
             body.appendChild(needsSel);
           } else if (m === 'both') {
+            // Normalize to { tags:[], needs:'…' } in-place
             const obj = (slot && !Array.isArray(slot)) ? slot : { tags: Array.isArray(slot) ? slot : [], needs: 'isPatientSeat' };
             if (!obj.needs) obj.needs = 'isPatientSeat';
             if (!obj.tags) obj.tags = [];
             arr[i] = obj;
-            const tagsMs = renderMultiSelect(obj.tags, (t) => { obj.tags = t; setValue(arr); }, { options: tagOptions }, ctx);
+            const tagsMs = renderMultiSelect(obj.tags, (t) => {
+              // Refresh from current() so we don't overwrite a mode-switched value
+              const live = current();
+              if (live && !Array.isArray(live)) { live.tags = t; setValue(arr); }
+            }, { options: tagOptions }, ctx);
             const needsSel = el('select');
             for (const v of ['isPatientSeat','isPrisonerSeat']) {
               const o = el('option', { value: v }, v);
               if (obj.needs === v) o.selected = true;
               needsSel.appendChild(o);
             }
-            needsSel.addEventListener('change', () => { obj.needs = needsSel.value; setValue(arr); });
+            needsSel.addEventListener('change', () => {
+              const live = current();
+              if (live && !Array.isArray(live)) { live.needs = needsSel.value; setValue(arr); }
+            });
             body.appendChild(tagsMs);
             body.appendChild(needsSel);
           }
         }
 
-        const header = () => {}; // unused — kept simple
-
         modeSel.addEventListener('change', () => {
-          // Reshape slot into the new mode's structure
+          // Reshape from the LIVE slot so we don't undo intermediate edits.
+          const live = current();
           if (modeSel.value === 'tags') {
-            arr[i] = Array.isArray(slot) ? slot : (slot && slot.tags ? slot.tags : []);
+            arr[i] = Array.isArray(live) ? live : (live && live.tags ? live.tags : []);
           } else if (modeSel.value === 'needs') {
-            arr[i] = { needs: (slot && slot.needs) || 'isPatientSeat' };
+            arr[i] = { needs: (live && live.needs) || 'isPatientSeat' };
           } else if (modeSel.value === 'both') {
-            arr[i] = { tags: Array.isArray(slot) ? slot : (slot && slot.tags) || [], needs: (slot && slot.needs) || 'isPatientSeat' };
+            arr[i] = { tags: Array.isArray(live) ? live : (live && live.tags) || [], needs: (live && live.needs) || 'isPatientSeat' };
           }
           setValue(arr);
           paintBody();
